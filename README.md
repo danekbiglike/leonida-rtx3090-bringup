@@ -64,6 +64,12 @@ ctest --test-dir build -R "^(title_window|d3d12_b4g4r4a4_rt|d3d12_b5g5r5a1_uav)$
 
 All three fixtures passed here. On the small catalogue, the title created the packed target, recorded full-screen triangle draws, and presented through its own window. Ten readbacks of 2,564 × 1,061 pixels through present 9,783 were black. The draw samples named one intermediate render target, while successive presents alternated between two other resources. This observation alone cannot establish whether a later copy or composition wrote to the displayed resources. In a repeat, device slot 108 returned an invalid allocation size for a six-slice R16_TYPELESS depth texture with unordered access.
 
+### Depth-array allocation and the first unordered-access layout
+
+`patches/frame-depth-array-sizing.patch` applies after the packed-target patch. It brings the sizing route at Xbox device slot 108 and the creation routes at 127 and 133 into agreement with the existing depth-only fallback at slot 76. It keeps the existing PC flag mask of each route, including tight alignment where supported. The added WARP comparison covers the allocation size, alignment and per-resource record for a synthetic six-slice typeless depth array. The proxy mocks cover both creation routes. Both test executables passed.
+
+This fixes a size query. The following title call asks slot 133 to create the texture in an unordered-access layout. The depth-only backing cannot service shader writes and rejects that request. A separate test suite on this GPU matched WARP in all 46 copy comparisons, including bit-preserving depth-to-color and color-to-depth copies. Those transfers provide a tested building block for synchronizing a storage image with a depth attachment. They do not establish that the two images are synchronized in the game.
+
 ## Reproduce the Windows package-read fix
 
 The test machine hit Windows sharing violation 32 when DirectStorage opened an archive for reading. The successful sharing modes pointed to an existing writable host handle. A synthetic test reproduced the conflict. Repeating the open with read sharing alone reproduced the stop. Allowing the existing writer on the retry let the process initialize its graphics resources.

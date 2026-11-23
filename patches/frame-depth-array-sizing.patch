@@ -1,0 +1,96 @@
+diff --git a/runtime/shims/d3d12_xs_device.cpp b/runtime/shims/d3d12_xs_device.cpp
+index 58359651427155436f7cf8a58932a1877f36876c..cbf096e8bc4fc85f1705ace61f5a1bd45e222182 100644
+--- a/runtime/shims/d3d12_xs_device.cpp
++++ b/runtime/shims/d3d12_xs_device.cpp
+@@ -3125,7 +3125,8 @@ HRESULT proxy_create_committed_resource3_x(DeviceProxy* self, std::uint64_t heap
+     const auto xbox_flags = static_cast<std::uint32_t>(pc_desc.Flags);
+     pc_desc.Layout = pc_desc.Dimension == D3D12_RESOURCE_DIMENSION_BUFFER ? D3D12_TEXTURE_LAYOUT_ROW_MAJOR
+                                                                          : D3D12_TEXTURE_LAYOUT_UNKNOWN;
+-    pc_desc.Flags = static_cast<D3D12_RESOURCE_FLAGS>(xbox_flags & kPcResourceFlagsMask);
++    pc_desc.Flags = static_cast<D3D12_RESOURCE_FLAGS>(
++        without_depth_stencil_uav(pc_desc.Dimension, xbox_flags & kPcResourceFlagsMask));
+ 
+     static std::atomic<bool> logged{false};
+     if (first_call(logged))
+@@ -3227,7 +3228,8 @@ HRESULT proxy_create_placed_resource_x(DeviceProxy* self, std::uint64_t va, cons
+ 
+     D3D12_RESOURCE_DESC pc_desc = *xbox_desc;
+     const auto xbox_flags = static_cast<std::uint32_t>(pc_desc.Flags);
+-    pc_desc.Flags = static_cast<D3D12_RESOURCE_FLAGS>(xbox_flags & kPcResourceFlags);
++    pc_desc.Flags = static_cast<D3D12_RESOURCE_FLAGS>(
++        without_depth_stencil_uav(pc_desc.Dimension, xbox_flags & kPcResourceFlags));
+     const bool buffer = pc_desc.Dimension == D3D12_RESOURCE_DIMENSION_BUFFER;
+     pc_desc.Layout = buffer ? D3D12_TEXTURE_LAYOUT_ROW_MAJOR : D3D12_TEXTURE_LAYOUT_UNKNOWN;
+     const bool clearable =
+@@ -3383,8 +3385,7 @@ std::uint64_t proxy_get_resource_allocation_info2(DeviceProxy* self, std::uint64
+                 d.Layout = d.Dimension == D3D12_RESOURCE_DIMENSION_BUFFER ? D3D12_TEXTURE_LAYOUT_ROW_MAJOR
+                                                                           : D3D12_TEXTURE_LAYOUT_UNKNOWN;
+             }
+-            constexpr std::uint32_t kPcResourceFlagsMask = 0x1FFu;
+-            d.Flags = static_cast<D3D12_RESOURCE_FLAGS>(static_cast<std::uint32_t>(d.Flags) & kPcResourceFlagsMask);
++            d.Flags = static_cast<D3D12_RESOURCE_FLAGS>(pc_resource_flags(d.Dimension, static_cast<std::uint32_t>(d.Flags)));
+             cleaned[i] = d;
+         }
+         descs_to_pass = cleaned.data();
+diff --git a/runtime/test/device_proxy_test.cpp b/runtime/test/device_proxy_test.cpp
+index bca58b6b542d31d2b5d7929cb08dad3a77b8b527..a592a4992f7b5f6c6bae09fc0dbab5f65a867cde 100644
+--- a/runtime/test/device_proxy_test.cpp
++++ b/runtime/test/device_proxy_test.cpp
+@@ -642,6 +642,24 @@ int main(int argc, char** argv) {
+                       xbox_info1[1].SizeInBytes == pc_info1[1].SizeInBytes,
+                   "slot 108 C-ABI GetResourceAllocationInfo2 with 56-byte Xbox descs matches PC Device8");
+             check(rt::d3d12_xs::device_slot_hits(108) == 1, "slot 108 hit counter is 1");
++            auto depth = xbox_descs[0];
++            depth.Width = 96;
++            depth.Height = 96;
++            depth.DepthOrArraySize = 6;
++            depth.Format = DXGI_FORMAT_R16_TYPELESS;
++            depth.Flags = D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL | D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
++            D3D12_RESOURCE_DESC1 pc_depth{};
++            std::memcpy(&pc_depth, &depth, sizeof(depth));
++            pc_depth.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
++            pc_depth.Flags = D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL;
++            D3D12_RESOURCE_ALLOCATION_INFO1 reference_detail{};
++            const auto reference = real_device8->GetResourceAllocationInfo2(1, 1, &pc_depth, &reference_detail);
++            get_alloc_info2(&xbox_info, device.Get(), 1, 1, &depth, xbox_info1);
++            check(reference.SizeInBytes != UINT64_MAX && xbox_info.SizeInBytes == reference.SizeInBytes &&
++                      xbox_info.Alignment == reference.Alignment && xbox_info1[0].Offset == reference_detail.Offset &&
++                      xbox_info1[0].SizeInBytes == reference_detail.SizeInBytes &&
++                      xbox_info1[0].Alignment == reference_detail.Alignment,
++                  "slot 108 depth-array sizing matches the depth backing created by the console proxy");
+         }
+     }
+ 
+diff --git a/runtime/test/xs_proxy_mock_test.cpp b/runtime/test/xs_proxy_mock_test.cpp
+index 1cbe1e455f92ee2c19f6202e972551bfbf61fce1..359a262350a15416e1893cad082a8aa7ab980d03 100644
+--- a/runtime/test/xs_proxy_mock_test.cpp
++++ b/runtime/test/xs_proxy_mock_test.cpp
+@@ -1243,6 +1243,13 @@ int check_placed_resource_x() {
+     EXPECT(!resource && mock->calls[27] == 5);
+     mock->create_result = S_OK;
+ 
++    auto shadow = target;
++    shadow.Format = DXGI_FORMAT_R16_TYPELESS;
++    shadow.Flags = D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL | D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
++    EXPECT(hr_of(raw6(device, 133, kVa, word(&shadow), 6, 0, word(&kResourceIid), word(&resource))) == S_OK);
++    EXPECT(g_committed.desc.Flags == D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL);
++    EXPECT(release(resource) == 0);
++
+     EXPECT(release(device) == 0 && mock->refs == 0);
+ 
+ #ifdef __ID3D12Device10_INTERFACE_DEFINED__
+@@ -2523,6 +2530,14 @@ int check_committed_resource3_x() {
+     EXPECT(hr_of(raw10(device, 127, bad)) == E_POINTER);
+     EXPECT(g_committed3.calls == before);
+     EXPECT(xs::device_slot_overridden(127));
++    auto shadow = texture;
++    shadow.Format = DXGI_FORMAT_R16_TYPELESS;
++    shadow.Flags = D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL | D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
++    words[2] = word(&shadow);
++    EXPECT(hr_of(raw10(device, 127, words)) == S_OK && resource);
++    EXPECT(g_committed3.desc.Flags == D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL);
++    EXPECT(release(resource) == 0);
++    words[2] = word(&buffer);
+     EXPECT(release(device) == 0);
+ 
+     // A PC device whose ID3D12Device10 is another pointer than the device itself: the call goes to that one, and the
