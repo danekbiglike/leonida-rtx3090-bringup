@@ -43,6 +43,14 @@ The RTX 3090 reported zero optimal-tiling features for Vulkan D16_UNORM_S8_UINT.
 
 In a separate experiment, 1,061 local shaders translated and passed spirv-val. With the expanded catalogue the NVIDIA driver compiler terminated during startup. A software Vulkan trial also terminated inside the driver. Neither run established a menu.
 
+### Experimental Xbox D16+S8 attachment
+
+`patches/xbox-d16s8-attachment.patch` applies after the two frame patches above. Set `LEONIDA_XBOX_D16S8=1` to enable it. It backs a single-sample, two-dimensional Xbox D16+S8 attachment with Vulkan D32_SFLOAT_S8_UINT, rounds depth clears and fragment depth to UNORM16, and preserves the stencil byte. CPU texture transfers, depth-plane buffer copies and multisample draws for this format are unsupported.
+
+Build `d3d12_depth24_draw_test` with glslang available. On the RTX 3090, `d3d12_depth24_draw_test --xbox-d16s8` passed four 64 × 64 GPU comparisons. Two nearby float values in the same D16 code passed EQUAL at every pixel. Values in the next code failed at every pixel. This held with the generated depth-only fragment stage and an explicit fragment depth output. Each result was verified through stencil readback. The existing D24 draw suite also passed.
+
+With the small shader catalogue, the game passed the former depth allocation. It then exhausted the default 256 MiB GPU address arena while requesting a 90 MiB buffer. Running with `LEONIDA_ARENA_MB=2048` reached a B4G4R4A4_UNORM render-target allocation. The RTX 3090 exposes the corresponding 4-bit Vulkan formats for sampling with no color-attachment feature. The boot samples remained black.
+
 ## Reproduce the Windows package-read fix
 
 The test machine hit Windows sharing violation 32 when DirectStorage opened an archive for reading. The successful sharing modes pointed to an existing writable host handle. A synthetic test reproduced the conflict. Repeating the open with read sharing alone reproduced the stop. Allowing the existing writer on the retry let the process initialize its graphics resources.

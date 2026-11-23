@@ -1,0 +1,414 @@
+diff --git a/runtime/CMakeLists.txt b/runtime/CMakeLists.txt
+index 75e04c356ff66632ffa0e68a6281926be093f76f..5e7da0cec97dcd792e9f13db2dd902065d91d06e 100644
+--- a/runtime/CMakeLists.txt
++++ b/runtime/CMakeLists.txt
+@@ -2784,6 +2784,8 @@ if(TARGET Vulkan::Headers)
+                                  LEONIDA_TEST_GS_DEPTH_SPV="${LEONIDA_TEST_GS_DEPTH}")
+       target_compile_options(d3d12_depth24_draw_test PRIVATE /W4 /permissive- /utf-8)
+       add_test(NAME d3d12_depth24_draw COMMAND d3d12_depth24_draw_test)
++      add_test(NAME d3d12_xbox_depth16_stencil_draw COMMAND d3d12_depth24_draw_test --xbox-d16s8)
++      set_tests_properties(d3d12_xbox_depth16_stencil_draw PROPERTIES SKIP_RETURN_CODE 77)
+       set_tests_properties(d3d12_depth24_draw PROPERTIES SKIP_RETURN_CODE 77)
+       # Set 0 from the compute bind point: a compute PSO whose shader declares set-0 bindings samples through the
+       # device's bindless set, which nothing but the layer binds.
+diff --git a/runtime/shims/d3d12_vulkan_device.cpp b/runtime/shims/d3d12_vulkan_device.cpp
+index 99aa754ebc74d2e94524c26ecc9885aa0c0b85c3..86fc53396e34ee0c8e91bfef5920319e53195a45 100644
+--- a/runtime/shims/d3d12_vulkan_device.cpp
++++ b/runtime/shims/d3d12_vulkan_device.cpp
+@@ -270,6 +270,16 @@ constexpr Format rgb96_format(VkFormat wide, bool typeless = false) {
+ // DXGI -> Vulkan for the formats render targets, depth buffers and common textures use. R32 and R16 typeless become
+ // depth formats when the resource allows depth-stencil; R32G8X24 and R24G8 always do, as Vulkan has no colour format
+ // with their layout.
++// Xbox DXGI values are listed by Microsoft's DirectXTex texdiag. The opt-in path only
++// supports single-sample attachments and their sampled planes on a D32+S8-capable device.
++constexpr auto xbox_d16s8 = static_cast<DXGI_FORMAT>(118);
++constexpr auto xbox_d16_view = static_cast<DXGI_FORMAT>(119);
++constexpr auto xbox_s8_view = static_cast<DXGI_FORMAT>(120);
++bool xbox_depth16_enabled() {
++    static const bool enabled = GetEnvironmentVariableW(L"LEONIDA_XBOX_D16S8", nullptr, 0) != 0;
++    return enabled;
++}
++
+ Format vulkan_format(DXGI_FORMAT format, bool depth) {
+     constexpr VkImageAspectFlags color = VK_IMAGE_ASPECT_COLOR_BIT, d = VK_IMAGE_ASPECT_DEPTH_BIT,
+                                  ds = VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT;
+@@ -370,6 +380,7 @@ Format vulkan_format(DXGI_FORMAT format, bool depth) {
+     case DXGI_FORMAT_D32_FLOAT: return {VK_FORMAT_D32_SFLOAT, d};
+     case DXGI_FORMAT_D16_UNORM: return {VK_FORMAT_D16_UNORM, d};
+     case DXGI_FORMAT_D32_FLOAT_S8X24_UINT: return {VK_FORMAT_D32_SFLOAT_S8_UINT, ds};
++    case xbox_d16s8: return xbox_depth16_enabled() ? Format{VK_FORMAT_D32_SFLOAT_S8_UINT, ds} : Format{};
+     case DXGI_FORMAT_D24_UNORM_S8_UINT: return {VK_FORMAT_D24_UNORM_S8_UINT, ds};
+     case DXGI_FORMAT_R32_TYPELESS:
+         return depth ? Format{VK_FORMAT_D32_SFLOAT, d, true} : Format{VK_FORMAT_R32_SFLOAT, color, true};
+@@ -980,6 +991,10 @@ struct DeviceState {
+     // The format a texture description is created with, D24S8 and R9G9B9E5 UAV fallbacks included.
+     Format texture_format(const D3D12_RESOURCE_DESC& desc) const {
+         if (!xr_bias_compatible(desc)) return {};
++        if (desc.Format == xbox_d16s8 && (desc.Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE2D ||
++            desc.SampleDesc.Count != 1 || !(desc.Flags & D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL))) return {};
++        if (desc.Format == xbox_d16s8 && xbox_depth16_enabled())
++            log_once("Xbox single-sample D16+S8 attachment uses D32+S8 and 16-bit depth rounding; format", desc.Format);
+         if (typed_depth(desc.Format) && (desc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE3D ||
+                                          ((desc.Flags & D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS) &&
+                                           !typed_without_uav(desc.Format))))
+@@ -1504,6 +1519,7 @@ DXGI_FORMAT format_family(DXGI_FORMAT format) {
+ // ALLOW_DEPTH_STENCIL: the host accepts every format of a family with a depth member (R32_FLOAT and R16_FLOAT
+ // included) and nothing else.
+ bool depth_stencil_family(DXGI_FORMAT format) {
++    if (format == xbox_d16s8) return xbox_depth16_enabled();
+     const DXGI_FORMAT family = format_family(format);
+     return family == DXGI_FORMAT_R32_TYPELESS || family == DXGI_FORMAT_R16_TYPELESS ||
+            family == DXGI_FORMAT_R24G8_TYPELESS || family == DXGI_FORMAT_R32G8X24_TYPELESS;
+@@ -2126,6 +2142,7 @@ public:
+         binding.rgb96 = format.rgb96;
+         binding.depth24_as_float = format.d24_as_float;
+         binding.depth24 = format.d24;
++        binding.xbox_depth16_stencil = desc_.Format == xbox_d16s8;
+         binding.format = format.format;
+         binding.aspects = format.aspects;
+         binding.width = std::uint32_t(desc_.Width);
+@@ -2296,6 +2313,7 @@ private:
+     HRESULT cpu_copy(bool write, UINT subresource, const D3D12_BOX* box, void* data, UINT row_pitch,
+                      UINT depth_pitch) {
+         if (!image_ || !data) return E_INVALIDARG;
++        if (desc_.Format == xbox_d16s8) return E_NOTIMPL;
+         Region r{};
+         if (!region(subresource, box, r)) return E_INVALIDARG;
+         if (!r.rows || !r.slices) return S_OK;  // an empty box: nothing to copy
+@@ -3322,7 +3340,9 @@ public:
+         const bool d24_as_float = desc.DSVFormat != DXGI_FORMAT_UNKNOWN &&
+                                   vulkan_format(desc.DSVFormat, true).format == VK_FORMAT_D24_UNORM_S8_UINT &&
+                                   !device_.depth_usable(VK_FORMAT_D24_UNORM_S8_UINT);
+-        bool depth24_fragment = d24_as_float && desc.DepthStencilState.DepthEnable;
++        const bool xbox_depth16 = desc.DSVFormat == xbox_d16s8 && xbox_depth16_enabled();
++        if (xbox_depth16 && samples != 1) return E_INVALIDARG;
++        bool depth24_fragment = (d24_as_float || xbox_depth16) && desc.DepthStencilState.DepthEnable;
+         if (depth24_fragment && samples > 1) {
+             log_once("D24 depth stored as D32 keeps float depth bias and precision on multisampled targets; samples",
+                      int(samples));
+@@ -3437,8 +3457,9 @@ public:
+             // After the f16 link above, which can also edit the pixel shader's words.
+             if (depth24_fragment && stage.bit == VK_SHADER_STAGE_FRAGMENT_BIT) {
+                 std::string why;
+-                std::vector<std::uint32_t> patched = leonida::depth24_patch_fragment(stage.words, depth24_bias, why);
++                std::vector<std::uint32_t> patched = leonida::depth24_patch_fragment(stage.words, depth24_bias, why, xbox_depth16);
+                 if (patched.empty()) {
++                    if (xbox_depth16) return E_NOTIMPL;
+                     std::fprintf(stderr, "[rt] d3d12: %s keeps float depth on a D24 target stored as D32: %s\n",
+                                  stage.entry->name.c_str(), why.c_str());
+                     depth24_fragment = false;
+@@ -3460,7 +3481,7 @@ public:
+             stage_infos.push_back(info);
+         }
+         if (depth24_fragment && !ps_stage.entry) {  // no pixel shader: a built-in one writes the depth
+-            const std::vector<std::uint32_t> words = leonida::depth24_depth_only_fragment(depth24_bias);
++            const std::vector<std::uint32_t> words = leonida::depth24_depth_only_fragment(depth24_bias, xbox_depth16);
+             VkShaderModuleCreateInfo module_info{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
+             module_info.codeSize = words.size() * 4;
+             module_info.pCode = words.data();
+@@ -4497,6 +4518,7 @@ bool image_descriptor(const Resource& resource, const TextureView& view, leonida
+     // Each stencil view format belongs to its own DXGI family only, as in D3D12: the family is the texture's DXGI
+     // format, not the Vulkan format behind it (a D24 texture may be D32_SFLOAT_S8_UINT underneath).
+     const bool stencil_format_fits =
++        (view.format == xbox_s8_view && desc.Format == xbox_d16s8) ||
+         (view.format == DXGI_FORMAT_X24_TYPELESS_G8_UINT &&
+          (desc.Format == DXGI_FORMAT_R24G8_TYPELESS || desc.Format == DXGI_FORMAT_D24_UNORM_S8_UINT)) ||
+         (view.format == DXGI_FORMAT_X32_TYPELESS_G8X24_UINT &&
+@@ -4549,6 +4571,7 @@ bool image_descriptor(const Resource& resource, const TextureView& view, leonida
+     const bool depth_plane = (resource.aspects() & VK_IMAGE_ASPECT_DEPTH_BIT) && !stencil;
+     if (depth_plane) {
+         const bool depth_format_fits =
++            (desc.Format == xbox_d16s8 && (view.format == DXGI_FORMAT_UNKNOWN || view.format == xbox_d16_view)) ||
+             (desc.Format == DXGI_FORMAT_D16_UNORM &&
+              (view.format == DXGI_FORMAT_UNKNOWN || view.format == DXGI_FORMAT_R16_UNORM)) ||
+             (desc.Format == DXGI_FORMAT_R16_TYPELESS && view.format == DXGI_FORMAT_R16_UNORM) ||
+@@ -7445,6 +7468,11 @@ public:
+         case D3D12_FEATURE_FORMAT_INFO: {
+             if (size != sizeof(D3D12_FEATURE_DATA_FORMAT_INFO)) return E_INVALIDARG;
+             auto* info = static_cast<D3D12_FEATURE_DATA_FORMAT_INFO*>(data);
++            if (xbox_depth16_enabled() && (info->Format == xbox_d16s8 || info->Format == xbox_d16_view ||
++                                           info->Format == xbox_s8_view)) {
++                info->PlaneCount = 2;
++                return S_OK;
++            }
+             // Plane count describes the DXGI layout even when the backend cannot create the texture.
+             switch (info->Format) {
+             case DXGI_FORMAT_R32G8X24_TYPELESS:
+diff --git a/runtime/src/depth24_fragment.h b/runtime/src/depth24_fragment.h
+index 10f0dada87df82036d446a5cda0750cdf218c83e..7156222245f0d9459a27a4b3e01fd78f4f695d57 100644
+--- a/runtime/src/depth24_fragment.h
++++ b/runtime/src/depth24_fragment.h
+@@ -53,7 +53,7 @@ enum : std::uint32_t {
+     op_type_float = 22, op_type_vector = 23, op_type_pointer = 32, op_type_function = 33, op_constant = 43,
+     op_function = 54, op_function_end = 56, op_variable = 59, op_load = 61, op_store = 62, op_decorate = 71,
+     op_composite_extract = 81, op_convert_f_to_u = 109, op_convert_u_to_f = 112, op_bitcast = 124, op_i_add = 128,
+-    op_f_add = 129, op_i_sub = 130, op_f_mul = 133, op_select = 169, op_i_equal = 170, op_u_greater_than = 172,
++    op_f_add = 129, op_i_sub = 130, op_f_mul = 133, op_f_div = 136, op_select = 169, op_i_equal = 170, op_u_greater_than = 172,
+     op_u_greater_than_equal = 174, op_shift_left_logical = 196, op_dpdx = 207, op_dpdy = 208, op_label = 248,
+     op_return = 253, op_no_line = 317, op_execution_mode_id = 331,
+ };
+@@ -141,7 +141,7 @@ private:
+ // The edit, on a parsed module. Globals are collected first and spliced in at their section's end.
+ class Patch {
+ public:
+-    Patch(Module& m, std::uint32_t entry) : m_(m), entry_(entry) {
++    Patch(Module& m, std::uint32_t entry, bool unorm16 = false) : m_(m), unorm16_(unorm16), entry_(entry) {
+         // Copies: apply() moves the module's instructions while the code at returns still looks types up.
+         for (const Inst& i : m.insts()) {
+             if (opcode(i) == op_function) break;
+@@ -185,6 +185,10 @@ public:
+     void prime_quantise() {
+         t_bool();
+         glsl();
++        if (unorm16_) {
++            for (float f : {0.0f, 65535.0f}) f32(f);
++            return;
++        }
+         for (float f : {16777215.0f, 0.0f}) f32(f);
+         for (std::uint32_t u : {0x3f800000u, 0xffffffu, 0x7f800000u, 0u, 23u, 1u, 80u}) u32(u);
+     }
+@@ -246,6 +250,12 @@ public:
+ 
+     // depth24_to_float(depth24_from_bits(z)) of depth24_convert.comp, branch-free.
+     std::uint32_t quantise(std::vector<Inst>& code, std::uint32_t z) {
++        if (unorm16_) {
++            const auto tf = t_float(), maximum = f32(65535.0f);
++            const auto scaled = emit(code, op_f_mul, tf, {z, maximum});
++            const auto bounded = ext(code, tf, glsl_fmin, {ext(code, tf, glsl_fmax, {scaled, f32(0.0f)}), maximum});
++            return emit(code, op_f_div, tf, {ext(code, tf, glsl_round_even, {bounded}), maximum});
++        }
+         const std::uint32_t tf = t_float(), tu = t_uint(), tb = t_bool();
+         const std::uint32_t b = emit(code, op_bitcast, tu, {z});
+         const std::uint32_t product = emit(code, op_f_mul, tf, {z, f32(16777215.0f)});
+@@ -328,6 +338,7 @@ public:
+ 
+ private:
+     Module& m_;
++    bool unorm16_;
+     std::uint32_t entry_;
+     std::vector<Inst> existing_;
+     std::vector<Inst> globals_, decorations_, modes_;
+@@ -342,7 +353,7 @@ private:
+ // Edits a pixel shader so it writes the D24-quantised (and, unless it writes depth itself, D3D-biased) depth.
+ // Returns the new words, or an empty vector with `why` set when the shader can't take the edit.
+ inline std::vector<std::uint32_t> depth24_patch_fragment(const std::vector<std::uint32_t>& words,
+-                                                         const Depth24Bias& bias, std::string& why) {
++                                                         const Depth24Bias& bias, std::string& why, bool unorm16 = false) {
+     using namespace spirv24;
+     Module m;
+     if (!m.parse(words, why)) return {};
+@@ -369,7 +380,7 @@ inline std::vector<std::uint32_t> depth24_patch_fragment(const std::vector<std::
+         if (opcode(i) == op_function) break;
+     }
+ 
+-    Patch p(m, entry);
++    Patch p(m, entry, unorm16);
+     const std::uint32_t tf = p.t_float();
+     p.prime_quantise();
+     std::uint32_t frag_depth = p.builtin_variable(builtin_frag_depth);
+@@ -396,7 +407,9 @@ inline std::vector<std::uint32_t> depth24_patch_fragment(const std::vector<std::
+             const std::uint32_t dy = p.ext(entry_code, tf, glsl_fabs, {p.emit(entry_code, op_dpdy, tf, {z})});
+             const std::uint32_t max_slope = p.ext(entry_code, tf, glsl_fmax, {dx, dy});
+             std::uint32_t amount = p.emit(entry_code, op_f_mul, tf, {p.f32(bias.slope), max_slope});
+-            amount = p.emit(entry_code, op_f_add, tf, {amount, p.f32(depth24_bias_constant(bias.constant))});
++            const float constant = unorm16 ? float(bias.constant) * float(1.0 / 65535.0)
++                                           : depth24_bias_constant(bias.constant);
++            amount = p.emit(entry_code, op_f_add, tf, {amount, p.f32(constant)});
+             if (bias.clamp > 0.0f) amount = p.ext(entry_code, tf, glsl_fmin, {amount, p.f32(bias.clamp)});
+             if (bias.clamp < 0.0f) amount = p.ext(entry_code, tf, glsl_fmax, {amount, p.f32(bias.clamp)});
+             z = p.emit(entry_code, op_f_add, tf, {z, amount});
+@@ -418,7 +431,7 @@ inline std::vector<std::uint32_t> depth24_patch_fragment(const std::vector<std::
+ }
+ 
+ // A pixel stage for a pipeline without one: no colour output, only the biased, quantised depth.
+-inline std::vector<std::uint32_t> depth24_depth_only_fragment(const Depth24Bias& bias) {
++inline std::vector<std::uint32_t> depth24_depth_only_fragment(const Depth24Bias& bias, bool unorm16 = false) {
+     using namespace spirv24;
+     // OpCapability Shader; OpMemoryModel Logical GLSL450; OpEntryPoint Fragment %main "main";
+     // OpExecutionMode %main OriginUpperLeft; %void; %fn = void(); %main = function { label; return }
+@@ -439,7 +452,7 @@ inline std::vector<std::uint32_t> depth24_depth_only_fragment(const Depth24Bias&
+     put(make(op_return, {}));
+     put(make(op_function_end, {}));
+     std::string why;
+-    return depth24_patch_fragment(w, bias, why);
++    return depth24_patch_fragment(w, bias, why, unorm16);
+ }
+ 
+ }  // namespace leonida
+diff --git a/runtime/src/vulkan_replay.h b/runtime/src/vulkan_replay.h
+index 37728ffc2654aca976f02683e14a2895daa79171..f4f8348c81939fdf59bdbab8e02d303bba9aa719 100644
+--- a/runtime/src/vulkan_replay.h
++++ b/runtime/src/vulkan_replay.h
+@@ -90,6 +90,7 @@ struct ResourceBinding {
+     // (depth24.h) and clears quantise to 24 bits.
+     bool depth24_as_float = false;
+     bool depth24 = false;  // a D24 family format, native or not: depth clears are quantised to 24 bits first
++    bool xbox_depth16_stencil = false;  // D16+S8 attachment, depth rounded to 16 bits
+     // A D3D12 R32G32B32 texture (12 bytes a texel) held in an R32G32B32A32 image (16): footprints keep D3D12's 12
+     // bytes, and copies between it and a buffer are repacked by the depth24 pass (Depth24Job::rgb96).
+     bool rgb96 = false;
+@@ -2759,6 +2760,10 @@ ReplayResult prepare(const CommandList& list, Resolve&& resolve, const ReplayFun
+                         return ReplayResult::unsupported;
+                 } else p.buffer_copies.push_back({src, dst, buffer_copy->size});
+             } else if (const auto* texture_copy = std::get_if<CopyTexture>(&command)) {
++                // A D32+S8 backing has a different memory footprint from the Xbox D16+S8 texture.
++                if (!texture_copy->src.footprint && !texture_copy->dst.footprint &&
++                    p.binding.xbox_depth16_stencil != p.source.xbox_depth16_stencil)
++                    return ReplayResult::unsupported;
+                 result = detail::prepare_texture_copy(*texture_copy, p);
+                 if (result == ReplayResult::success && !p.staged_reads.empty()) {
+                     // A block-compressed copy staged through transfer scratch (prepare_texture_copy): whole blocks of
+@@ -2777,6 +2782,9 @@ ReplayResult prepare(const CommandList& list, Resolve&& resolve, const ReplayFun
+                 // A depth plane footprint of a D24 texture stored as D32: words of 24-bit UNORM, floats in the image.
+                 const bool upload = texture_copy->src.footprint;
+                 const ResourceBinding& image = upload ? p.binding : p.source;
++                if (image.xbox_depth16_stencil && !p.buffer_image_copies.empty() &&
++                    p.buffer_image_copies.front().imageSubresource.aspectMask == VK_IMAGE_ASPECT_DEPTH_BIT)
++                    return ReplayResult::unsupported;
+                 if (result == ReplayResult::success && texture_copy->tile_footprint && !p.buffer_image_copies.empty() &&
+                     p.buffer_image_copies.front().bufferOffset % 4 && !detail::stage_unaligned_tile(vk, p, upload))
+                     return ReplayResult::unsupported;
+@@ -3564,7 +3572,7 @@ inline void emit(const PreparedList& prepared, VkCommandBuffer command_buffer, c
+             auto pieces = detail::current(tracker, id, range, image_layout(p.binding, state.layout));
+             detail::initialize(vk, command_buffer, p.binding, id, pieces, image_layout(p.binding, state.layout), tracker);
+             const float depth = p.binding.depth24 ? depth24_clear_value(depth_clear->depth)  // see depth24.h
+-                                : p.binding.format == VK_FORMAT_D16_UNORM
++                                : p.binding.xbox_depth16_stencil || p.binding.format == VK_FORMAT_D16_UNORM
+                                     ? detail::quantize_unorm(depth_clear->depth, 65535.0)  // see quantize_unorm
+                                     : depth_clear->depth;
+             const VkClearDepthStencilValue value{depth, depth_clear->stencil};
+diff --git a/runtime/test/d3d12_depth24_draw_test.cpp b/runtime/test/d3d12_depth24_draw_test.cpp
+index 885cefa6ee128c83239730b528948cf173f2fa31..c2aaf276d38bf0a08551589df4951bab45f4861b 100644
+--- a/runtime/test/d3d12_depth24_draw_test.cpp
++++ b/runtime/test/d3d12_depth24_draw_test.cpp
+@@ -83,6 +83,7 @@ struct Result {
+ };
+ 
+ struct Harness {
++    DXGI_FORMAT dsv_format = DXGI_FORMAT_D24_UNORM_S8_UINT;
+     ID3D12Device* device = nullptr;
+     ID3D12RootSignature* root = nullptr;
+     std::vector<std::uint8_t> vs, ps_empty, ps_write, gs;
+@@ -122,7 +123,7 @@ struct Harness {
+                                               D3D12_STENCIL_OP_INCR_SAT, D3D12_COMPARISON_FUNC_ALWAYS};
+         desc.DepthStencilState.FrontFace = desc.DepthStencilState.BackFace = count;
+         desc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+-        desc.DSVFormat = DXGI_FORMAT_D24_UNORM_S8_UINT;
++        desc.DSVFormat = dsv_format;
+         desc.SampleDesc.Count = 1;
+         Ref<ID3D12PipelineState> pso;
+         if (FAILED(device->CreateGraphicsPipelineState(&desc, IID_PPV_ARGS(&pso.p)))) {
+@@ -150,7 +151,7 @@ struct Harness {
+         D3D12_RESOURCE_BARRIER to_copy = transition(depth.p, D3D12_RESOURCE_STATE_DEPTH_WRITE,
+                                                     D3D12_RESOURCE_STATE_COPY_SOURCE);
+         list->ResourceBarrier(1, &to_copy);
+-        for (UINT plane = 0; plane < 2; ++plane) {
++        for (UINT plane = dsv_format == DXGI_FORMAT_D24_UNORM_S8_UINT ? 0u : 1u; plane < 2; ++plane) {
+             D3D12_TEXTURE_COPY_LOCATION dst{};
+             dst.pResource = readback.p;
+             dst.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+@@ -184,9 +185,11 @@ struct Harness {
+         out.stencil.assign(target_side * target_side, 0);
+         for (UINT y = 0; y < target_side; ++y)
+             for (UINT x = 0; x < target_side; ++x) {
+-                std::uint32_t word;
+-                std::memcpy(&word, mapped + foot[0].Offset + y * foot[0].Footprint.RowPitch + x * 4, 4);
+-                out.depth[y * target_side + x] = word & leonida::depth24_max;
++                if (dsv_format == DXGI_FORMAT_D24_UNORM_S8_UINT) {
++                    std::uint32_t word;
++                    std::memcpy(&word, mapped + foot[0].Offset + y * foot[0].Footprint.RowPitch + x * 4, 4);
++                    out.depth[y * target_side + x] = word & leonida::depth24_max;
++                }
+                 out.stencil[y * target_side + x] = mapped[foot[1].Offset + y * foot[1].Footprint.RowPitch + x];
+             }
+         readback->Unmap(0, nullptr);
+@@ -206,7 +209,9 @@ std::string describe(const Pass& p) {
+ 
+ }  // namespace
+ 
+-int main() {
++int main(int argc, char** argv) {
++    const bool xbox_d16 = argc == 2 && std::strcmp(argv[1], "--xbox-d16s8") == 0;
++    if (xbox_d16) SetEnvironmentVariableW(L"LEONIDA_XBOX_D16S8", L"1");
+     vktest::Device d;
+     const auto device_status = d.initialize();
+     if (device_status == vktest::DeviceStatus::unavailable) {
+@@ -228,7 +233,8 @@ int main() {
+     const auto ps_empty_program = fssm_program({0x50530309, 0xbf810000});
+     const auto ps_write_program = fssm_program({0x50530310, 0xbf810000});
+     const auto gs_program = fssm_program({0x47530309, 0xbf810000});
+-    const auto library = std::filesystem::temp_directory_path() / "leonida_depth24_draw_test";
++    const auto library = std::filesystem::temp_directory_path() /
++                         (xbox_d16 ? "leonida_xbox_d16s8_draw_test" : "leonida_depth24_draw_test");
+     std::filesystem::create_directories(library);
+     const auto copy = std::filesystem::copy_options::overwrite_existing;
+     std::filesystem::copy_file(LEONIDA_TEST_VS_DEPTH_SPV, library / "vs_depth.spv", copy);
+@@ -279,6 +285,7 @@ int main() {
+         EXPECT(SUCCEEDED(device->CreateRootSignature(0, root_blob.data(), root_blob.size(), IID_PPV_ARGS(&root.p))));
+ 
+         Harness h;
++        if (xbox_d16) h.dsv_format = static_cast<DXGI_FORMAT>(118);
+         h.device = device.p;
+         h.root = root.p;
+         h.vs = shader_container(vs_program);
+@@ -291,18 +298,25 @@ int main() {
+         depth_desc.Width = depth_desc.Height = target_side;
+         depth_desc.DepthOrArraySize = 1;
+         depth_desc.MipLevels = 1;
+-        depth_desc.Format = DXGI_FORMAT_D24_UNORM_S8_UINT;
++        depth_desc.Format = h.dsv_format;
+         depth_desc.SampleDesc.Count = 1;
+         depth_desc.Flags = D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL;
+         D3D12_HEAP_PROPERTIES default_heap{D3D12_HEAP_TYPE_DEFAULT};
+         D3D12_CLEAR_VALUE clear{};
+-        clear.Format = DXGI_FORMAT_D24_UNORM_S8_UINT;
++        clear.Format = h.dsv_format;
+         clear.DepthStencil.Depth = 1.0f;
+         EXPECT(SUCCEEDED(device->CreateCommittedResource(&default_heap, D3D12_HEAP_FLAG_NONE, &depth_desc,
+                                                          D3D12_RESOURCE_STATE_COPY_SOURCE, &clear,
+                                                          IID_PPV_ARGS(&h.depth.p))));
+         UINT64 total = 0;
+-        device->GetCopyableFootprints(&depth_desc, 0, 2, 0, h.foot, nullptr, nullptr, &total);
++        if (xbox_d16) {
++            // Stencil is one byte per texel. The experimental format only supports its stencil footprint.
++            h.foot[1].Footprint = {DXGI_FORMAT_R8_UINT, target_side, target_side, 1, 256};
++            total = UINT64(256) * target_side;
++            EXPECT(inner->GetResourceAllocationInfo(0, 1, &depth_desc).SizeInBytes != UINT64_MAX);
++        } else {
++            device->GetCopyableFootprints(&depth_desc, 0, 2, 0, h.foot, nullptr, nullptr, &total);
++        }
+         D3D12_HEAP_PROPERTIES readback_heap{D3D12_HEAP_TYPE_READBACK};
+         const D3D12_RESOURCE_DESC readback_desc = buffer_desc(total);
+         EXPECT(SUCCEEDED(device->CreateCommittedResource(&readback_heap, D3D12_HEAP_FLAG_NONE, &readback_desc,
+@@ -326,6 +340,23 @@ int main() {
+             return n;
+         };
+         constexpr int all = int(target_side * target_side);
++        if (xbox_d16) {
++            for (bool writes_depth : {false, true}) {
++                for (bool same_code : {false, true}) {
++                    Pass p;
++                    p.shader_depth = writes_depth;
++                    p.clear = 10000.0f / 65535.0f;
++                    p.z = p.shader_z = (10000.0f + (same_code ? 0.2f : 0.8f)) / 65535.0f;
++                    p.func = D3D12_COMPARISON_FUNC_EQUAL;
++                    p.write = false;
++                    Result result;
++                    std::string error;
++                    EXPECT(h.run(p, result, error) || (std::fprintf(stderr, "%s\n", error.c_str()), false));
++                    check(passing(result) == (same_code ? all : 0), "D16 precision and S8 stencil readback");
++                }
++            }
++            std::printf("Xbox D16+S8 attachment: 4 full-surface depth comparisons, %d failures\n", g_failures);
++        } else {
+         // Without a pixel shader, with one, and through a geometry shader without one.
+         for (int mode = 0; mode < 3; ++mode) {
+             const bool ps = mode == 1, gs = mode == 2;
+@@ -459,6 +490,7 @@ int main() {
+                                   std::to_string(r.depth[0]) + ")");
+         }
+     }
++    }
+     std::filesystem::remove_all(library);
+     std::printf("%d failure(s)\n", g_failures);
+     return g_failures ? 1 : 0;
