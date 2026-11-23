@@ -1,0 +1,194 @@
+diff --git a/runtime/shims/d3d12_com.cpp b/runtime/shims/d3d12_com.cpp
+index 43703f045fda0a8fb90871e7b44730ce3499010d..71aec499214ea0cc64e5abf45a4db98d275db52b 100644
+--- a/runtime/shims/d3d12_com.cpp
++++ b/runtime/shims/d3d12_com.cpp
+@@ -1550,13 +1550,17 @@ private:
+         return draw_views_;
+     }
+ 
+-    // Report slots, never the contents of the title's root arguments or buffers.
++    // Relate root table handles to the bounded heap scan without dumping buffers or individual descriptor words.
+     void observe_graphics_inputs(std::uint64_t draw) const {
+         const auto* layout = graphics_.layout;
+         if (!layout) return;
+         std::uint32_t tables = 0, constants = 0, views = 0, vertices = 0;
+         for (const auto& p : layout->parameters) {
+             if (p.user_offset >= graphics_.data.size()) continue;
++            if (p.type == rt::rootsig::ParamType::Table)
++                std::fprintf(stderr, "[frame-graph] draw-table draw=%llu word=%u id=%x declared=%u\n",
++                             static_cast<unsigned long long>(draw), p.user_offset,
++                             graphics_.data[p.user_offset], p.table_descriptors);
+             const unsigned count = p.type == rt::rootsig::ParamType::Table ? 1u :
+                                    p.type == rt::rootsig::ParamType::Constants ? p.constant_count : 2u;
+             auto& mask = p.type == rt::rootsig::ParamType::Table ? tables :
+diff --git a/runtime/shims/d3d12_vulkan_device.cpp b/runtime/shims/d3d12_vulkan_device.cpp
+index 465aefa1be2a06d1eba51646886f6da6084452b3..cdea9e6f4aa6a8f3263d9448e11a0ab2e252253b 100644
+--- a/runtime/shims/d3d12_vulkan_device.cpp
++++ b/runtime/shims/d3d12_vulkan_device.cpp
+@@ -891,24 +891,52 @@ struct DeviceState {
+     std::map<VkDeviceSize, VkDeviceSize> cbv_heaps;
+     static constexpr VkDeviceSize kTableScanDescriptors = 1024;  // per table and submission
+ 
++    // Inspect only full descriptors in a registered shader-visible heap. Report exact image-key
++    // matches with the same lookup used by the shader's bindless descriptor set.
++    void observe_table_images(std::uint64_t table, std::uint32_t declared, VkDeviceSize end, std::uint64_t pulled) {
++        const auto slots = unsigned(std::min<VkDeviceSize>(16, (end - table) / kDescriptorSize));
++        unsigned populated = 0, images = 0, matched = 0;
++        for (unsigned i = 0; i < slots; ++i) {
++            leonida::DescriptorKey key{};
++            std::memcpy(key.data(), arena.mapped + table + i * kDescriptorSize, sizeof(key));
++            if (std::any_of(key.begin(), key.end(), [](auto word) { return word != 0; })) populated |= 1u << i;
++            if (!leonida::gfx10::is_image(key)) continue;
++            images |= 1u << i;
++            if (bindless && bindless->table().lookup(key)) matched |= 1u << i;
++        }
++        std::fprintf(stderr, "[frame-graph] table-scan id=%llx registered=1 declared=%u inspected=%u "
++                     "populated=%04x images=%04x matched=%04x pulled=%llu\n",
++                     static_cast<unsigned long long>(table), declared, slots, populated, images, matched,
++                     static_cast<unsigned long long>(pulled));
++    }
++
+     // The buffer V#s of the table at `table_va` whose base is in the title's own memory get the address of a copy,
+     // written in place: the title wrote them itself (or copied them), so no Create*View saw them. Images (T#s) and
+     // null slots are skipped; so is a V# already in the arena, so a rewritten one is left alone next time.
+     void scan_title_table(std::uint64_t table_va, std::uint32_t descriptors) {
++        static const bool graph = GetEnvironmentVariableW(L"LEONIDA_FRAME_GRAPH", nullptr, 0) != 0;
++        static std::atomic_uint64_t scans{0};
++        const auto sample = graph ? ++scans : 0;
++        const bool observe = sample && (sample <= 64 || !(sample & (sample - 1)));
+         VkDeviceSize end = 0;
+         {
+             std::lock_guard lock(cbv_heap_mutex);
+             auto it = cbv_heaps.upper_bound(table_va);
+-            if (it == cbv_heaps.begin()) return;
++            if (it == cbv_heaps.begin() || table_va >= std::prev(it)->second) {
++                if (observe)
++                    std::fprintf(stderr, "[frame-graph] table-scan id=%llx registered=0 declared=%u\n",
++                                 static_cast<unsigned long long>(table_va), descriptors);
++                return;
++            }
+             --it;
+-            if (table_va >= it->second) return;
+             end = std::min<VkDeviceSize>(
+                 it->second, table_va + VkDeviceSize(std::min<std::uint32_t>(descriptors, kTableScanDescriptors)) *
+                                            kDescriptorSize);
+         }
+         auto& aliases = leonida::title_va_aliases();
+         // Slots the title wrote in its own backing of this heap, if it gave the heap one.
+-        aliases.pull_descriptors(arena.mapped + table_va, std::size_t(end - table_va));
++        const auto pulled = aliases.pull_descriptors(arena.mapped + table_va, std::size_t(end - table_va));
++        if (observe) observe_table_images(table_va, descriptors, end, pulled);
+         for (VkDeviceSize at = table_va; at + 16 <= end; at += kDescriptorSize) {
+             auto* w = reinterpret_cast<std::uint32_t*>(arena.mapped + at);
+             const std::uint32_t w0 = w[0], w1 = w[1], w2 = w[2], w3 = w[3];
+diff --git a/runtime/shims/d3d12_xs_device.cpp b/runtime/shims/d3d12_xs_device.cpp
+index d3f80c4cdfb3a81b5d15530a6c5b6941ee14d9c4..43ca0a1be7ae2111d98f3fc476799cf8306d8439 100644
+--- a/runtime/shims/d3d12_xs_device.cpp
++++ b/runtime/shims/d3d12_xs_device.cpp
+@@ -27,6 +27,7 @@
+ #include "d3d12_xs_device.h"
+ #include "d3d12_xs_pso_stream.h"
+ #include "d3d12_xs_native_pso.h"
++#include "../src/title_va_alias.h"
+ #include "../src/frame_pacer.h"
+ #include "d3d12_trace.h"
+ #include "d3d12_xs_alloc_size.h"
+@@ -182,6 +183,30 @@ bool descriptor_memory_accessible(SIZE_T start, SIZE_T size, bool write) {
+     return true;
+ }
+ 
++// The title can fill a shader-visible heap with ordinary CPU stores into its own backing.
++// The queue requests only the declared table span before submission. Match by the real heap
++// address and hold the registration lock so a concurrent Release cannot free either allocation.
++std::uint64_t pull_title_descriptors(void*, std::uint8_t* real, std::size_t bytes) {
++    if (!real || !bytes || !g_custom_range_count.load(std::memory_order_acquire)) return 0;
++    const auto address = reinterpret_cast<SIZE_T>(real);
++    std::lock_guard lock(descriptor_range_mutex());
++    const auto& ranges = descriptor_ranges();
++    for (auto it = ranges.rbegin(); it != ranges.rend(); ++it) {
++        if (!it->mirror || address < it->real_start) continue;
++        const SIZE_T offset = address - it->real_start;
++        const SIZE_T size = it->custom_end - it->custom_start;
++        if (offset >= size || offset % it->stride) continue;
++        const SIZE_T count = std::min<SIZE_T>(bytes, size - offset) / it->stride;
++        if (!count) return 0;
++        const SIZE_T span = count * it->stride, source = it->custom_start + offset;
++        if (!descriptor_memory_accessible(source, span, false) || !descriptor_memory_accessible(address, span, true))
++            return 0;
++        std::memmove(real, reinterpret_cast<const void*>(source), span);
++        return count;
++    }
++    return 0;
++}
++
+ bool register_descriptor_range(const DeviceProxy* device, const HeapProxy* heap, SIZE_T custom_start,
+                                SIZE_T byte_size, SIZE_T real_start, UINT stride) {
+     if (custom_start == 0 || byte_size == 0 || custom_start > (std::numeric_limits<SIZE_T>::max)() - byte_size)
+@@ -199,6 +224,7 @@ bool register_descriptor_range(const DeviceProxy* device, const HeapProxy* heap,
+         descriptor_ranges().push_back({custom_start, custom_start + byte_size, real_start, device, heap, stride,
+                                        mirror});
+         g_custom_range_count.store(descriptor_ranges().size(), std::memory_order_release);
++        leonida::title_va_aliases().set_descriptor_source(nullptr, pull_title_descriptors);
+         return true;
+     } catch (const std::bad_alloc&) {
+         return false;
+diff --git a/runtime/src/title_va_alias.h b/runtime/src/title_va_alias.h
+index 829c1d874047ef608bf8f09e687c1f9c218d30b4..3abe39d786d7a53c5480ca82c99a03360b16e975 100644
+--- a/runtime/src/title_va_alias.h
++++ b/runtime/src/title_va_alias.h
+@@ -177,7 +177,7 @@ public:
+         source_context_ = context;
+         source_ = source;
+     }
+-    void pull_descriptors(std::uint8_t* real, std::size_t bytes) {
++    std::uint64_t pull_descriptors(std::uint8_t* real, std::size_t bytes) {
+         DescriptorSource source;
+         void* context;
+         {
+@@ -185,7 +185,10 @@ public:
+             source = source_;
+             context = source_context_;
+         }
+-        if (source) pulled_.fetch_add(source(context, real, bytes), std::memory_order_relaxed);
++        if (!source) return 0;
++        const auto slots = source(context, real, bytes);
++        pulled_.fetch_add(slots, std::memory_order_relaxed);
++        return slots;
+     }
+     std::uint64_t pulled() const { return pulled_.load(std::memory_order_relaxed); }
+ 
+diff --git a/runtime/test/xs_proxy_mock_test.cpp b/runtime/test/xs_proxy_mock_test.cpp
+index 3c3adbe7e9033172fc638637a174da5bec624fca..e4ef11325be92114a851102a7229bb05c6bc63e4 100644
+--- a/runtime/test/xs_proxy_mock_test.cpp
++++ b/runtime/test/xs_proxy_mock_test.cpp
+@@ -14,6 +14,7 @@
+ //     patching this executable's own import table before the first proxy table is built (one process each).
+ // Every device, queue, fence and resource here is a mock that records the calls it gets. No game data, no Xbox DLLs.
+ #include "../shims/d3d12_xs_device.h"
++#include "../src/title_va_alias.h"
+ 
+ #include <d3d12.h>
+ #include <windows.h>
+@@ -2461,8 +2462,22 @@ int check_descriptor_mirror() {
+     }
+     EXPECT(title[kCount * kInc] == kGuard);
+ 
++    // CPU stores can also start on the title side without a device API call. A table pull
++    // copies complete registered slots, including an explicit null. It cannot cross the end.
++    auto& aliases = leonida::title_va_aliases();
++    std::memset(title + 6 * kInc, 0x45, kInc);
++    std::memset(title + 7 * kInc, 0, kInc);
++    std::memset(layer + 6 * kInc, 0x17, 2 * kInc);
++    const auto neighbor = layer[6 * kInc - 1];
++    EXPECT(aliases.pull_descriptors(layer + 6 * kInc + 1, kInc) == 0);
++    EXPECT(aliases.pull_descriptors(layer + 6 * kInc, kInc - 1) == 0);
++    EXPECT(aliases.pull_descriptors(layer + 6 * kInc, 3 * kInc) == 2);
++    EXPECT(std::memcmp(layer + 6 * kInc, title + 6 * kInc, 2 * kInc) == 0 && neighbor == layer[6 * kInc - 1]);
++    EXPECT(title[kCount * kInc] == kGuard);
++
+     // Once the heap is released its range is gone, and a write at the old address touches neither side.
+     EXPECT(raw(heap, 2) == 0);
++    EXPECT(aliases.pull_descriptors(layer, kInc) == 0);
+     std::uint8_t before[kInc];
+     std::memcpy(before, title, kInc);
+     raw(device, 17, 0x11, at(0));

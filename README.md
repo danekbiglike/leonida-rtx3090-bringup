@@ -35,6 +35,15 @@ Use the 42-entry base catalogue described below for `$smallCatalog`. Supply your
 
 The draw, depth, compute and module-cache tests passed with deferred compilation both on and off. The draw fixture matched all 4,096 expected pixels and built 37 configurations on demand. The Xbox D16+S8 fixture passed in deferred mode. A second preparation of the local catalogue matched all 6,159 output files byte for byte.
 
+### Reading descriptor tables written by the title
+
+Apply [the descriptor backing patch](patches/frame-title-table-pull.patch) after the composition-input probe. On this ladder the queue had a hook for reading a table from the title's own memory, but the Xbox descriptor-heap proxy never registered a source. The proxy now copies complete slots from a live, registered backing into its corresponding Vulkan heap before submission. It checks memory access and clamps to the registered allocation. The new mock covers a CPU-written slot, an explicit null, incomplete and misaligned requests, a read crossing the end and a request following heap release.
+
+On the same extended catalogue, before this fix, all 66 sampled table scans found an allocated, entirely zero 32-byte slot. The first 20 recorded bindings in the two later drawing passes could each be correlated with one of these scans. With the callback connected, all 65 sampled scans copied one slot from the title and every slot became nonzero. None of those first slots was an image descriptor. The 25-second run submitted 75 draws into the presentation sources. All six swapchain samples and all six 4K target reads remained black in RGB. The Xbox device proxy, title-address alias, GPU title-address and pixel draw tests passed.
+
+The current root-signature scan covers one declared slot on both later passes. Offline inspection of the active translated draw programs shows that the final pass reads additional slots from the same table. Whether those entries have reached the shader-visible heap is the next measurable distinction. The earlier command-list interface issue is already passed by all of these runs. Xbox device slot 73 requests `C3827890-4024-474C-98CF-645B51DC4874`, which the loader maps to the Windows `ID3D12GraphicsCommandList6` interface. [Command-list mapping in the pinned loader](https://github.com/ASTROWwwW/Leonida/blob/b487b6d8ccf1d15d723367752a71439c3db077e5/runtime/shims/d3d12_xs_command_list_iid.h).
+
+
 ## Reproduce the first black frames
 
 Start with a clean checkout of [ladder-frame at b487b6d](https://github.com/ASTROWwwW/Leonida/tree/b487b6d8ccf1d15d723367752a71439c3db077e5). The combined patch contains the source changes used for the run, including the Windows package-read and cache-checker fixes. Apply it once to this exact base.

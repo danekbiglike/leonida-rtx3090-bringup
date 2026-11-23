@@ -1,16 +1,7 @@
 diff --git a/runtime/shims/d3d12_com.cpp b/runtime/shims/d3d12_com.cpp
-index 7a1d0050988a7594459af005d2b9a9b8e4846187..490a84936ab41a8d5a78b08058eebfae57063b1c 100644
+index 7a1d0050988a7594459af005d2b9a9b8e4846187..43703f045fda0a8fb90871e7b44730ce3499010d 100644
 --- a/runtime/shims/d3d12_com.cpp
 +++ b/runtime/shims/d3d12_com.cpp
-@@ -301,7 +301,7 @@ public:
-         set_pipeline(state);
-     }
- 
--    // Validates shader-visible descriptor heaps and tracks bound heap identities/bases (docs/d3d12_vulkan.md §3.2/§3.4).
-+    // Validates shader-visible descriptor heaps and tracks bound heap identities/bases (docs/d3d12_vulkan.md В§3.2/В§3.4).
-     void STDMETHODCALLTYPE SetDescriptorHeaps(UINT num, ID3D12DescriptorHeap* const* heaps) override {
-         d3d12_trace::record("ID3D12GraphicsCommandList::SetDescriptorHeaps");
-         if (type_ == D3D12_COMMAND_LIST_TYPE_COPY) return check(false);
 @@ -1253,6 +1253,7 @@ private:
      struct RootState {
          const RootArgumentLayout* layout = nullptr;
