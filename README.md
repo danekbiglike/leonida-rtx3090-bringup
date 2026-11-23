@@ -1,6 +1,6 @@
 # GTA VI Xbox to PC on an RTX 3090 with Leonida
 
-This repository contains two small, independently tested changes for contributors investigating local, offline startup on Windows. The newest retail run recorded here reaches graphics initialization. A rendered game frame and an interactive main menu are still unverified.
+This repository contains two small, independently tested changes for contributors investigating local, offline startup on Windows. The latest RTX 3090 runs passed BVH pipeline creation and reached graphics command submission. A rendered frame and an interactive main menu are still unverified.
 
 ## Reproduce the Windows package-read fix
 
@@ -42,7 +42,23 @@ In separate retail runs on a local runtime with the earlier storage and startup 
 
 ## Shader work on the RTX 3090
 
-The local shader build translated all 52 XboxBvhBuilder programs and passed all 52 through SPIRV-Tools validation. The offline Vulkan pipeline checker created all 52 compute pipelines on this device. A retail run loaded the resulting 5,674,578-byte cache and still stopped about 32 seconds after launch. Loading a cache establishes that the runtime accepted the file. Driver cache hits require separate measurement.
+The local shader build translated all 52 XboxBvhBuilder programs and passed all 52 through SPIRV-Tools validation. The offline Vulkan pipeline checker created all 52 compute pipelines on this device. The following measurements used the same translated programs and three checker workers.
+
+| Cache configuration | Result on the RTX 3090 |
+| --- | --- |
+| Original checker, cold build | 52 pipelines compiled. The runtime loaded the 5,674,578-byte seed and stopped at the first BVH pipeline after about 32 seconds. |
+| Checker with [PR 7474](https://github.com/ItsNotRexed/Leonida/pull/7474), seeded from the first file | The driver reported 52 misses while building. The cache grew to 11,349,216 bytes. |
+| Same patched checker, rereading that cache | The driver reported 52 hits, 0 misses, and 0.04 seconds of total compute compile time. |
+| Retail run with the updated cache | The loader read 11,349,216 bytes. The title passed BVH initialization and reached command-signature creation at device slot 41 after 1,656 traced D3D12 calls. |
+
+The cache hits in the table come from the checker's driver feedback. The retail result comes from the runtime trace. On this machine, placing the locally generated cache next to the runner allowed the runtime to read it.
+
+```powershell
+cmake --build build --target vk_pipeline_check
+.\build\vk_pipeline_check.exe "$work\shaders\spirv\bvh" ".\build\pipeline_cache.bin" --jobs 3 --cache-feedback
+```
+
+On [ladder-frame](https://github.com/ASTROWwwW/Leonida/tree/b487b6d8ccf1d15d723367752a71439c3db077e5), a trace with only BVH inputs reported 31 missing vertex program hashes. Thirty matched programs in the main shader archive. One matched an embedded executable shader. All ten embedded shaders translated and passed validation. Making those programs available exposed ten additional pixel programs from the main archive. After translating these ten as well, an initial render-path trial no longer reported missing FSSM vertex or pixel programs before its stop. Pipeline-library compute programs are a separate input at device slot 67.
 
 For a full work folder, run the shaders stage on your own local package. Native AMDGPU-enabled LLVM 21.1.8 and SPIRV-Tools 2026.4 were used here. Keep the work directory on a drive with room for the generated outputs.
 
