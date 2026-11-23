@@ -1,6 +1,6 @@
 # GTA VI Xbox to PC on an RTX 3090 with Leonida
 
-Local, offline startup reached the title's own window on a Windows RTX 3090. The latest run passed the Xbox command-list factory and the six-slice depth/UAV allocation, then stopped with a memory access error. All twelve swapchain samples were black, including present 12,527. An interactive main menu has yet to be demonstrated.
+The Xbox build opens its own window on a Windows RTX 3090. In a 52-second offline run the title completed 9,746 DirectStorage file requests and submitted draws. Four reads of the 4K draw target and all 22 sampled presents were black. An interactive menu remains unverified. See [the measured frame and storage results](#draw-target-and-storage-completions).
 
 ## Reproduce the first black frames
 
@@ -218,3 +218,26 @@ cmake --build build --target root_signature_test d3d12_draw_test d3d12_heap_inde
 ```
 
 The heap-index target requires llvm-mc, spirv-as and spirv-val when configuring the build.
+
+## Draw target and storage completions
+
+Apply these patches in order after the graphics root-register patch.
+
+1. [Submitted draw-target readback](patches/frame-submitted-target-readback.patch) adds an opt-in readback of the first color target after successful submissions containing draws 1, 2, 8 and 32. It also counts explicit copies, resolves and clears in the first 4,096 submitted batches. Set `LEONIDA_FRAME_GRAPH=1` for this measurement and `LEONIDA_FRAME_PROBE=1` for the existing swapchain measurement. Readbacks serialize GPU work and may affect timing.
+2. [Descriptor writeback](patches/frame-title-descriptor-writeback.patch) incorporates AAyberkU's [PR 9586](https://github.com/ItsNotRexed/Leonida/pull/9586), extends writeback to this branch's device slot 70, and checks that the destination is writable. The mock tests cover a typed buffer descriptor and its neighboring bytes.
+3. [DirectStorage completion trace](patches/frame-storage-completion-trace.patch) ports [gautch29's trace patch](https://github.com/ItsNotRexed/Leonida/issues/8851#issuecomment-7114972782). Pass `--trace boot.jsonl` to the local runner. Join the `dstorage` events by `queue` and `entry` to distinguish queued, submitted, started and completed commands. The trace also records the completion HRESULT.
+
+On Windows with an RTX 3090, the same 102-entry shader catalogue and the title-memory shadows enabled, the 52-second run ended at the configured time limit.
+
+| Observation | Measurement |
+| --- | --- |
+| Color attachment after submissions containing draws 1, 2, 8, 32 | 0 of 8,294,400 pixels with nonzero RGB each time. The 64×64 draw fixture produced 3,840, 3,840 and 4,096 colored pixels using the same probe. |
+| PresentX readbacks | 22 samples through present 253. All 2,720,404 sampled pixels in each were black. |
+| Resource identities | One sampled draw target and two alternating presentation sources. The observed submissions contained 162 color clears and no explicit resource copies, texture copies or resolves. Shader reads are outside this counter. |
+| Descriptor writeback | At least 8,192 writes observed, with 32-byte descriptors at the last logged milestone. |
+| DirectStorage | 9,746 file requests and 335 statuses reached all four phases and completed successfully. No pending entries at the cutoff. File completions ran from 3.698 s to 51.172 s, with 16 in the final five-second bin. No fence or event entries were recorded. |
+| Process I/O | Windows `GetProcessIoCounters` reports 157,007,690 read bytes at 5 s, 1,084,573,604 at 20 s and 1,127,151,554 at 52 s. The total was flat at the 30, 35, 40 and 45 s samples and advanced again by 50 s. These are all process reads. |
+
+A preceding 35-second run using the draw-target probe without the descriptor-writeback patch also returned black from all four target reads. Both runs used a small shader catalogue. The remaining pipeline misses and the relationship between the draw target and the two presentation sources are still open. The local ladder base also forwards Xbox device slot 57 to the PC lifetime-tracker method. The [slot-57 graphics pipeline implementation](https://github.com/ItsNotRexed/Leonida/pull/8890) addresses that different ABI.
+
+Validation included the native draw, heap-index, device-proxy, Xbox proxy mock and title-VA fixtures, 337 DirectStorage checks and 22 Python trace tests. All twelve patches applied in sequence to the pinned ladder base. Build the shader fixtures with LLVM and SPIRV-Tools available at configure time.

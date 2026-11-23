@@ -1,0 +1,137 @@
+diff --git a/runtime/shims/d3d12_com.cpp b/runtime/shims/d3d12_com.cpp
+index 314aba2b71c66244ebb236b4cddcccdd495c1c37..76d7edebbaac537c8fc9595fbf84f8e3fb360782 100644
+--- a/runtime/shims/d3d12_com.cpp
++++ b/runtime/shims/d3d12_com.cpp
+@@ -1743,6 +1743,79 @@ public:
+         return desc;
+     }
+ 
++    // Inspect only images from the local resource registry, after successful submission. The
++    // ordinary readback path handles staging and tracks image layouts for subsequent commands.
++    void sample_submitted_target(const leonida::TargetView& view, std::uint64_t draw) {
++        if (!context_.retain_color_target(view.resource)) return;
++        auto release = [](ID3D12Resource* r) { r->Release(); };
++        std::unique_ptr<ID3D12Resource, decltype(release)> target(reinterpret_cast<ID3D12Resource*>(view.resource), release);
++        const auto d = target->GetDesc();
++        if (d.Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE2D || view.mip >= d.MipLevels || view.mip >= 32 ||
++            view.first_layer >= d.DepthOrArraySize || d.SampleDesc.Count != 1 || !d.Width || !d.Height) return;
++        unsigned words = 1;
++        std::uint32_t masks[4]{};
++        switch (d.Format) {
++        case DXGI_FORMAT_R8G8B8A8_TYPELESS: case DXGI_FORMAT_R8G8B8A8_UNORM: case DXGI_FORMAT_R8G8B8A8_UNORM_SRGB:
++        case DXGI_FORMAT_B8G8R8A8_TYPELESS: case DXGI_FORMAT_B8G8R8A8_UNORM: case DXGI_FORMAT_B8G8R8A8_UNORM_SRGB:
++            masks[0] = 0x00ffffffu; break;
++        case DXGI_FORMAT_R10G10B10A2_TYPELESS: case DXGI_FORMAT_R10G10B10A2_UNORM:
++            masks[0] = 0x3fffffffu; break;
++        case DXGI_FORMAT_R11G11B10_FLOAT:
++            masks[0] = UINT32_MAX; break;
++        case DXGI_FORMAT_R16G16B16A16_FLOAT:
++            words = 2; masks[0] = 0x7fff7fffu; masks[1] = 0x7fffu; break;
++        case DXGI_FORMAT_R32G32B32A32_FLOAT:
++            words = 4; masks[0] = masks[1] = masks[2] = 0x7fffffffu; break;
++        default:
++            std::fprintf(stderr, "[frame-graph] readback unsupported format=%u id=%llx\n", unsigned(d.Format),
++                         static_cast<unsigned long long>(view.resource));
++            return;
++        }
++        const auto w = std::max<UINT64>(1, d.Width >> view.mip);
++        const auto h = std::max<UINT>(1, d.Height >> view.mip);
++        if (w > 16384 || h > 16384 || w * h * words > 33554432) return;
++        const auto count = static_cast<std::size_t>(w * h);
++        std::vector<std::uint32_t> pixels(count * words);
++        const UINT layer = view.first_layer * d.MipLevels + view.mip;
++        const HRESULT hr = target->ReadFromSubresource(pixels.data(), UINT(w * words * 4), UINT(count * words * 4), layer, nullptr);
++        std::size_t lit = 0;
++        if (SUCCEEDED(hr)) {
++            for (std::size_t i = 0; i < pixels.size(); i += words) {
++                std::uint32_t visible = 0;
++                for (unsigned j = 0; j < words; ++j) visible |= pixels[i + j] & masks[j];
++                if (visible) ++lit;
++            }
++        }
++        std::fprintf(stderr, "[frame-graph] after-draw=%llu target=%llx format=%u mip=%u layer=%u pixels=%zu nonblack=%zu hr=%08lx\n",
++                     static_cast<unsigned long long>(draw), static_cast<unsigned long long>(view.resource), unsigned(d.Format),
++                     view.mip, view.first_layer, count, lit, static_cast<unsigned long>(hr));
++    }
++
++    void observe_submission(const std::vector<const leonida::CommandList*>& recorded) {
++        static std::atomic_uint64_t batches{0}, draws{0};
++        const auto batch = ++batches;
++        if (batch > 4096) return;
++        for (const auto* list : recorded) for (const auto& command : list->commands()) {
++            if (const auto* draw = std::get_if<leonida::Draw>(&command)) {
++                if (!draw->views || !draw->views->render_target_count) continue;
++                const auto& target = draw->views->render_targets[0];
++                const auto n = ++draws;
++                if (n <= 2 || n == 8 || n == 32) sample_submitted_target(target, n);
++            } else if (const auto* copy = std::get_if<leonida::CopyResource>(&command)) {
++                std::fprintf(stderr, "[frame-graph] copy-resource %llx %llx\n",
++                             static_cast<unsigned long long>(copy->src), static_cast<unsigned long long>(copy->dst));
++            } else if (const auto* copy = std::get_if<leonida::CopyTexture>(&command)) {
++                std::fprintf(stderr, "[frame-graph] copy-texture %llx %llx\n",
++                             static_cast<unsigned long long>(copy->src.resource), static_cast<unsigned long long>(copy->dst.resource));
++            } else if (const auto* resolve = std::get_if<leonida::ResolveSubresource>(&command)) {
++                std::fprintf(stderr, "[frame-graph] resolve %llx %llx\n",
++                             static_cast<unsigned long long>(resolve->src), static_cast<unsigned long long>(resolve->dst));
++            } else if (const auto* clear = std::get_if<leonida::ClearRenderTarget>(&command)) {
++                std::fprintf(stderr, "[frame-graph] clear %llx\n", static_cast<unsigned long long>(clear->target.resource));
++            }
++        }
++    }
++
+     void STDMETHODCALLTYPE ExecuteCommandLists(UINT count, ID3D12CommandList* const* lists) override {
+         constexpr auto method = "ID3D12CommandQueue::ExecuteCommandLists";
+         std::lock_guard lock(mutex_);
+@@ -1803,6 +1876,8 @@ public:
+             }
+         }
+         last_result_ = queue_.execute(recorded, [&graphics] { return pin_lists(graphics); });
++        static const bool observe = GetEnvironmentVariableW(L"LEONIDA_FRAME_GRAPH", nullptr, 0) != 0;
++        if (observe && last_result_ == leonida::ReplayResult::success) observe_submission(recorded);
+         d3d12_trace::record(method, last_result_ == leonida::ReplayResult::success ? "ok" : "failed");
+         if (last_result_ != leonida::ReplayResult::success)
+             std::fprintf(stderr, "[rt] d3d12: ExecuteCommandLists failed: %s; nothing was submitted\n",
+diff --git a/runtime/shims/d3d12_vulkan_device.cpp b/runtime/shims/d3d12_vulkan_device.cpp
+index 545490d342ceb05b56465a95052f29ef2528e834..7197b3d2022410c6e922e77f636d8da5f04d61de 100644
+--- a/runtime/shims/d3d12_vulkan_device.cpp
++++ b/runtime/shims/d3d12_vulkan_device.cpp
+@@ -2627,6 +2627,10 @@ public:
+ 
+         leonida::ResourceBinding binding{};
+         binding.image = image_;
++        if (format.aspects == VK_IMAGE_ASPECT_COLOR_BIT && (desc_.Flags & D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET))
++            binding.retain_color_target = [](leonida::ResourceId id) {
++                return static_cast<Resource*>(reinterpret_cast<ID3D12Resource*>(id))->try_add_ref();
++            };
+         binding.typeless = format.typeless && format.aspects == VK_IMAGE_ASPECT_COLOR_BIT;  // views name their format
+         binding.castable_view_formats = !view_formats_.empty();  // a castable list made the image mutable
+         binding.uint_backed = format.uint_backed;
+diff --git a/runtime/src/vulkan_backend.h b/runtime/src/vulkan_backend.h
+index 2ec8b134685ce9a2659915f6dff876ed16244817..14d105a48f2e6798aeab36b2fde7c600699c5712 100644
+--- a/runtime/src/vulkan_backend.h
++++ b/runtime/src/vulkan_backend.h
+@@ -1288,6 +1288,12 @@ public:
+         return tracker_.layout(id, subresource);
+     }
+ 
++    bool retain_color_target(ResourceId id) {
++        std::shared_lock lock(resource_mutex_);
++        const auto it = resources_.find(id);
++        return it != resources_.end() && it->second.retain_color_target && it->second.retain_color_target(id);
++    }
++
+     bool has_resource(ResourceId id) {
+         std::shared_lock lock(resource_mutex_);
+         return resources_.find(id) != resources_.end();
+diff --git a/runtime/src/vulkan_replay.h b/runtime/src/vulkan_replay.h
+index 84b90c4e61cc29203a8fe15cfd6b06e11204075d..1124d2d84a5c37a85616d03710c043726183745f 100644
+--- a/runtime/src/vulkan_replay.h
++++ b/runtime/src/vulkan_replay.h
+@@ -98,6 +98,7 @@ struct ResourceBinding {
+     bool sampled = false;              // has SAMPLED usage (no DENY_SHADER_RESOURCE): the present compose pass reads it
+     bool host_readable = false;        // D3D12_HEAP_TYPE_READBACK (or CUSTOM write-back): needs host-read flush
+     bool sparse_buffer = false;
++    bool (*retain_color_target)(ResourceId) = nullptr;  // optional COM readback diagnostic
+ };
+ 
+ struct VulkanAccess {

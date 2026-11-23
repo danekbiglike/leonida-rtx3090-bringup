@@ -1,0 +1,420 @@
+diff --git a/runtime/shims/dstorage.cpp b/runtime/shims/dstorage.cpp
+index e030237a70b29786c7d8870339f3cf51c957d272..5960c3d85e82ae76720abd78a01f149f3ab93feb 100644
+--- a/runtime/shims/dstorage.cpp
++++ b/runtime/shims/dstorage.cpp
+@@ -35,6 +35,7 @@
+ #include "../src/shader_library.h"  // leonida::zlib_inflate
+ #include "dstorage_xs_abi.h"
+ #include "shims.h"
++#include "startup_trace.h"
+ 
+ using namespace dsx;
+ 
+@@ -71,6 +72,31 @@ std::string hr_text(HRESULT hr) {
+     return b;
+ }
+ 
++// Opt-in startup evidence. IDs are local counters, and the trace contains no paths or request data.
++std::atomic<uint64_t> next_trace_queue{1};
++
++void trace_storage(const char* phase, HRESULT result = S_OK, uint64_t queue = 0, uint64_t entry = 0,
++                   const char* type = "call") noexcept {
++    if (!rt::startup_trace::enabled()) return;
++    const DWORD last_error = GetLastError();
++    char fields[224];
++    std::snprintf(fields, sizeof fields,
++                  "\"phase\":\"%s\",\"entry_type\":\"%s\",\"queue\":%llu,\"entry\":%llu,\"result\":%lu",
++                  phase, type, static_cast<unsigned long long>(queue), static_cast<unsigned long long>(entry),
++                  static_cast<unsigned long>(static_cast<uint32_t>(result)));
++    try {
++        rt::startup_trace::event("dstorage", fields);
++    } catch (...) {
++        // A trace allocation failure must not turn a storage result into an exception.
++    }
++    SetLastError(last_error);
++}
++
++HRESULT trace_storage_result(const char* phase, HRESULT result) noexcept {
++    trace_storage(phase, result);
++    return result;
++}
++
+ // ---- Interface ids ------------------------------------------------------------------------------------------------
+ //
+ // The X interfaces' ids are not public. A creating call (DStorageGetFactory, CreateQueue*, OpenFile,
+@@ -455,6 +481,7 @@ struct Entry {
+     ID3D12Fence* fence = nullptr;  // a reference
+     uint64_t value = 0;
+     HANDLE event = nullptr;  // a duplicate the entry owns
++    uint64_t trace_id = 0;
+ };
+ 
+ class Queue final : public IDStorageQueueX2 {
+@@ -659,14 +686,30 @@ private:
+     bool auto_submit() const { return !desc_.Options.AutoSubmitDisabled; }
+     size_t used_locked() const { return entries_.size() + (in_flight_ ? 1 : 0); }
+ 
++    void trace_entry(const char* phase, const Entry& e, HRESULT result = S_OK) const noexcept {
++        if (!e.trace_id) return;
++        const char* type = "status";
++        switch (e.type) {
++            case Entry::Type::Request:
++                type = desc_.SourceType == DSTORAGE_REQUEST_SOURCE_FILE ? "file_request" : "memory_request";
++                break;
++            case Entry::Type::Status: break;
++            case Entry::Type::Signal: type = "fence"; break;
++            case Entry::Type::Event: type = "event"; break;
++        }
++        trace_storage(phase, result, trace_queue_, e.trace_id, type);
++    }
++
+     void enqueue(Entry&& e) {
+         {
+             std::unique_lock lock(mutex_);
+             // A full queue waits for the worker to free a slot. With auto-submit on, half the queue is always
+             // submitted by then; with it off, only a Submit from another thread frees one (as the reference warns).
+             space_.wait(lock, [&] { return closing_ || used_locked() < usable(); });
++            if (rt::startup_trace::enabled()) e.trace_id = ++next_trace_entry_;
+             if (!closing_) {
+                 entries_.push_back(std::move(e));
++                trace_entry("queued", entries_.back());
+                 if (auto_submit() && entries_.size() - submitted_ >= half()) submit_locked();
+                 return;
+             }
+@@ -675,6 +718,7 @@ private:
+         f.HResult = E_DSTORAGE_QUEUE_CLOSED;
+         describe(e, f);
+         record_failure(f);
++        trace_entry("rejected", e, E_DSTORAGE_QUEUE_CLOSED);
+         log_once("closed", "an entry was enqueued on a closed queue (E_DSTORAGE_QUEUE_CLOSED); it never completes");
+         release_references(e);
+     }
+@@ -684,6 +728,7 @@ private:
+         uint64_t source_bytes = 0, destination_bytes = 0;
+         for (size_t i = submitted_; i < entries_.size(); ++i) {
+             Entry& e = entries_[i];
++            trace_entry("submitted", e);
+             if (e.file) e.file_counted = e.file->add_pending();
+             if (e.counted) {
+                 ++requests;
+@@ -731,6 +776,8 @@ private:
+     // HRESULT a status entry reports.
+     void process(Entry& e) {
+         HRESULT hr = e.enqueue_error;
++        const HRESULT status_result = since_notify_;
++        trace_entry("started", e);
+         switch (e.type) {
+             case Entry::Type::Request:
+                 // A cancelled request is a success whatever else is wrong with it (the GDK: not counted as a failure).
+@@ -778,6 +825,8 @@ private:
+             describe(e, f);
+             record_failure(f);
+         }
++        trace_entry(e.cancelled ? "cancelled" : "complete", e,
++                    e.type == Entry::Type::Status && SUCCEEDED(hr) ? status_result : hr);
+     }
+ 
+     HRESULT execute_request(const Entry& e) {
+@@ -957,6 +1006,8 @@ private:
+ 
+     std::atomic<ULONG> refs_{1};
+     const DSTORAGE_QUEUE_DESC1 desc_;
++    const uint64_t trace_queue_ = next_trace_queue.fetch_add(1, std::memory_order_relaxed);
++    uint64_t next_trace_entry_ = 0;  // under mutex_
+     std::mutex close_mutex_;  // one Close at a time
+     std::mutex mutex_;        // entries_, submitted_, in_flight_, closing_, closed_
+     std::condition_variable work_, space_, idle_;
+@@ -1013,42 +1064,49 @@ public:
+     }
+ 
+     HRESULT STDMETHODCALLTYPE CreateQueue(const DSTORAGE_QUEUE_DESC* desc, REFIID riid, void** ppv) override {
+-        if (!ppv) return bad_call("IDStorageFactoryX::CreateQueue", E_POINTER, "null ppv");
++        if (!ppv)
++            return trace_storage_result("queue", bad_call("IDStorageFactoryX::CreateQueue", E_POINTER, "null ppv"));
+         *ppv = nullptr;
+-        if (!desc) return bad_call("IDStorageFactoryX::CreateQueue", E_INVALIDARG, "null desc");
++        if (!desc)
++            return trace_storage_result("queue", bad_call("IDStorageFactoryX::CreateQueue", E_INVALIDARG, "null desc"));
+         DSTORAGE_QUEUE_DESC1 d{};
+         d.SourceType = desc->SourceType;
+         d.Capacity = desc->Capacity;
+         d.Priority = desc->Priority;
+         d.Name = desc->Name;
+-        return create_queue(d, riid, ppv, "IDStorageFactoryX::CreateQueue");
++        return trace_storage_result("queue", create_queue(d, riid, ppv, "IDStorageFactoryX::CreateQueue"));
+     }
+ 
+     HRESULT STDMETHODCALLTYPE CreateQueue1(const DSTORAGE_QUEUE_DESC1* desc, REFIID riid, void** ppv) override {
+-        if (!ppv) return bad_call("IDStorageFactoryX2::CreateQueue1", E_POINTER, "null ppv");
++        if (!ppv)
++            return trace_storage_result("queue", bad_call("IDStorageFactoryX2::CreateQueue1", E_POINTER, "null ppv"));
+         *ppv = nullptr;
+-        if (!desc) return bad_call("IDStorageFactoryX2::CreateQueue1", E_INVALIDARG, "null desc");
+-        return create_queue(*desc, riid, ppv, "IDStorageFactoryX2::CreateQueue1");
++        if (!desc)
++            return trace_storage_result("queue", bad_call("IDStorageFactoryX2::CreateQueue1", E_INVALIDARG, "null desc"));
++        return trace_storage_result("queue", create_queue(*desc, riid, ppv, "IDStorageFactoryX2::CreateQueue1"));
+     }
+ 
+     HRESULT STDMETHODCALLTYPE OpenFile(const WCHAR* path, REFIID riid, void** ppv) override {
+-        if (!ppv) return bad_call("IDStorageFactoryX::OpenFile", E_POINTER, "null ppv");
++        trace_storage("open_begin");
++        if (!ppv) return trace_storage_result("open", bad_call("IDStorageFactoryX::OpenFile", E_POINTER, "null ppv"));
+         *ppv = nullptr;
+-        if (!path || !*path) return bad_call("IDStorageFactoryX::OpenFile", E_INVALIDARG, "null or empty path");
+-        if (!iid_policy().accept_creating(riid, Kind::File, "IDStorageFactoryX::OpenFile")) return E_NOINTERFACE;
++        if (!path || !*path)
++            return trace_storage_result("open", bad_call("IDStorageFactoryX::OpenFile", E_INVALIDARG, "null or empty path"));
++        if (!iid_policy().accept_creating(riid, Kind::File, "IDStorageFactoryX::OpenFile"))
++            return trace_storage_result("open", E_NOINTERFACE);
+         const HANDLE h = create_file_w()(path, GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
+                                          FILE_ATTRIBUTE_NORMAL, nullptr);
+         if (h == INVALID_HANDLE_VALUE) {
+             const DWORD error = GetLastError();
+-            return HRESULT_FROM_WIN32(error ? error : ERROR_FILE_NOT_FOUND);
++            return trace_storage_result("open", HRESULT_FROM_WIN32(error ? error : ERROR_FILE_NOT_FOUND));
+         }
+         File* f = new (std::nothrow) File(h, path);
+         if (!f) {
+             CloseHandle(h);
+-            return E_OUTOFMEMORY;
++            return trace_storage_result("open", E_OUTOFMEMORY);
+         }
+         *ppv = static_cast<IDStorageFileX*>(f);
+-        return S_OK;
++        return trace_storage_result("open", S_OK);
+     }
+ 
+     HRESULT STDMETHODCALLTYPE CreateStatusArray(UINT32 capacity, PCSTR, REFIID riid, void** ppv) override {
+@@ -1119,13 +1177,14 @@ Factory& factory() {
+ }
+ 
+ HRESULT WINAPI dstorage_get_factory(REFIID riid, void** ppv) {
+-    if (!ppv) return bad_call("DStorageGetFactory", E_POINTER, "null ppv");
++    if (!ppv) return trace_storage_result("factory", bad_call("DStorageGetFactory", E_POINTER, "null ppv"));
+     *ppv = nullptr;
+-    if (!iid_policy().accept_creating(riid, Kind::Factory, "DStorageGetFactory")) return E_NOINTERFACE;
++    if (!iid_policy().accept_creating(riid, Kind::Factory, "DStorageGetFactory"))
++        return trace_storage_result("factory", E_NOINTERFACE);
+     Factory& f = factory();
+     f.AddRef();
+     *ppv = static_cast<IDStorageFactoryX2*>(&f);
+-    return S_OK;
++    return trace_storage_result("factory", S_OK);
+ }
+ 
+ }  // namespace
+diff --git a/runtime/test/dstorage_test.cpp b/runtime/test/dstorage_test.cpp
+index 1e8ea73183134481c82b25b9daa12f9da9539265..70fe434f46b1c225fd9092bd8e276367d762d10d 100644
+--- a/runtime/test/dstorage_test.cpp
++++ b/runtime/test/dstorage_test.cpp
+@@ -10,7 +10,9 @@
+ #include <cstdlib>
+ #include <cstring>
+ #include <filesystem>
++#include <fstream>
+ #include <functional>
++#include <iterator>
+ #include <string>
+ #include <thread>
+ #include <vector>
+@@ -18,6 +20,7 @@
+ #include "dstorage_xs_abi.h"
+ #include "file_system.h"
+ #include "shims.h"
++#include "startup_trace.h"
+ 
+ using namespace dsx;
+ namespace fs = std::filesystem;
+@@ -1217,6 +1220,45 @@ void test_zlib(Env& env) {
+     check(after.PendingDecompressionRequestCount == 0, "no decompression is pending afterwards");
+ }
+ 
++void test_startup_trace(Env& env) {
++    const fs::path path = env.root / L"dstorage-startup.jsonl";
++    const bool tracing = rt::startup_trace::open(path.c_str());
++    check(tracing, "start the DirectStorage trace");
++    if (!tracing) return;
++
++    auto* file = open(env, L"GAME:\\data\\b.bin");
++    auto* queue = make_queue(env, 0x80, false);
++    auto* status = make_status(env, 1);
++    std::vector<uint8_t> bytes(8);
++    const auto good = file_request(file, 0, bytes.data(), static_cast<uint32_t>(bytes.size()));
++    const auto bad = file_request(file, env.b.size(), bytes.data(), static_cast<uint32_t>(bytes.size()));
++    queue->EnqueueRequest(&good);
++    queue->EnqueueRequest(&bad);
++    queue->EnqueueStatus(status, 0);
++    queue->Submit();
++    queue->Close();
++    check_hr(status->GetHResult(0), E_DSTORAGE_END_OF_FILE, "trace leaves the read failure visible to the title");
++    check(std::equal(bytes.begin(), bytes.end(), env.b.begin()), "trace leaves the successful read intact");
++    status->Release();
++    queue->Release();
++    file->Release();
++    rt::startup_trace::close();
++
++    std::ifstream input(path, std::ios::binary);
++    const std::string trace{std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>()};
++    const auto opened = trace.find("\"phase\":\"open\",\"entry_type\":\"call\"");
++    const auto queued = trace.find("\"phase\":\"queued\",\"entry_type\":\"file_request\"");
++    const auto submitted = trace.find("\"phase\":\"submitted\",\"entry_type\":\"file_request\"");
++    const auto started = trace.find("\"phase\":\"started\",\"entry_type\":\"file_request\"");
++    const auto complete = trace.find("\"phase\":\"complete\",\"entry_type\":\"file_request\"");
++    const auto notified = trace.find("\"phase\":\"complete\",\"entry_type\":\"status\"");
++    check(opened < queued && queued < submitted && submitted < started && started < complete &&
++              complete < notified && notified != std::string::npos,
++          "trace follows a file open, enqueue, submit, worker start, read completion and status notification");
++    const std::string failure = "\"result\":" + std::to_string(static_cast<uint32_t>(E_DSTORAGE_END_OF_FILE));
++    check(trace.find(failure, notified) < trace.find('\n', notified), "trace records the HRESULT delivered to status");
++}
++
+ }  // namespace
+ 
+ int main() {
+@@ -1253,6 +1295,7 @@ int main() {
+     test_stats_timing(env);
+     test_stats(env);
+     test_zlib(env);  // after test_stats, whose request totals it would change
++    test_startup_trace(env);
+ 
+     fs::remove_all(env.root, ec);
+     std::printf("dstorage: %d checks, %d failures\n", g_checks, g_failures);
+diff --git a/tests/test_boot_trace.py b/tests/test_boot_trace.py
+index e11ced9f7779cb79699748847a0918f8cf19cd53..cef16d782c5597acaa3f249c929b3efcc06b0587 100644
+--- a/tests/test_boot_trace.py
++++ b/tests/test_boot_trace.py
+@@ -137,6 +137,42 @@ class BootTraceTests(unittest.TestCase):
+         self.assertIs(trace["exceptions"][1]["cpp"], True)
+         self.assertEqual(trace["exit"], 0)
+ 
++    def test_directstorage_reports_where_requests_stopped(self):
++        def storage(phase, entry_type="call", queue=0, entry=0, result=0):
++            return {"kind": "dstorage", "phase": phase, "entry_type": entry_type,
++                    "queue": queue, "entry": entry, "result": result}
++
++        error = 0x80070002
++        events = [STARTUP[0], storage("factory"), storage("open_begin"), storage("open", result=error),
++                  storage("open_begin"), storage("open"), storage("queue")]
++        events.extend(storage(phase, "file_request", 1, 1, error if phase == "complete" else 0)
++                      for phase in ("queued", "submitted", "started", "complete"))
++        events.extend(storage(phase, "status", 1, 2, error if phase == "complete" else 0)
++                      for phase in ("queued", "submitted", "started", "complete"))
++        events.extend(storage(phase, "memory_request", 1, 3)
++                      for phase in ("queued", "submitted", "started", "cancelled"))
++        events.extend([storage("queued", "file_request", 2, 1),
++                       storage("queued", "fence", 2, 2), storage("submitted", "fence", 2, 2),
++                       storage("queued", "event", 2, 3), storage("submitted", "event", 2, 3),
++                       storage("started", "event", 2, 3),
++                       storage("rejected", "status", 2, 4, 0x80004005),
++                       storage("queued", "file_request", False, 8),
++                       storage("complete", "file_request", 2, 1, "malformed")])
++        self.write(self.startup, events)
++        trace = bt.parse_startup(self.startup)
++        counts = trace["direct_storage"]
++        self.assertEqual(counts["counts"]["queued file_request"], 2)
++        self.assertEqual(counts["counts"]["complete file_request"], 1)
++        self.assertEqual(counts["counts"]["open"], 2)
++        self.assertEqual(counts["failures"], {
++            "open 0x80070002": 1, "complete file_request 0x80070002": 1,
++            "complete status 0x80070002": 1, "rejected status 0x80004005": 1,
++        })
++        self.assertEqual(counts["unfinished"], {"queued file_request": 1, "submitted fence": 1, "started event": 1})
++        output = bt.format_text(bt.summarize(trace, None), 20)
++        self.assertIn("DirectStorage unfinished entries: queued file_request = 1", output)
++        self.assertNotIn("malformed", output)
++
+     def test_exception_limit_keeps_final_observation(self):
+         early = [
+             {"kind": "exception", "code": "0xe06d7363", "at": f"synthetic.exe+0x{0x1100 + i:x}", "cpp": True}
+diff --git a/tools/boot_trace.py b/tools/boot_trace.py
+index b4afd673705b19d2f6c24004b763ff82d9e80636..6b389c473d638920636753c0b7b27b5f6275d87a 100644
+--- a/tools/boot_trace.py
++++ b/tools/boot_trace.py
+@@ -31,6 +31,10 @@ import re
+ import sys
+ 
+ D3D12_LINE = re.compile(r"^(?:.+ : )?\[d3d12-trace\] #(\d+) (.+) (\S+)\s*$")
++STORAGE_CALLS = ("factory", "queue", "open_begin", "open")
++STORAGE_PROGRESS = ("queued", "submitted", "started")
++STORAGE_END = ("complete", "cancelled", "rejected")
++STORAGE_ENTRY_TYPES = ("file_request", "memory_request", "status", "fence", "event")
+ 
+ 
+ class TraceError(ValueError):
+@@ -48,6 +52,34 @@ def _open_text(path: str):
+         raise TraceError(f"cannot read {path}: {e.strerror or e}") from e
+ 
+ 
++def _record_storage(trace: dict, pending: dict, event: dict) -> None:
++    phase, entry_type, result = (event.get(key) for key in ("phase", "entry_type", "result"))
++    if type(result) is not int or not 0 <= result <= 0xFFFFFFFF:
++        return
++    if entry_type == "call" and phase in STORAGE_CALLS:
++        label = phase
++    elif entry_type in STORAGE_ENTRY_TYPES and phase in STORAGE_PROGRESS + STORAGE_END:
++        queue, entry = event.get("queue"), event.get("entry")
++        if type(queue) is not int or type(entry) is not int or min(queue, entry) <= 0:
++            return
++        label = f"{phase} {entry_type}"
++        if phase in STORAGE_PROGRESS:
++            pending[queue, entry] = label
++        else:
++            pending.pop((queue, entry), None)
++    else:
++        return
++    storage = trace.get("direct_storage")
++    if storage is None:
++        storage = trace["direct_storage"] = {"counts": {}, "failures": {}, "unfinished": {}}
++    counts = storage["counts"]
++    counts[label] = counts.get(label, 0) + 1
++    if result & 0x80000000:
++        failure = f"{label} 0x{result:08x}"
++        failures = storage["failures"]
++        failures[failure] = failures.get(failure, 0) + 1
++
++
+ def parse_startup(path: str, limit: int = 10) -> dict:
+     """Read the `--trace` JSONL into the units the first-boot triage uses."""
+     trace = {
+@@ -72,6 +104,7 @@ def parse_startup(path: str, limit: int = 10) -> dict:
+         "error": None,
+     }
+     seen_imports = set()
++    pending_storage = {}
+     with _open_text(path) as fh:
+         for number, line in enumerate(fh, 1):
+             line = line.strip()
+@@ -132,6 +165,8 @@ def parse_startup(path: str, limit: int = 10) -> dict:
+                     )
+             elif kind == "debug_string":
+                 trace["debug_strings"] += 1
++            elif kind == "dstorage":
++                _record_storage(trace, pending_storage, event)
+             elif kind == "file_open_failed":
+                 trace["file_open_failed_count"] += 1
+                 if len(trace["file_open_failed"]) < limit:
+@@ -167,6 +202,10 @@ def parse_startup(path: str, limit: int = 10) -> dict:
+                 trace["error"] = event.get("what")
+     if trace["events"] == 0:
+         raise TraceError(f"{path} has no valid startup event")
++    if pending_storage:
++        unfinished = trace["direct_storage"]["unfinished"]
++        for label in pending_storage.values():
++            unfinished[label] = unfinished.get(label, 0) + 1
+     return trace
+ 
+ 
+@@ -262,6 +301,12 @@ def format_text(summary: dict, limit: int) -> str:
+             out.append("  unimplemented: none")
+         if startup["debug_strings"]:
+             out.append(f"  debug strings: {startup['debug_strings']} (text not shown)")
++        if storage := startup.get("direct_storage"):
++            for heading, counts in (("events", storage["counts"]), ("failures", storage["failures"]),
++                                    ("unfinished entries", storage["unfinished"])):
++                if counts:
++                    values = [f"{label} = {count}" for label, count in sorted(counts.items())]
++                    out.append(f"  DirectStorage {heading}: {_tail(values, limit)}")
+         if startup["file_open_failed_count"]:
+             out.append(f"  failed file opens: {startup['file_open_failed_count']}")
+             for item in startup["file_open_failed"][:limit]:
