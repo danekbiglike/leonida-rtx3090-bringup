@@ -1,0 +1,278 @@
+diff --git a/runtime/shims/d3d12_com.cpp b/runtime/shims/d3d12_com.cpp
+index 71aec499214ea0cc64e5abf45a4db98d275db52b..21dc079132c2e8cde25540c586ed5a8ffcb9b83e 100644
+--- a/runtime/shims/d3d12_com.cpp
++++ b/runtime/shims/d3d12_com.cpp
+@@ -1361,6 +1361,7 @@ private:
+     RootState graphics_;
+     std::uintptr_t compute_pipeline_ = 0;
+     std::uintptr_t graphics_pipeline_ = 0;
++    const GraphicsTableSpans* graphics_table_spans_ = nullptr;  // held PSO owns these until Reset
+     ID3D12DescriptorHeap* cbv_srv_uav_heap_ = nullptr;
+     ID3D12DescriptorHeap* sampler_heap_ = nullptr;
+     D3D12_GPU_VIRTUAL_ADDRESS cbv_srv_uav_base_ = 0;
+@@ -1428,7 +1429,7 @@ private:
+     void set_pipeline(ID3D12PipelineState* state) {
+         hold(state);
+         compute_pipeline_ = compute_pipeline_id(state);
+-        graphics_pipeline_ = graphics_pipeline_id(state);
++        graphics_pipeline_ = graphics_pipeline_id(state, &graphics_table_spans_);
+         if (state && !compute_pipeline_ && !graphics_pipeline_)
+             stub("ID3D12GraphicsCommandList::SetPipelineState(pipeline from another device)");
+     }
+@@ -1600,6 +1601,16 @@ private:
+         if (!(viewport_.width > 0) || !(viewport_.height > 0)) return;
+         UserData data;
+         graphics_user_data(false, data);  // the vertex window alone always fits
++        // The console packing can put additional descriptors next to the declared root-table slot.
++        // Include only loads proven in this bound pipeline and only when the word is a real resource table.
++        if (graphics_table_spans_) {
++            for (const auto& p : graphics_.layout->parameters) {
++                if (!p.table_descriptors || p.user_offset >= data.size()) continue;
++                const auto span = (*graphics_table_spans_)[p.user_offset];
++                if (span > p.table_descriptors && data[p.user_offset])
++                    tables_.push_back({data[p.user_offset], span});
++            }
++        }
+         leonida::Draw draw{graphics_pipeline_, data, draw_views(), depth_, index_, topology_, viewport_,
+                            scissor_, blend_factor_, front_stencil_ref_, back_stencil_ref_, indexed, count, instances,
+                            first, base_vertex, first_instance};
+diff --git a/runtime/shims/d3d12_com.h b/runtime/shims/d3d12_com.h
+index dce6399ea07ac7706356e5eab1cf8a8d181674dd..58a5d76bb2000a956b097a18d866dd7357500b0c 100644
+--- a/runtime/shims/d3d12_com.h
++++ b/runtime/shims/d3d12_com.h
+@@ -24,6 +24,7 @@
+ #include <string>
+ #include <vector>
+ 
++#include <array>
+ #include "../src/root_signature.h"
+ #include "../src/subgroup_size.h"
+ 
+@@ -403,7 +404,8 @@ struct RootArgumentLayout {
+ // compute pipeline state (0: not a compute PSO of a Vulkan device).
+ const RootArgumentLayout* root_signature_layout(ID3D12RootSignature* signature);
+ std::uintptr_t compute_pipeline_id(ID3D12PipelineState* pipeline);
+-std::uintptr_t graphics_pipeline_id(ID3D12PipelineState* pipeline);
++using GraphicsTableSpans = std::array<std::uint16_t, 32>;
++std::uintptr_t graphics_pipeline_id(ID3D12PipelineState* pipeline, const GraphicsTableSpans** spans = nullptr);
+ // What each stage of a Vulkan device's PSO asked for (src/subgroup_size.h), in creation order; null for another PSO.
+ const std::vector<leonida::SubgroupRequest>* pipeline_subgroup_requests(ID3D12PipelineState* pipeline);
+ 
+diff --git a/runtime/shims/d3d12_vulkan_device.cpp b/runtime/shims/d3d12_vulkan_device.cpp
+index cdea9e6f4aa6a8f3263d9448e11a0ab2e252253b..2f6ab811576a5f7f1224036aee3ff35089db71b5 100644
+--- a/runtime/shims/d3d12_vulkan_device.cpp
++++ b/runtime/shims/d3d12_vulkan_device.cpp
+@@ -902,9 +902,16 @@ struct DeviceState {
+             if (std::any_of(key.begin(), key.end(), [](auto word) { return word != 0; })) populated |= 1u << i;
+             if (!leonida::gfx10::is_image(key)) continue;
+             images |= 1u << i;
+-            if (bindless && bindless->table().lookup(key)) matched |= 1u << i;
++            if (bindless && bindless->table().lookup(key)) {
++                matched |= 1u << i;
++                leonida::gfx10::Image image{};
++                if (leonida::gfx10::decode(key, image))
++                    std::fprintf(stderr, "[frame-graph] sampled-table=%llx slot=%u texture-key=%llx mip=%u layer=%u\n",
++                                 static_cast<unsigned long long>(table), i,
++                                 static_cast<unsigned long long>(image.address), image.first_mip, image.first_layer);
++            }
+         }
+-        std::fprintf(stderr, "[frame-graph] table-scan id=%llx registered=1 declared=%u inspected=%u "
++        std::fprintf(stderr, "[frame-graph] table-scan id=%llx registered=1 span=%u inspected=%u "
+                      "populated=%04x images=%04x matched=%04x pulled=%llu\n",
+                      static_cast<unsigned long long>(table), declared, slots, populated, images, matched,
+                      static_cast<unsigned long long>(pulled));
+@@ -924,7 +931,7 @@ struct DeviceState {
+             auto it = cbv_heaps.upper_bound(table_va);
+             if (it == cbv_heaps.begin() || table_va >= std::prev(it)->second) {
+                 if (observe)
+-                    std::fprintf(stderr, "[frame-graph] table-scan id=%llx registered=0 declared=%u\n",
++                    std::fprintf(stderr, "[frame-graph] table-scan id=%llx registered=0 span=%u\n",
+                                  static_cast<unsigned long long>(table_va), descriptors);
+                 return;
+             }
+@@ -2182,6 +2189,14 @@ public:
+     bool a8_as_alpha() const { return a8_as_alpha_; }
+     VkImageAspectFlags aspects() const { return aspects_; }
+     bool rgb96() const { return rgb96_; }                        // a 96-bit texture in an RGBA32 image
++    void observe_image_identity() const {
++        static const bool graph = GetEnvironmentVariableW(L"LEONIDA_FRAME_GRAPH", nullptr, 0) != 0;
++        if (graph)
++            std::fprintf(stderr, "[frame-graph] image-resource=%llx texture-key=%llx width=%llu height=%u\n",
++                         static_cast<unsigned long long>(id()), static_cast<unsigned long long>(image_address_),
++                         static_cast<unsigned long long>(desc_.Width), desc_.Height);
++    }
++
+     std::uint64_t image_address() const { return image_address_; }  // what a T# names the texture by
+     VkMemoryPropertyFlags memory_flags() const { return memory_flags_; }  // of the memory type behind it
+     const DeviceState& device_state() const { return device_; }
+@@ -2588,6 +2603,7 @@ public:
+         format_ = format.format;
+         aspects_ = format.aspects;
+         image_address_ = device_.next_image_address.fetch_add(256);
++        observe_image_identity();
+         binding_.image = image_;
+         binding_.format = format_;
+         binding_.aspects = aspects_;
+@@ -2712,6 +2728,7 @@ public:
+         a8_as_alpha_ = format.a8_as_alpha;
+         aspects_ = format.aspects;
+         image_address_ = device_.next_image_address.fetch_add(256);
++        observe_image_identity();
+         binding_ = binding;
+         if (host_transfer_) {
+             // Moved to GENERAL and zero-filled on the host now, so the CPU can copy into it before any command
+@@ -3826,6 +3843,7 @@ public:
+ 
+     bool compute() const { return registered_ && !is_graphics_; }
+     bool graphics() const { return registered_ && is_graphics_; }
++    const GraphicsTableSpans& graphics_table_spans() const { return graphics_table_spans_; }
+     const std::vector<leonida::SubgroupRequest>& subgroup_requests() const { return subgroup_requests_; }
+ 
+     // A VS (+ GS) (+ PS) pipeline for dynamic rendering. Vertex input comes from the input layout matched to the
+@@ -3966,6 +3984,8 @@ public:
+                 std::fprintf(stderr, "[rt] d3d12: no translated %s for FSSM sha256 %s\n", stage.name, hash.c_str());
+                 return E_INVALIDARG;
+             }
++            for (std::size_t i = 0; i < graphics_table_spans_.size(); ++i)
++                graphics_table_spans_[i] = std::max(graphics_table_spans_[i], stage.entry->root_table_slots[i]);
+             if (stage.entry->binding_count) {
+                 if (!device_.bindless) {
+                     std::fprintf(stderr, "[rt] d3d12: %s uses set-0 bindings; the device has no bindless set 0\n",
+@@ -4679,6 +4699,7 @@ private:
+     VkDeviceSize code_bytes_ = 0;
+     bool registered_ = false;
+     bool is_graphics_ = false;
++    GraphicsTableSpans graphics_table_spans_{};
+     std::vector<leonida::SubgroupRequest> subgroup_requests_;  // one per stage, in creation order
+     leonida::cached_pso::Key cache_key_;
+ };
+@@ -9414,8 +9435,9 @@ std::uintptr_t compute_pipeline_id(ID3D12PipelineState* pipeline) {
+     return p && p->compute() ? p->id() : 0;
+ }
+ 
+-std::uintptr_t graphics_pipeline_id(ID3D12PipelineState* pipeline) {
++std::uintptr_t graphics_pipeline_id(ID3D12PipelineState* pipeline, const GraphicsTableSpans** spans) {
+     const PipelineState* p = PipelineState::from<PipelineState>(pipeline);
++    if (spans) *spans = p && p->graphics() ? &p->graphics_table_spans() : nullptr;
+     return p && p->graphics() ? p->id() : 0;
+ }
+ 
+diff --git a/runtime/src/shader_library.h b/runtime/src/shader_library.h
+index 8e0de44510fdc4f856e65d2fdd5251a8407a179f..330554e502fe9bc9313bb942477f4cc86480b877 100644
+--- a/runtime/src/shader_library.h
++++ b/runtime/src/shader_library.h
+@@ -737,6 +737,7 @@ struct ShaderEntry {
+     // against the device's maxMeshOutputVertices / maxMeshOutputPrimitives when a pipeline is created. 0: not given.
+     std::uint32_t max_vertices = 0;
+     std::uint32_t max_primitives = 0;
++    std::array<std::uint16_t, 32> root_table_slots{};  // static shader reads per user SGPR, in 32-byte slots
+ };
+ 
+ class ShaderLibrary {
+@@ -918,6 +919,16 @@ private:
+                 e.subgroup_size = u32(g);
+             if (const Json* x = meta.find("wave64_exchange"); x && x->kind == Json::Kind::string)
+                 e.wave64_exchange = x->string;
++            if (const Json* spans = meta.find("root_table_slots"); spans && spans->kind == Json::Kind::array) {
++                for (const auto& row : spans->array) {
++                    const auto* reg = row.find("sgpr");
++                    const auto* count = row.find("slots");
++                    if (!reg || reg->kind != Json::Kind::number || !count || count->kind != Json::Kind::number) continue;
++                    const auto slot = u32(reg), length = u32(count);
++                    if (reg->number == slot && count->number == length && slot < e.root_table_slots.size() && length && length <= 1024)
++                        e.root_table_slots[slot] = std::max(e.root_table_slots[slot], std::uint16_t(length));
++                }
++            }
+             if (const Json* s = meta.find("input_signature"); s && s->kind == Json::Kind::array) {
+                 for (const Json& item : s->array) {
+                     SignatureElement element;
+diff --git a/tests/test_shader_meta.py b/tests/test_shader_meta.py
+index a7da7528b7f355e3b1f08428c06a77792e9bb576..260384c362cb348b61c53702650a99b983594c2a 100644
+--- a/tests/test_shader_meta.py
++++ b/tests/test_shader_meta.py
+@@ -225,6 +225,19 @@ class ShaderMetaIntegrationTests(unittest.TestCase):
+         self.assertEqual(meta["input_signature"][0]["semantic"], "SV_Position")
+         self.assertNotIn("uses_code_base", meta)
+ 
++    def test_table_span_tracks_only_proven_root_loads(self):
++        lines = [
++            "s_mov_b32 s3, 0",
++            "s_load_dwordx4 s[12:15], s[2:3], 0",
++            "s_load_dwordx8 s[16:23], s[2:3], 0x30",
++            "s_load_dwordx4 s[24:27], s[2:3], s7",
++            "s_mov_b32 s2, 0",
++            "s_load_dwordx4 s[12:15], s[2:3], 0x200",
++            "s_endpgm",
++        ]
++        _, meta = translate_synthetic("ps_root_span", lines)
++        self.assertEqual(meta["root_table_slots"], [{"sgpr": 2, "slots": 3}])
++
+     def test_truncated_32bit_table_pointer_and_vscale_stride(self):
+         # Descriptor-table pointer in s2 with high dword forced to 0 (below 4 GB), stride 16 via VGPR shift.
+         lines = [
+diff --git a/tools/shader_meta.py b/tools/shader_meta.py
+index 375c13ed9039505a7f36b835aff57b6c26234611..e824a152a1c4fbddd375d0190fb1e8d4b8dca69b 100644
+--- a/tools/shader_meta.py
++++ b/tools/shader_meta.py
+@@ -46,6 +46,11 @@ LSHL_ADD_SHIFT = {
+ }
+ 
+ # Classification precedence when the same user SGPR participates in multiple roles.
++SCALAR_LOAD_BYTES = {
++    "s_load_dword": 4, "s_load_dwordx2": 8, "s_load_dwordx4": 16,
++    "s_load_dwordx8": 32, "s_load_dwordx16": 64,
++}
++
+ KIND_PRIORITY = {
+     "const32": 0,
+     "ptr32_lo": 1,
+@@ -240,6 +245,15 @@ def _step_state(sym, scale, ptr_stride, vscale, ins, events=None):
+             if slots is not None:
+                 is_desc_width = op in ("s_load_dwordx4", "s_load_dwordx8", "s_load_dwordx16")
+                 _record_ptr_pair(events, sym, slots, is_desc_width=is_desc_width)
++                # Keep only statically located reads from the original, zero-extended table pointer.
++                # An adjusted/arbitrary pointer, a dynamic offset or a store is not evidence for a span.
++                low, high = (_slot_tag(sym, slot) for slot in slots)
++                if op in SCALAR_LOAD_BYTES and low and low[0] == "user" and high == ("const", 0) and len(a) == 3:
++                    offset = _const_of(sym, a[2])
++                    if offset is not None and 0 <= offset <= 32768 - SCALAR_LOAD_BYTES[op]:
++                        span = (offset + SCALAR_LOAD_BYTES[op] + 31) // 32
++                        spans = events["table_slots"]
++                        spans[low[1]] = max(spans.get(low[1], 0), span)
+                 if is_desc_width:
+                     if isinstance(slots[0], int):
+                         events["strides"].update(ptr_stride.get(slots[0], ()))
+@@ -490,7 +504,7 @@ def analyse_instructions(blocks, succ, user_sgpr_limit=32, system_sgprs=()):
+     nblk = len(blocks)
+     if nblk == 0:
+         return {"user_sgpr_reads": [], "descriptor_strides": [], "literal_samplers": [],
+-                "table_loads": False, "truncates_high": False}
++                "table_loads": False, "truncates_high": False, "root_table_slots": []}
+     sys_set = frozenset(system_sgprs)
+     user_range = {r for r in range(user_sgpr_limit) if r not in sys_set}
+ 
+@@ -563,6 +577,7 @@ def analyse_instructions(blocks, succ, user_sgpr_limit=32, system_sgprs=()):
+         "tsharp": set(),
+         "ssharp": set(),
+         "strides": set(),
++        "table_slots": {},
+         "literal_samplers": set(),
+         "table_loads": False,
+         "truncates_high": False,
+@@ -616,6 +631,7 @@ def analyse_instructions(blocks, succ, user_sgpr_limit=32, system_sgprs=()):
+ 
+     return {
+         "user_sgpr_reads": user_reads,
++        "root_table_slots": [{"sgpr": r, "slots": span} for r, span in sorted(events["table_slots"].items())],
+         "descriptor_strides": sorted(events["strides"]),
+         "literal_samplers": [list(s) for s in sorted(events["literal_samplers"])],
+         "table_loads": events["table_loads"],
+@@ -737,6 +753,8 @@ def collect(disasm_path, name, blocks, succ, user_sgpr_limit=32, system_sgprs=()
+         meta["input_signature"] = dxbc_info["input_signature"]
+ 
+     ins_info = analyse_instructions(blocks, succ, user_sgpr_limit=user_sgpr_limit, system_sgprs=system_sgprs)
++    if ins_info["root_table_slots"]:
++        meta["root_table_slots"] = ins_info["root_table_slots"]
+     if ins_info["user_sgpr_reads"]:
+         meta["user_sgpr_reads"] = ins_info["user_sgpr_reads"]
+     if ins_info["descriptor_strides"]:

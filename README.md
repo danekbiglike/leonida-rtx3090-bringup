@@ -1,6 +1,6 @@
 # GTA VI Xbox to PC on an RTX 3090 with Leonida
 
-The Xbox build opens its own window on a Windows RTX 3090. With on-demand graphics compilation it now submits two draws into an intermediate texture and a third into the surface it presents. The measured RGB output is still black. An interactive GTA VI menu has not been observed.
+The Xbox build opens its own window on a Windows RTX 3090. With on-demand graphics compilation it now submits two draws into an intermediate texture and a third into the surface it presents. The final pass now has a verified view of the intermediate texture. Both surfaces are still black in the sampled frames. An interactive GTA VI menu has not been observed.
 
 ## On-demand graphics and the first draw to the display
 
@@ -42,6 +42,27 @@ Apply [the descriptor backing patch](patches/frame-title-table-pull.patch) after
 On the same extended catalogue, before this fix, all 66 sampled table scans found an allocated, entirely zero 32-byte slot. The first 20 recorded bindings in the two later drawing passes could each be correlated with one of these scans. With the callback connected, all 65 sampled scans copied one slot from the title and every slot became nonzero. None of those first slots was an image descriptor. The 25-second run submitted 75 draws into the presentation sources. All six swapchain samples and all six 4K target reads remained black in RGB. The Xbox device proxy, title-address alias, GPU title-address and pixel draw tests passed.
 
 The current root-signature scan covers one declared slot on both later passes. Offline inspection of the active translated draw programs shows that the final pass reads additional slots from the same table. Whether those entries have reached the shader-visible heap is the next measurable distinction. The earlier command-list interface issue is already passed by all of these runs. Xbox device slot 73 requests `C3827890-4024-474C-98CF-645B51DC4874`, which the loader maps to the Windows `ID3D12GraphicsCommandList6` interface. [Command-list mapping in the pinned loader](https://github.com/ASTROWwwW/Leonida/blob/b487b6d8ccf1d15d723367752a71439c3db077e5/runtime/shims/d3d12_xs_command_list_iid.h).
+
+
+### Which texture the display pass can see
+
+Apply [the static table-span patch](patches/frame-shader-table-spans.patch) after the descriptor backing patch. The translator now records the span of statically located scalar loads from an unadjusted, zero-extended root-table pointer. The bound graphics pipeline combines the spans of its shader stages. At recording time the list applies them only to an actual resource-table parameter. The queue still clamps copies to a currently registered shader-visible heap.
+
+Four active graphics modules were translated again locally and all passed Vulkan 1.3 SPIR-V validation. The catalogue tool accepts optional metadata from a second translation only when the original program digest, shader stage and complete SPIR-V file match. Two byte-identical stages supplied new table metadata. All Vulkan shader binaries used in the comparison stayed the same.
+
+In a 26-second Windows RTX 3090 run the game submitted 157 draws, 52 of them into its two presentation sources. Ten distinct display-pass table handles were correlated with bounded scans. **All ten contained a registered view of the actual intermediate render target, at mip 0 and array layer 0.** Across 31 sampled scans of three slots, all three slots were populated and the middle slot matched the bindless image table every time. All four complete intermediate reads, both complete display-source reads and five swapchain samples had zero nonblack RGB pixels. These CPU-side matches establish the texture contents available to the shader. The measurements do not count individual GPU texture fetches.
+
+To reproduce, regenerate translations with the patched translator using the original translation options. For pre-existing modules use the optional `--metadata-from $updatedTranslations` argument to [the catalogue tool](tools/prepare_draw_catalog.py). Keep the graphics settings described above. Run the [composition summary](tools/summarize_composition.py) on the local runtime log to count table matches and RGB readbacks without outputting handles.
+
+```powershell
+git apply ../leonida-rtx3090-bringup/patches/frame-title-table-pull.patch
+git apply ../leonida-rtx3090-bringup/patches/frame-shader-table-spans.patch
+cmake --build build --target gta6rt shader_library_test d3d12_draw_test
+python -I tests/test_shader_meta.py
+python ../leonida-rtx3090-bringup/tools/summarize_composition.py $runtimeLog
+```
+
+The shader library and draw fixtures passed. All 28 shader metadata tests passed, including the static span and dynamic-offset regression. The remaining RGB question starts in the two intermediate draws. Both source and presentation textures were already black at the sampled submissions.
 
 
 ## Reproduce the first black frames

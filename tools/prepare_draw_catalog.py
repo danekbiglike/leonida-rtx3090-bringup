@@ -11,6 +11,26 @@ import subprocess
 from uuid import uuid4
 
 
+def merge_table_metadata(index, directory, translated):
+    """Use optional new analysis only when both the source program and the Vulkan module match."""
+    newer = json.loads((translated / "index.json").read_bytes())
+    updated = 0
+    for name, meta in newer.items():
+        if name not in index or not meta.get("root_table_slots"):
+            continue
+        old = index[name]
+        if not meta.get("fssm_sha256") or old.get("fssm_sha256") != meta["fssm_sha256"] or old.get("stage") != meta.get("stage"):
+            continue
+        module = directory / (name + ".spv")
+        other = translated / (name + ".spv")
+        if module.parent != directory or other.parent != translated or not module.is_file() or not other.is_file():
+            continue
+        if module.read_bytes() == other.read_bytes():
+            old["root_table_slots"] = meta["root_table_slots"]
+            updated += 1
+    return updated
+
+
 def prepare(args):
     full = args.translated.resolve()
     base = args.base.resolve()
@@ -53,6 +73,8 @@ def prepare(args):
                 if module:
                     shutil.copyfile(module, working / module.name)
                     index[name] = candidates[name]
+        if args.metadata_from:
+            print(f"Matched table metadata for {merge_table_metadata(index, working, args.metadata_from.resolve())} stages.")
         (working / "index.json").write_text(json.dumps(index, ensure_ascii=True), encoding="utf-8")
         hashes.write(str(working), hashes.build(str(args.dxbc), str(working)))
         working.rename(output)
@@ -67,5 +89,6 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     for option in ("base", "translated", "dxbc", "output", "leonida"):
         parser.add_argument("--" + option, type=Path, required=True)
+    parser.add_argument("--metadata-from", type=Path, help="Optional translations with static table-read metadata.")
     parser.add_argument("--validator", default="spirv-val")
     prepare(parser.parse_args())
