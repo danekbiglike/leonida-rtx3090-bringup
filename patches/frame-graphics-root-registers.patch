@@ -1,0 +1,1498 @@
+diff --git a/runtime/CMakeLists.txt b/runtime/CMakeLists.txt
+index 5887056bccb917fd88f4e71988bd3e9acc995234..9e0cd08dee3ce8efdbee219154204f9bdd8ef7d8 100644
+--- a/runtime/CMakeLists.txt
++++ b/runtime/CMakeLists.txt
+@@ -2538,6 +2538,37 @@ if(TARGET Vulkan::Headers)
+       target_compile_options(d3d12_buffer_uav_test PRIVATE /W4 /permissive- /utf-8)
+       add_test(NAME d3d12_buffer_uav COMMAND d3d12_buffer_uav_test)
+       set_tests_properties(d3d12_buffer_uav PROPERTIES SKIP_RETURN_CODE 77)
++
++      # Direct heap indexing: cs_heap_index.asm and ps_heap_index.asm load V#s from the bound CBV/SRV/UAV heap's base,
++      # which the list writes after the root arguments when the root signature has CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED.
++      set(LEONIDA_HEAP_INDEX_DIR ${CMAKE_CURRENT_BINARY_DIR}/generated/heap_index_shaders)
++      set(LEONIDA_HEAP_INDEX_FILES ${LEONIDA_HEAP_INDEX_DIR}/spirv/index.json
++                                   ${LEONIDA_HEAP_INDEX_DIR}/fssm/cs_heap_index.fssm
++                                   ${LEONIDA_HEAP_INDEX_DIR}/fssm/vs_m2.fssm
++                                   ${LEONIDA_HEAP_INDEX_DIR}/fssm/ps_heap_index.fssm)
++      add_custom_command(
++        OUTPUT ${LEONIDA_HEAP_INDEX_FILES}
++        COMMAND ${CMAKE_COMMAND} -E remove_directory ${LEONIDA_HEAP_INDEX_DIR}
++        # LEONIDA_USER_DATA_SHIFT=4: root arguments from s4 in a D3D12 compute PSO (see the M4 shaders above).
++        COMMAND ${CMAKE_COMMAND} -E env "LLVM_MC=${LEONIDA_LLVM_MC}" "LEONIDA_SPIRV_TOOLS=${LEONIDA_SPIRV_TOOLS_NATIVE}"
++                LEONIDA_USER_DATA_SHIFT=4
++                $<TARGET_FILE:Python3::Interpreter> -I ${CMAKE_CURRENT_SOURCE_DIR}/test/shaders/build.py
++                ${LEONIDA_HEAP_INDEX_DIR} cs_heap_index vs_m2 ps_heap_index
++        DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/test/shaders/build.py
++                ${CMAKE_CURRENT_SOURCE_DIR}/test/shaders/compute_fixture.py
++                ${CMAKE_CURRENT_SOURCE_DIR}/test/shaders/cs_heap_index.asm
++                ${CMAKE_CURRENT_SOURCE_DIR}/test/shaders/vs_m2.asm
++                ${CMAKE_CURRENT_SOURCE_DIR}/test/shaders/ps_heap_index.asm
++                ${CMAKE_CURRENT_SOURCE_DIR}/../tools/rdna2spirv.py
++        COMMENT "Translating cs_heap_index, vs_m2 and ps_heap_index for the heap index test"
++        VERBATIM)
++      add_executable(d3d12_heap_index_test test/d3d12_heap_index_test.cpp ${LEONIDA_HEAP_INDEX_FILES})
++      target_link_libraries(d3d12_heap_index_test PRIVATE gta6rt_d3d12_com)
++      target_compile_definitions(d3d12_heap_index_test PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX
++                                 LEONIDA_TEST_HEAP_INDEX_DIR="${LEONIDA_HEAP_INDEX_DIR}")
++      target_compile_options(d3d12_heap_index_test PRIVATE /W4 /permissive- /utf-8)
++      add_test(NAME d3d12_heap_index COMMAND d3d12_heap_index_test)
++      set_tests_properties(d3d12_heap_index PROPERTIES SKIP_RETURN_CODE 77)
+     else()
+       message(STATUS "llvm-mc (set LLVM_MC) or the SDK's spirv-as/spirv-val not found: d3d12_translated_draw_test, d3d12_m2_textured_test, d3d12_m2_formats_test, d3d12_m3_frame_test, d3d12_m4_compute_test, d3d12_b5g5r5a1_store_test and d3d12_buffer_uav_test are not built")
+     endif()
+diff --git a/runtime/shims/d3d12_com.cpp b/runtime/shims/d3d12_com.cpp
+index 6010a94e92c111b25d3aacf982c9d016e66254d1..314aba2b71c66244ebb236b4cddcccdd495c1c37 100644
+--- a/runtime/shims/d3d12_com.cpp
++++ b/runtime/shims/d3d12_com.cpp
+@@ -498,8 +498,12 @@ public:
+         d3d12_trace::record("ID3D12GraphicsCommandList6::DispatchMesh");
+         if (x > 65535 || y > 65535 || z > 65535 || std::uint64_t(x) * y * z > (1u << 22)) return check(false);
+         if (!graphics_pipeline_ || !graphics_.layout) return check(false);
++        note_direct_heap_indexing(graphics_.layout);
+         if (!(viewport_.width > 0) || !(viewport_.height > 0)) return;  // as record_draw: nothing is rasterized
+-        leonida::Draw draw{graphics_pipeline_, graphics_.data, draw_views(), depth_, {}, 0, viewport_,
++        UserData data;
++        if (!graphics_user_data(true, data))
++            return stub("DispatchMesh(root arguments past s16: the mesh and pixel windows overlap)");
++        leonida::Draw draw{graphics_pipeline_, data, draw_views(), depth_, {}, 0, viewport_,
+                            scissor_, blend_factor_, front_stencil_ref_, back_stencil_ref_, false, x, y, z, 0, 0};
+         draw.mesh = true;
+         check(list_.draw(std::move(draw)));
+@@ -877,7 +881,8 @@ public:
+         if (kind == leonida::IndirectKind::dispatch && max_command_count) {  // the pipeline and root arguments a Dispatch would record
+             if (!compute_pipeline_ || !compute_.layout) return check(false);
+             cmd.pipeline = compute_pipeline_;
+-            cmd.user_data = compute_.data;
++            note_direct_heap_indexing(compute_.layout);
++            cmd.user_data = compute_user_data();
+         }
+         check(list_.execute_indirect(cmd));
+     }
+@@ -1337,9 +1342,9 @@ private:
+             tables_.push_back({va, p->table_descriptors});
+         const std::uint32_t first = first_dword(state, *p);
+         write(state, first, std::uint32_t(va));
+-        // In the compute layout a descriptor table is one dword, the 32-bit VA of its first descriptor (the heaps
+-        // live below 4 GiB); a root view keeps both halves. The graphics layout gives every address two dwords.
+-        if (!(is_compute(state) && type == rt::rootsig::ParamType::Table)) write(state, first + 1, std::uint32_t(va >> 32));
++        // A descriptor table is one dword at both bind points, the 32-bit VA of its first descriptor (the heaps live
++        // below 4 GiB); a root view keeps both halves.
++        if (type != rt::rootsig::ParamType::Table) write(state, first + 1, std::uint32_t(va >> 32));
+     }
+ 
+     D3D12_COMMAND_LIST_TYPE type_;
+@@ -1440,18 +1445,49 @@ private:
+ 
+     void note_direct_heap_indexing(const RootArgumentLayout* layout) const {
+         if (!layout) return;
+-        if (layout->flags & D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED) {
+-            if (!cbv_srv_uav_heap_)
+-                note_once("draw/dispatch uses CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED with no CBV/SRV/UAV heap bound");
+-            else
+-                note_once("CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED heap base tracked on list (SGPR slot open, section 3.4)");
+-        }
+-        if (layout->flags & D3D12_ROOT_SIGNATURE_FLAG_SAMPLER_HEAP_DIRECTLY_INDEXED) {
+-            if (!sampler_heap_)
+-                note_once("draw/dispatch uses SAMPLER_HEAP_DIRECTLY_INDEXED with no sampler heap bound");
+-            else
+-                note_once("SAMPLER_HEAP_DIRECTLY_INDEXED heap base tracked on list (SGPR slot open, section 3.4)");
+-        }
++        if ((layout->flags & D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED) && !cbv_srv_uav_heap_)
++            note_once("draw/dispatch uses CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED with no CBV/SRV/UAV heap bound");
++        if ((layout->flags & D3D12_ROOT_SIGNATURE_FLAG_SAMPLER_HEAP_DIRECTLY_INDEXED) && !sampler_heap_)
++            note_once("draw/dispatch uses SAMPLER_HEAP_DIRECTLY_INDEXED with no sampler heap bound");
++    }
++
++    using UserData = std::array<std::uint32_t, rt::rootsig::kMaxUserSgprs>;
++
++    // The 32-bit VA of each bound heap's first descriptor in the SGPR the signature gives it for direct heap indexing
++    // (pack_stage, section 3.4). The heaps live in the GPU address arena, below 4 GiB, like the descriptor tables. A
++    // heap the signature indexes but the list has not bound leaves its SGPR 0 (noted once): D3D12 leaves that case
++    // undefined.
++    void write_heap_bases(UserData& data, std::uint32_t resource_sgpr, std::uint32_t sampler_sgpr) const {
++        if (resource_sgpr < data.size()) data[resource_sgpr] = std::uint32_t(cbv_srv_uav_base_);
++        if (sampler_sgpr < data.size()) data[sampler_sgpr] = std::uint32_t(sampler_base_);
++    }
++
++    // The user data a dispatch records: the compute root arguments and the heap bases.
++    UserData compute_user_data() const {
++        UserData data = compute_.data;
++        if (const RootArgumentLayout* layout = compute_.layout)
++            write_heap_bases(data, layout->compute_resource_heap_sgpr, layout->compute_sampler_heap_sgpr);
++        return data;
++    }
++
++    // The user data a draw records: the graphics root arguments and the heap bases from s8, where the vertex, pixel
++    // and geometry stages read them. A mesh shader reads the same SGPRs from s16 (rt::rootsig::stage_base) while the
++    // pixel shader of its pipeline still reads from s8, and both read one push-constant block; so for a mesh draw
++    // the window [s8, end) is also copied eight SGPRs up. When the two windows overlap (the arguments and heap
++    // bases take more than eight SGPRs) or the upper one passes s31, no block can serve both stages: false, and the
++    // caller refuses the draw (a per-stage window is open, docs/d3d12_vulkan.md section 3.5).
++    bool graphics_user_data(bool mesh, UserData& data) const {
++        data = graphics_.data;
++        const RootArgumentLayout* layout = graphics_.layout;
++        if (!layout) return true;
++        write_heap_bases(data, layout->graphics_resource_heap_sgpr, layout->graphics_sampler_heap_sgpr);
++        if (!mesh) return true;
++        constexpr std::uint32_t base = rt::rootsig::stage_base(rt::rootsig::Stage::Pixel);
++        constexpr std::uint32_t shift = rt::rootsig::stage_base(rt::rootsig::Stage::Mesh) - base;
++        const std::uint32_t end = layout->graphics_end_sgpr;
++        if (end > base + shift || end + shift > data.size()) return false;
++        for (std::uint32_t s = base; s < end; ++s) data[s + shift] = data[s];
++        return true;
+     }
+ 
+     void reset_state(ID3D12PipelineState* state) {
+@@ -1494,7 +1530,7 @@ private:
+     void record_dispatch(UINT x, UINT y, UINT z) {
+         if (!compute_pipeline_ || !compute_.layout) return check(false);
+         note_direct_heap_indexing(compute_.layout);
+-        check(list_.dispatch({compute_pipeline_, compute_.data, x, y, z}));
++        check(list_.dispatch({compute_pipeline_, compute_user_data(), x, y, z}));
+     }
+ 
+     // The views block a draw records. Rebuilt only when the render targets or the bound vertex buffers change.
+@@ -1529,7 +1565,9 @@ private:
+         // No viewport (never set, or unbound with RSSetViewports(0)) or an empty one: D3D12 rasterizes nothing,
+         // and Vulkan forbids a 0x0 viewport, so the draw is not recorded.
+         if (!(viewport_.width > 0) || !(viewport_.height > 0)) return;
+-        leonida::Draw draw{graphics_pipeline_, graphics_.data, draw_views(), depth_, index_, topology_, viewport_,
++        UserData data;
++        graphics_user_data(false, data);  // the vertex window alone always fits
++        leonida::Draw draw{graphics_pipeline_, data, draw_views(), depth_, index_, topology_, viewport_,
+                            scissor_, blend_factor_, front_stencil_ref_, back_stencil_ref_, indexed, count, instances,
+                            first, base_vertex, first_instance};
+         check(list_.draw(std::move(draw)));
+diff --git a/runtime/shims/d3d12_com.h b/runtime/shims/d3d12_com.h
+index 1f10aaeeab3be9efbb62ab19b574b5be08075589..dce6399ea07ac7706356e5eab1cf8a8d181674dd 100644
+--- a/runtime/shims/d3d12_com.h
++++ b/runtime/shims/d3d12_com.h
+@@ -370,14 +370,15 @@ std::unique_ptr<WindowPresenter> create_window_presenter(ID3D12Device* device, H
+ // Where each root parameter's arguments go in the 32 user-data dwords the translated shaders read (docs section
+ // 3.5). Built when a Vulkan device creates the root signature. A signature can be bound at either bind point, so it
+ // carries both layouts:
+-//   - graphics: rt::rootsig::pack() (from s0, two dwords per table; D3D-448 keeps it until per-stage user-data windows
+-//     exist, because a mesh shader (s16) and a pixel shader (s8) share one push-constant block);
++//   - graphics: rt::rootsig::pack_stage(Stage::Pixel), the console layout of the vertex, pixel and geometry stages
++//     (from s8, one dword per table, then the heap bases). A mesh shader reads the same arguments from s16, eight
++//     SGPRs up; the list copies them there for a mesh draw when both windows fit without overlapping;
+ //   - compute: rt::rootsig::pack_stage(Stage::Compute), the measured console layout (from s4, one dword per table).
+ // A layout that refuses the signature is marked unusable; binding the signature there invalidates the list.
+ struct RootArgumentLayout {
+     struct Parameter {
+         rt::rootsig::ParamType type;
+-        std::uint32_t user_offset;     // graphics: first dword; unused for a parameter with no dwords
++        std::uint32_t user_offset;     // graphics: first user SGPR (VS/PS/GS); unused for a parameter with no dwords
+         std::uint32_t constant_count;  // constants only
+         std::uint32_t compute_offset = rt::rootsig::kNoSgpr;  // compute: first user SGPR
+         // A table: the CBV/SRV/UAV slots its ranges declare (an unbounded range counts as 1024), for the scan of
+@@ -386,6 +387,14 @@ struct RootArgumentLayout {
+     };
+     std::vector<Parameter> parameters;
+     std::uint32_t flags = 0;  // D3D12_ROOT_SIGNATURE_FLAGS from the serialized blob
++    // The user SGPRs that take the bound heaps' base VAs when the flags ask for direct heap indexing (pack_stage;
++    // docs/d3d12_vulkan.md section 3.4), per bind point. kNoSgpr when the flag is clear.
++    std::uint32_t compute_resource_heap_sgpr = rt::rootsig::kNoSgpr;
++    std::uint32_t compute_sampler_heap_sgpr = rt::rootsig::kNoSgpr;
++    std::uint32_t graphics_resource_heap_sgpr = rt::rootsig::kNoSgpr;
++    std::uint32_t graphics_sampler_heap_sgpr = rt::rootsig::kNoSgpr;
++    // Graphics: one past the last user SGPR the arguments and heap bases take from s8 (the pixel stage's user count).
++    std::uint32_t graphics_end_sgpr = 0;
+     bool graphics_ok = true;
+     bool compute_ok = true;
+ };
+diff --git a/runtime/shims/d3d12_vulkan_device.cpp b/runtime/shims/d3d12_vulkan_device.cpp
+index a02a5ebf97dd2b385f43c165a67a74cdbda8440b..545490d342ceb05b56465a95052f29ef2528e834 100644
+--- a/runtime/shims/d3d12_vulkan_device.cpp
++++ b/runtime/shims/d3d12_vulkan_device.cpp
+@@ -6456,34 +6456,43 @@ public:
+             std::fprintf(stderr, "[rt] d3d12: root signature not understood: %s\n", parsed.error.c_str());
+             return E_INVALIDARG;
+         }
+-        // Two layouts, one per bind point (RootArgumentLayout): graphics keeps pack(), compute takes the console
+-        // layout pack_stage() measured (D3D-448). The signature is refused only when neither can place it.
+-        const rt::rootsig::PackResult packed = rt::rootsig::pack(parsed.sig);
++        // Two layouts, one per bind point (RootArgumentLayout), both the console's (pack_stage, D3D-448): graphics
++        // from s8 (the vertex, pixel and geometry stages), compute from s4. A signature that breaks a D3D12 limit is
++        // refused. One that is valid but would spill at a bind point (the console's spill array is not modelled) is
++        // created, as on the console, and marked unusable there: binding it there invalidates the list, loudly.
++        const rt::rootsig::StagePackResult packed = rt::rootsig::pack_stage(parsed.sig, rt::rootsig::Stage::Pixel);
+         const rt::rootsig::StagePackResult compute = rt::rootsig::pack_stage(parsed.sig, rt::rootsig::Stage::Compute);
+-        if (!packed.ok && !compute.ok) {
+-            std::fprintf(stderr, "[rt] d3d12: root signature refused: %s (compute: %s)\n", packed.error.c_str(),
+-                         compute.error.c_str());
++        if ((!packed.ok && !packed.spills) || (!compute.ok && !compute.spills)) {
++            std::fprintf(stderr, "[rt] d3d12: root signature refused: %s\n",
++                         (!packed.ok && !packed.spills ? packed : compute).error.c_str());
+             return E_INVALIDARG;
+         }
+-        if (!packed.ok)
++        if (!packed.ok && !compute.ok)
++            std::fprintf(stderr, "[rt] d3d12: root signature usable at neither bind point: %s (compute: %s)\n",
++                         packed.error.c_str(), compute.error.c_str());
++        else if (!packed.ok)
+             std::fprintf(stderr, "[rt] d3d12: root signature usable for compute only: %s\n", packed.error.c_str());
+-        if (!compute.ok)
++        else if (!compute.ok)
+             std::fprintf(stderr, "[rt] d3d12: root signature usable for graphics only: %s\n", compute.error.c_str());
+         RootArgumentLayout layout;
+         layout.flags = parsed.sig.flags;
+         layout.graphics_ok = packed.ok;
+         layout.compute_ok = compute.ok;
+-        for (std::size_t i = 0; i < parsed.sig.params.size(); ++i) {
+-            std::uint32_t first = UINT32_MAX;
+-            for (std::uint32_t d = 0; packed.ok && d < packed.dword_count; ++d)
+-                if (packed.provenance[d].param_index == i) {
+-                    first = d;
+-                    break;
+-                }
+-            layout.parameters.push_back({parsed.sig.params[i].type, first, parsed.sig.params[i].num_values,
++        if (compute.ok) {
++            layout.compute_resource_heap_sgpr = compute.resource_heap_sgpr;
++            layout.compute_sampler_heap_sgpr = compute.sampler_heap_sgpr;
++        }
++        if (packed.ok) {
++            layout.graphics_resource_heap_sgpr = packed.resource_heap_sgpr;
++            layout.graphics_sampler_heap_sgpr = packed.sampler_heap_sgpr;
++            layout.graphics_end_sgpr = packed.end_sgpr;
++        }
++        for (std::size_t i = 0; i < parsed.sig.params.size(); ++i)
++            layout.parameters.push_back({parsed.sig.params[i].type,
++                                         packed.ok ? packed.first_sgpr[i] : rt::rootsig::kNoSgpr,
++                                         parsed.sig.params[i].num_values,
+                                          compute.ok ? compute.first_sgpr[i] : rt::rootsig::kNoSgpr,
+                                          table_view_descriptors(parsed.sig.params[i])});
+-        }
+         register_static_samplers(parsed.sig);
+         auto* signature = new RootSignature(
+             std::move(layout), leonida::sha256_hex({static_cast<const std::uint8_t*>(blob), size}));
+diff --git a/runtime/src/root_signature.cpp b/runtime/src/root_signature.cpp
+index a0eb96ccedf3433f376d35bf48bfac5e4e88ca4e..d26c5d11fb6349ee874cc7d11e7ba58aadd2c0e9 100644
+--- a/runtime/src/root_signature.cpp
++++ b/runtime/src/root_signature.cpp
+@@ -61,6 +61,7 @@ StagePackResult pack_stage(const RootSignature& sig, Stage stage) {
+     uint64_t next = out.base;
+     std::vector<uint32_t> first;
+     first.reserve(sig.params.size());
++    std::string spill;  // the first parameter that does not fit; every parameter is still validated after it
+     for (size_t i = 0; i < sig.params.size(); ++i) {
+         const RootParameter& p = sig.params[i];
+         if (p.type == ParamType::Constants && p.num_values == 0) {
+@@ -73,15 +74,36 @@ StagePackResult pack_stage(const RootSignature& sig, Stage stage) {
+             return out;
+         }
+         const uint64_t dwords = stage_dwords(p.type, p.num_values);
+-        if (next + dwords > kMaxUserSgprs) {
++        if (spill.empty() && next + dwords > kMaxUserSgprs)
+             // The console moves this parameter and every later one to the spill array behind s[0:1]; that array's
+             // layout is not modelled here, so refuse rather than drop arguments.
+-            out.error = "root parameter " + std::to_string(i) + " does not fit in the user SGPRs from s" +
++            spill = "root parameter " + std::to_string(i) + " does not fit in the user SGPRs from s" +
++                    std::to_string(out.base) + " (spill array not modelled)";
++        first.push_back(static_cast<uint32_t>(next));
++        next += dwords;
++    }
++    if (!spill.empty()) {
++        out.error = std::move(spill);
++        out.spills = true;
++        return out;
++    }
++    // The heap bases follow the last parameter, the CBV/SRV/UAV heap's first (docs/d3d12_vulkan.md section 3.4).
++    const struct {
++        uint32_t flag;
++        uint32_t* slot;
++        const char* name;
++    } heaps[] = {{kFlagResourceHeapDirectlyIndexed, &out.resource_heap_sgpr, "CBV/SRV/UAV"},
++                 {kFlagSamplerHeapDirectlyIndexed, &out.sampler_heap_sgpr, "sampler"}};
++    for (const auto& heap : heaps) {
++        if (!(sig.flags & heap.flag)) continue;
++        if (next + 1 > kMaxUserSgprs) {
++            out.resource_heap_sgpr = out.sampler_heap_sgpr = kNoSgpr;
++            out.error = std::string("the ") + heap.name + " heap base does not fit in the user SGPRs from s" +
+                         std::to_string(out.base) + " (spill array not modelled)";
++            out.spills = true;
+             return out;
+         }
+-        first.push_back(static_cast<uint32_t>(next));
+-        next += dwords;
++        *heap.slot = static_cast<uint32_t>(next++);
+     }
+     out.first_sgpr = std::move(first);
+     out.end_sgpr = static_cast<uint32_t>(next);
+diff --git a/runtime/src/root_signature.h b/runtime/src/root_signature.h
+index 3769629400a3103e324c1df9031914cafd25d3bb..841cf25512752659575cfaa11a018f3a8e72f8f2 100644
+--- a/runtime/src/root_signature.h
++++ b/runtime/src/root_signature.h
+@@ -133,6 +133,11 @@ constexpr uint32_t kMaxD3d12Cost = 64;
+ //     no signature confirms them, and visibility is not modelled (every parameter takes its place in every stage).
+ // A parameter that does not fit goes to the console's spill array behind s[0:1] (compute, section 7) together with
+ // every parameter after it; that array is not modelled, so such a signature is refused, never truncated.
++//
++// Direct heap indexing (docs/d3d12_vulkan.md section 3.4, D3D-329): a signature with
++// D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED gets one more SGPR right after its last parameter, the
++// 32-bit VA of the bound CBV/SRV/UAV heap's first descriptor; SAMPLER_HEAP_DIRECTLY_INDEXED one more after that, the
++// sampler heap's. Neither is a root parameter: the list fills them from SetDescriptorHeaps at each dispatch.
+ enum class Stage : uint32_t { Vertex = 0, Pixel = 1, Geometry = 2, Compute = 3, Mesh = 4 };
+ 
+ [[nodiscard]] constexpr uint32_t stage_base(Stage stage) noexcept {
+@@ -164,18 +169,28 @@ enum class Stage : uint32_t { Vertex = 0, Pixel = 1, Geometry = 2, Compute = 3,
+ 
+ constexpr uint32_t kNoSgpr = 0xFFFFFFFFu;
+ 
++// D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED and SAMPLER_HEAP_DIRECTLY_INDEXED (d3d12.h values).
++constexpr uint32_t kFlagResourceHeapDirectlyIndexed = 0x400;
++constexpr uint32_t kFlagSamplerHeapDirectlyIndexed = 0x800;
++
+ struct StagePackResult {
+     bool ok = false;
+     std::string error;            // set when !ok; names the refusing parameter
++    // !ok only because a parameter or heap base would spill (a valid D3D12 signature whose spill array is not
++    // modelled), not because the signature breaks a D3D12 limit.
++    bool spills = false;
+     Stage stage = Stage::Compute;
+     uint32_t base = 0;            // stage_base(stage)
+     std::vector<uint32_t> first_sgpr;  // per parameter: its first user SGPR (kNoSgpr when the signature is refused)
++    uint32_t resource_heap_sgpr = kNoSgpr;  // the bound CBV/SRV/UAV heap's base (kNoSgpr: the flag is clear)
++    uint32_t sampler_heap_sgpr = kNoSgpr;   // the bound sampler heap's base (kNoSgpr: the flag is clear)
+     uint32_t end_sgpr = 0;        // one past the last SGPR used: the RSRC2 USER_SGPR count the layout implies
+     uint32_t d3d12_cost = 0;      // cost against the 64-dword D3D12 limit
+ };
+ 
+-// Lays the parameters out for `stage` in the console layout. Fails like pack() on more than 64 parameters, a
+-// constant parameter of 0 values or the 64-dword cost limit, and on any parameter that would spill.
++// Lays the parameters out for `stage` in the console layout, then the heap bases the signature's flags ask for.
++// Fails like pack() on more than 64 parameters, a constant parameter of 0 values or the 64-dword cost limit, and on
++// any parameter or heap base that would spill.
+ [[nodiscard]] StagePackResult pack_stage(const RootSignature& sig, Stage stage);
+ 
+ // D3D12 cost of one parameter against the 64-dword limit.
+diff --git a/runtime/test/d3d12_heap_index_test.cpp b/runtime/test/d3d12_heap_index_test.cpp
+new file mode 100644
+index 0000000000000000000000000000000000000000..affc092561b5b1a9b5e89c75276cb79b966b3f65
+--- /dev/null
++++ b/runtime/test/d3d12_heap_index_test.cpp
+@@ -0,0 +1,520 @@
++// Direct heap indexing (docs/d3d12_vulkan.md sections 3.4 and 3.5), compute (part 1) and graphics (part 2, see
++// run_graphics). Part 1: a root signature with
++// CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED makes the list write the bound CBV/SRV/UAV heap's base, the heap SetDescriptorHeaps
++// bound, into the user SGPR right after the root arguments at each Dispatch and dispatch ExecuteIndirect. The shader is
++// translator output (test/shaders/cs_heap_index.asm, hand-written RDNA2 in the shape of the game's heap-indexing
++// shaders): it loads the V# at heap slot k (k a root constant, a run-time offset) and at heap slot 1 (a static offset)
++// from that base and writes through both.
++//
++// One list, four dispatches, each of one 64-lane group:
++//   1. Dispatch, heap A bound, k = 2: A[2] is buffer a2, A[1] buffer a1
++//   2. Dispatch, heap B bound, k = 2: B[2] is buffer b2, B[1] buffer b1
++//   3. Dispatch, heap A bound, k = 3: A[3] is buffer a3, A[1] buffer a1 again
++//   4. ExecuteIndirect of one DISPATCH (1, 1, 1), heap B bound, k = 3: B[3] is buffer b3, B[1] buffer b1 again
++// Every buffer starts as a sentinel and is compared word by word with the CPU reference. Negative control: dispatch 2
++// differs from dispatch 1 only in the heap SetDescriptorHeaps bound, so its writes land in heap B's buffers only if
++// the base the shader reads follows the binding; a base left at 0 or at the first heap would leave b2 and b1 at the
++// sentinel (or write a2 and a1 again, which the reference checks too). The layouts of signatures without the flag,
++// with the sampler flag and with both are checked through root_signature_layout.
++// Set LEONIDA_VK_VALIDATION=1 to run under VK_LAYER_KHRONOS_validation (0 errors required).
++#include "vk_test_device.h"
++#include "d3d12_test_shaders.h"
++#include "../shims/d3d12_com.h"
++#include "../src/shader_library.h"
++
++#include <array>
++#include <cstring>
++#include <filesystem>
++#include <fstream>
++#include <iterator>
++#include <utility>
++#include <vector>
++
++#ifndef LEONIDA_TEST_HEAP_INDEX_DIR
++#error "LEONIDA_TEST_HEAP_INDEX_DIR must name the folder build.py wrote (spirv/index.json, fssm/cs_heap_index.fssm)"
++#endif
++
++#define EXPECT(condition) do { \
++    if (!(condition)) { std::fprintf(stderr, "line %d: %s\n", __LINE__, #condition); return 1; } \
++} while (0)
++
++using namespace d3d12test;
++
++namespace {
++
++std::vector<std::uint8_t> read_file(const std::filesystem::path& path) {
++    std::ifstream in(path, std::ios::binary);
++    return {std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
++}
++
++constexpr UINT lanes = 64;
++constexpr UINT64 bytes = lanes * 4;
++constexpr std::uint32_t sentinel = 0x5e5e5e5eu;
++
++enum Buf { a1, a2, a3, b1, b2, b3, buffer_count };
++
++// A root signature of `constants` 32-bit constants with `flags`. The host serializer is given no flags (Windows 10's
++// refuses the heap-indexing ones) and the flags word of the RTS0 1.0 header, its sixth dword, is written afterwards.
++std::vector<std::uint8_t> root_signature(UINT flags, UINT constants = 1) {
++    D3D12_ROOT_PARAMETER param{};
++    param.ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
++    param.Constants = {0, 0, constants};
++    param.ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
++    D3D12_VERSIONED_ROOT_SIGNATURE_DESC desc{};
++    desc.Version = D3D_ROOT_SIGNATURE_VERSION_1_0;
++    desc.Desc_1_0 = {1, &param, 0, nullptr, D3D12_ROOT_SIGNATURE_FLAG_NONE};
++    std::vector<std::uint8_t> blob = serialize_root_signature(desc);
++    if (blob.size() < 32 || std::memcmp(blob.data(), "DXBC", 4) != 0) return {};
++    std::uint32_t parts = 0;
++    std::memcpy(&parts, blob.data() + 28, 4);
++    for (std::uint32_t i = 0; i < parts && 32 + 4 * (i + 1) <= blob.size(); ++i) {
++        std::uint32_t at = 0;
++        std::memcpy(&at, blob.data() + 32 + 4 * i, 4);
++        if (std::uint64_t(at) + 8 + 24 > blob.size() || std::memcmp(blob.data() + at, "RTS0", 4) != 0) continue;
++        std::memcpy(blob.data() + at + 8 + 20, &flags, 4);
++        return blob;
++    }
++    return {};
++}
++
++bool create_device(vktest::Device& d, const std::filesystem::path& root_dir, Ref<ID3D12Device>& device) {
++    rt::d3d12::VulkanDeviceInfo info{};
++    info.get_instance_proc = d.instance_proc;
++    info.instance = d.instance;
++    info.physical = d.physical;
++    info.device = d.device;
++    info.queue = d.queue;
++    info.queue_family = d.family;
++    info.buffer_device_address = true;  // the V# holds the buffer's address
++    info.bindless = d.bindless;
++    info.bindless_partially_bound = d.partially_bound;
++    info.image_view_min_lod = d.image_view_min_lod;
++    info.shader_dir = (root_dir / "spirv").string();
++    return SUCCEEDED(rt::d3d12::create_vulkan_device(info, IID_PPV_ARGS(&device.p)));
++}
++
++constexpr UINT res = D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED;
++constexpr UINT smp = D3D12_ROOT_SIGNATURE_FLAG_SAMPLER_HEAP_DIRECTLY_INDEXED;
++constexpr std::uint32_t none = rt::rootsig::kNoSgpr;
++
++// The layouts a signature of one root constant gets at both bind points: compute from s4, graphics from s8, the heap
++// bases right after, CBV/SRV/UAV first; no flag, no heap SGPR. A valid signature that spills at one bind point is
++// still created and only that bind point is unusable.
++int check_layouts(ID3D12Device* device) {
++    const struct {
++        UINT flags;
++        std::uint32_t compute_res, compute_smp, graphics_res, graphics_smp, graphics_end;
++    } layouts[] = {{0, none, none, none, none, 9},
++                   {res, 5, none, 9, none, 10},
++                   {smp, none, 5, none, 9, 10},
++                   {res | smp, 5, 6, 9, 10, 11}};
++    for (const auto& want : layouts) {
++        const auto blob = root_signature(want.flags);
++        EXPECT(!blob.empty());
++        Ref<ID3D12RootSignature> signature;
++        EXPECT(SUCCEEDED(device->CreateRootSignature(0, blob.data(), blob.size(), IID_PPV_ARGS(&signature.p))));
++        const rt::d3d12::RootArgumentLayout* layout = rt::d3d12::root_signature_layout(signature.p);
++        EXPECT(layout && layout->compute_ok && layout->graphics_ok && layout->flags == want.flags);
++        EXPECT(layout->parameters.size() == 1 && layout->parameters[0].compute_offset == 4 &&
++               layout->parameters[0].user_offset == 8);
++        EXPECT(layout->compute_resource_heap_sgpr == want.compute_res);
++        EXPECT(layout->compute_sampler_heap_sgpr == want.compute_smp);
++        EXPECT(layout->graphics_resource_heap_sgpr == want.graphics_res);
++        EXPECT(layout->graphics_sampler_heap_sgpr == want.graphics_smp);
++        EXPECT(layout->graphics_end_sgpr == want.graphics_end);
++    }
++    // 25 constants fit compute (s4..s28) but not the graphics stages (s8..s32); 29 fit neither. Both are valid D3D12
++    // signatures the console spills, so both are created.
++    const struct {
++        UINT constants;
++        bool compute_ok, graphics_ok;
++    } spills[] = {{24, true, true}, {25, true, false}, {28, true, false}, {29, false, false}};
++    for (const auto& want : spills) {
++        const auto blob = root_signature(0, want.constants);
++        EXPECT(!blob.empty());
++        Ref<ID3D12RootSignature> signature;
++        EXPECT(SUCCEEDED(device->CreateRootSignature(0, blob.data(), blob.size(), IID_PPV_ARGS(&signature.p))));
++        const rt::d3d12::RootArgumentLayout* layout = rt::d3d12::root_signature_layout(signature.p);
++        EXPECT(layout && layout->compute_ok == want.compute_ok && layout->graphics_ok == want.graphics_ok);
++    }
++    return 0;
++}
++
++int run(vktest::Device& d, const std::filesystem::path& root_dir, unsigned& words_checked) {
++    leonida::ShaderLibrary library;
++    EXPECT(library.load((root_dir / "spirv").string()));
++    const auto fssm = read_file(root_dir / "fssm" / "cs_heap_index.fssm");
++    EXPECT(fssm.size() >= 0x150 && library.find("cs", leonida::sha256_hex(fssm)));
++    const auto container = shader_container(fssm);
++    Ref<ID3D12Device> device;
++    EXPECT(create_device(d, root_dir, device));
++    if (const int status = check_layouts(device.p)) return status;
++    const auto root_blob = root_signature(res);
++    Ref<ID3D12RootSignature> root;
++    EXPECT(!root_blob.empty() &&
++           SUCCEEDED(device->CreateRootSignature(0, root_blob.data(), root_blob.size(), IID_PPV_ARGS(&root.p))));
++
++    D3D12_COMPUTE_PIPELINE_STATE_DESC pso_desc{};
++    pso_desc.pRootSignature = root.p;
++    pso_desc.CS = {container.data(), container.size()};
++    Ref<ID3D12PipelineState> pso;
++    EXPECT(SUCCEEDED(device->CreateComputePipelineState(&pso_desc, IID_PPV_ARGS(&pso.p))));
++
++    const D3D12_HEAP_PROPERTIES default_heap{D3D12_HEAP_TYPE_DEFAULT}, upload_heap{D3D12_HEAP_TYPE_UPLOAD},
++        readback_heap{D3D12_HEAP_TYPE_READBACK};
++    Ref<ID3D12Resource> upload, readback, buf[buffer_count];
++    const auto create = [&](Ref<ID3D12Resource>& out, const D3D12_HEAP_PROPERTIES& heap, UINT64 size,
++                            D3D12_RESOURCE_FLAGS flags, D3D12_RESOURCE_STATES state) {
++        const auto desc = buffer_desc(size, flags);
++        return SUCCEEDED(device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &desc, state, nullptr,
++                                                         IID_PPV_ARGS(&out.p)));
++    };
++    EXPECT(create(upload, upload_heap, bytes, D3D12_RESOURCE_FLAG_NONE, D3D12_RESOURCE_STATE_GENERIC_READ));
++    EXPECT(create(readback, readback_heap, bytes * buffer_count, D3D12_RESOURCE_FLAG_NONE,
++                  D3D12_RESOURCE_STATE_COPY_DEST));
++    for (auto& b : buf)
++        EXPECT(create(b, default_heap, bytes, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
++                      D3D12_RESOURCE_STATE_COPY_DEST));
++    {
++        std::uint8_t* mapped = nullptr;
++        EXPECT(SUCCEEDED(upload->Map(0, nullptr, reinterpret_cast<void**>(&mapped))));
++        for (UINT64 i = 0; i < bytes / 4; ++i) std::memcpy(mapped + i * 4, &sentinel, 4);
++        upload->Unmap(0, nullptr);
++    }
++
++    // Two shader-visible heaps of four slots; slot 0 stays empty in both.
++    const D3D12_DESCRIPTOR_HEAP_DESC heap_desc{D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 4,
++                                               D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE, 0};
++    Ref<ID3D12DescriptorHeap> heap_a, heap_b;
++    EXPECT(SUCCEEDED(device->CreateDescriptorHeap(&heap_desc, IID_PPV_ARGS(&heap_a.p))));
++    EXPECT(SUCCEEDED(device->CreateDescriptorHeap(&heap_desc, IID_PPV_ARGS(&heap_b.p))));
++    const UINT step = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
++    EXPECT(step == 32);  // the shader steps 32 bytes a slot
++    for (ID3D12DescriptorHeap* h : {heap_a.p, heap_b.p}) {
++        const UINT64 gpu = h->GetGPUDescriptorHandleForHeapStart().ptr;
++        EXPECT(gpu >= 0x10000 && gpu < (1ull << 32));  // a 32-bit pointer reaches it
++    }
++    EXPECT(heap_a->GetGPUDescriptorHandleForHeapStart().ptr != heap_b->GetGPUDescriptorHandleForHeapStart().ptr);
++    const auto raw_view = [&](ID3D12DescriptorHeap* h, UINT index, Buf which) {
++        D3D12_UNORDERED_ACCESS_VIEW_DESC view{};
++        view.Format = DXGI_FORMAT_R32_TYPELESS;
++        view.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
++        view.Buffer = {0, UINT(bytes / 4), 0, 0, D3D12_BUFFER_UAV_FLAG_RAW};
++        D3D12_CPU_DESCRIPTOR_HANDLE at = h->GetCPUDescriptorHandleForHeapStart();
++        at.ptr += SIZE_T(index) * step;
++        device->CreateUnorderedAccessView(buf[which].p, nullptr, &view, at);
++    };
++    raw_view(heap_a.p, 1, a1);
++    raw_view(heap_a.p, 2, a2);
++    raw_view(heap_a.p, 3, a3);
++    raw_view(heap_b.p, 1, b1);
++    raw_view(heap_b.p, 2, b2);
++    raw_view(heap_b.p, 3, b3);
++
++    // The indirect arguments: one D3D12_DISPATCH_ARGUMENTS of (1, 1, 1), read from an upload buffer.
++    const D3D12_INDIRECT_ARGUMENT_DESC argument{D3D12_INDIRECT_ARGUMENT_TYPE_DISPATCH};
++    const D3D12_COMMAND_SIGNATURE_DESC signature_desc{sizeof(D3D12_DISPATCH_ARGUMENTS), 1, &argument, 0};
++    Ref<ID3D12CommandSignature> command_signature;
++    EXPECT(SUCCEEDED(device->CreateCommandSignature(&signature_desc, nullptr, IID_PPV_ARGS(&command_signature.p))));
++    Ref<ID3D12Resource> arguments;
++    EXPECT(create(arguments, upload_heap, 256, D3D12_RESOURCE_FLAG_NONE, D3D12_RESOURCE_STATE_GENERIC_READ));
++    {
++        D3D12_DISPATCH_ARGUMENTS* mapped = nullptr;
++        EXPECT(SUCCEEDED(arguments->Map(0, nullptr, reinterpret_cast<void**>(&mapped))));
++        *mapped = {1, 1, 1};
++        arguments->Unmap(0, nullptr);
++    }
++
++    D3D12_COMMAND_QUEUE_DESC queue_desc{};
++    queue_desc.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
++    Ref<ID3D12CommandQueue> queue;
++    Ref<ID3D12CommandAllocator> allocator;
++    Ref<ID3D12GraphicsCommandList> list;
++    Ref<ID3D12Fence> fence;
++    EXPECT(SUCCEEDED(device->CreateCommandQueue(&queue_desc, IID_PPV_ARGS(&queue.p))));
++    EXPECT(SUCCEEDED(device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&allocator.p))));
++    EXPECT(SUCCEEDED(device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, allocator.p, nullptr,
++                                               IID_PPV_ARGS(&list.p))));
++    EXPECT(SUCCEEDED(device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&fence.p))));
++
++    constexpr auto uav_state = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
++    D3D12_RESOURCE_BARRIER barriers[buffer_count];
++    for (auto& b : buf) list->CopyBufferRegion(b.p, 0, upload.p, 0, bytes);
++    for (int i = 0; i < buffer_count; ++i) barriers[i] = transition(buf[i].p, D3D12_RESOURCE_STATE_COPY_DEST, uav_state);
++    list->ResourceBarrier(buffer_count, barriers);
++    list->SetComputeRootSignature(root.p);
++    list->SetPipelineState(pso.p);
++    const auto dispatch = [&](ID3D12DescriptorHeap* h, UINT k, bool indirect) {
++        list->SetDescriptorHeaps(1, &h);
++        list->SetComputeRoot32BitConstant(0, k, 0);
++        if (indirect)
++            list->ExecuteIndirect(command_signature.p, 1, arguments.p, 0, nullptr, 0);
++        else
++            list->Dispatch(1, 1, 1);
++        D3D12_RESOURCE_BARRIER all{};
++        all.Type = D3D12_RESOURCE_BARRIER_TYPE_UAV;  // a1 and b1 are written twice
++        list->ResourceBarrier(1, &all);
++    };
++    dispatch(heap_a.p, 2, false);
++    dispatch(heap_b.p, 2, false);
++    dispatch(heap_a.p, 3, false);
++    dispatch(heap_b.p, 3, true);
++    for (int i = 0; i < buffer_count; ++i) barriers[i] = transition(buf[i].p, uav_state, D3D12_RESOURCE_STATE_COPY_SOURCE);
++    list->ResourceBarrier(buffer_count, barriers);
++    for (int i = 0; i < buffer_count; ++i) list->CopyBufferRegion(readback.p, bytes * i, buf[i].p, 0, bytes);
++    EXPECT(list->Close() == S_OK);
++    ID3D12CommandList* lists[] = {list.p};
++    queue->ExecuteCommandLists(1, lists);
++    EXPECT(rt::d3d12::last_execute_result(queue.p) == leonida::ReplayResult::success);
++    EXPECT(SUCCEEDED(queue->Signal(fence.p, 1)));
++    const HANDLE event = CreateEventW(nullptr, FALSE, FALSE, nullptr);
++    EXPECT(event != nullptr);
++    EXPECT(SUCCEEDED(fence->SetEventOnCompletion(1, event)));
++    if (WaitForSingleObject(event, 20000) != WAIT_OBJECT_0) {
++        std::fprintf(stderr, "the fence never reached 1\n");
++        return 1;
++    }
++    CloseHandle(event);
++
++    std::vector<std::uint32_t> got(bytes / 4 * buffer_count);
++    {
++        void* mapped = nullptr;
++        EXPECT(SUCCEEDED(readback->Map(0, nullptr, &mapped)));
++        std::memcpy(got.data(), mapped, got.size() * 4);
++        readback->Unmap(0, nullptr);
++    }
++    // a1 and b1: the static slot; a2, b2: k = 2 through heaps A and B; a3, b3: k = 3 through heap A (Dispatch) and
++    // heap B (ExecuteIndirect).
++    const auto want = [](Buf which, UINT g) -> std::uint32_t {
++        switch (which) {
++            case a1:
++            case b1:
++                return 0xa5000000u + g;
++            case a2:
++            case b2:
++                return 0x2000u + g;
++            case a3:
++            case b3:
++                return 0x3000u + g;
++            default:
++                return sentinel;
++        }
++    };
++    static const char* const names[buffer_count] = {"A[1]", "A[2]", "A[3]", "B[1]", "B[2]", "B[3]"};
++    unsigned bad = 0;
++    for (int i = 0; i < buffer_count; ++i)
++        for (UINT g = 0; g < lanes; ++g) {
++            const std::uint32_t have = got[i * lanes + g], expected = want(Buf(i), g);
++            ++words_checked;
++            if (have != expected && bad++ < 8)
++                std::fprintf(stderr, "%s word %u: 0x%08x, expected 0x%08x\n", names[i], g, have, expected);
++        }
++    EXPECT(bad == 0);
++    return 0;
++}
++
++// Part 2, graphics: the same signature (one root constant, CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED) on a graphics PSO of
++// vs_m2.asm (a quad from the vertex index) and ps_heap_index.asm, which reads k at s8 and the heap base at s9, loads
++// the raw buffer view at heap slot k and writes its four floats to every pixel of an RGBA32F target. Three draws,
++// each copied out before the next: heap C with k = 2, heap D with k = 2, heap C with k = 3, each slot a view of a
++// different four floats. Negative control as in part 1: the second draw differs from the first only in the heap bound.
++int run_graphics(vktest::Device& d, const std::filesystem::path& root_dir, unsigned& texels_checked) {
++    leonida::ShaderLibrary library;
++    EXPECT(library.load((root_dir / "spirv").string()));
++    const auto vs_program = read_file(root_dir / "fssm" / "vs_m2.fssm");
++    const auto ps_program = read_file(root_dir / "fssm" / "ps_heap_index.fssm");
++    EXPECT(library.find("vs", leonida::sha256_hex(vs_program)) && library.find("ps", leonida::sha256_hex(ps_program)));
++    const auto vs_container = shader_container(vs_program), ps_container = shader_container(ps_program);
++    Ref<ID3D12Device> device;
++    EXPECT(create_device(d, root_dir, device));
++    const auto root_blob = root_signature(res);
++    Ref<ID3D12RootSignature> root;
++    EXPECT(!root_blob.empty() &&
++           SUCCEEDED(device->CreateRootSignature(0, root_blob.data(), root_blob.size(), IID_PPV_ARGS(&root.p))));
++
++    constexpr UINT size = 8;
++    constexpr DXGI_FORMAT format = DXGI_FORMAT_R32G32B32A32_FLOAT;
++    D3D12_GRAPHICS_PIPELINE_STATE_DESC pso_desc{};
++    pso_desc.pRootSignature = root.p;
++    pso_desc.VS = {vs_container.data(), vs_container.size()};
++    pso_desc.PS = {ps_container.data(), ps_container.size()};
++    pso_desc.BlendState.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
++    pso_desc.SampleMask = 0xffffffff;
++    pso_desc.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
++    pso_desc.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
++    pso_desc.RasterizerState.DepthClipEnable = TRUE;
++    pso_desc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
++    pso_desc.NumRenderTargets = 1;
++    pso_desc.RTVFormats[0] = format;
++    pso_desc.SampleDesc.Count = 1;
++    Ref<ID3D12PipelineState> pso;
++    EXPECT(SUCCEEDED(device->CreateGraphicsPipelineState(&pso_desc, IID_PPV_ARGS(&pso.p))));
++
++    // The four floats of each draw; the upload buffer also holds the six indices of the quad, at byte 256.
++    constexpr float colors[3][4] = {{0.25f, 0.5f, 0.75f, 1.0f}, {2.0f, -1.0f, 0.125f, 0.5f}, {3.0f, 4.0f, 5.0f, 6.0f}};
++    constexpr std::uint16_t indices[6] = {0, 1, 2, 2, 1, 3};
++    constexpr UINT64 index_offset = 256, pitch = 256, slice = pitch * size;
++    const D3D12_HEAP_PROPERTIES default_heap{D3D12_HEAP_TYPE_DEFAULT}, upload_heap{D3D12_HEAP_TYPE_UPLOAD},
++        readback_heap{D3D12_HEAP_TYPE_READBACK};
++    Ref<ID3D12Resource> upload, data, readback, target;
++    const auto buffer = [&](Ref<ID3D12Resource>& out, const D3D12_HEAP_PROPERTIES& heap, UINT64 bytes_,
++                            D3D12_RESOURCE_FLAGS flags, D3D12_RESOURCE_STATES state) {
++        const auto desc = buffer_desc(bytes_, flags);
++        return SUCCEEDED(device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &desc, state, nullptr,
++                                                         IID_PPV_ARGS(&out.p)));
++    };
++    EXPECT(buffer(upload, upload_heap, 512, D3D12_RESOURCE_FLAG_NONE, D3D12_RESOURCE_STATE_GENERIC_READ));
++    EXPECT(buffer(data, default_heap, sizeof(colors), D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
++                  D3D12_RESOURCE_STATE_COPY_DEST));
++    EXPECT(buffer(readback, readback_heap, slice * 3, D3D12_RESOURCE_FLAG_NONE, D3D12_RESOURCE_STATE_COPY_DEST));
++    {
++        std::uint8_t* mapped = nullptr;
++        EXPECT(SUCCEEDED(upload->Map(0, nullptr, reinterpret_cast<void**>(&mapped))));
++        std::memcpy(mapped, colors, sizeof(colors));
++        std::memcpy(mapped + index_offset, indices, sizeof(indices));
++        upload->Unmap(0, nullptr);
++    }
++    D3D12_RESOURCE_DESC target_desc{};
++    target_desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
++    target_desc.Width = size;
++    target_desc.Height = size;
++    target_desc.DepthOrArraySize = 1;
++    target_desc.MipLevels = 1;
++    target_desc.Format = format;
++    target_desc.SampleDesc.Count = 1;
++    target_desc.Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
++    EXPECT(SUCCEEDED(device->CreateCommittedResource(&default_heap, D3D12_HEAP_FLAG_NONE, &target_desc,
++                                                     D3D12_RESOURCE_STATE_RENDER_TARGET, nullptr,
++                                                     IID_PPV_ARGS(&target.p))));
++
++    const D3D12_DESCRIPTOR_HEAP_DESC heap_desc{D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 4,
++                                               D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE, 0};
++    Ref<ID3D12DescriptorHeap> heap_c, heap_d, rtv_heap;
++    EXPECT(SUCCEEDED(device->CreateDescriptorHeap(&heap_desc, IID_PPV_ARGS(&heap_c.p))));
++    EXPECT(SUCCEEDED(device->CreateDescriptorHeap(&heap_desc, IID_PPV_ARGS(&heap_d.p))));
++    const D3D12_DESCRIPTOR_HEAP_DESC rtv_desc{D3D12_DESCRIPTOR_HEAP_TYPE_RTV, 1, D3D12_DESCRIPTOR_HEAP_FLAG_NONE, 0};
++    EXPECT(SUCCEEDED(device->CreateDescriptorHeap(&rtv_desc, IID_PPV_ARGS(&rtv_heap.p))));
++    const D3D12_CPU_DESCRIPTOR_HANDLE rtv = rtv_heap->GetCPUDescriptorHandleForHeapStart();
++    device->CreateRenderTargetView(target.p, nullptr, rtv);
++    const UINT step = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
++    const auto raw_view = [&](ID3D12DescriptorHeap* h, UINT index, UINT color) {
++        D3D12_UNORDERED_ACCESS_VIEW_DESC view{};
++        view.Format = DXGI_FORMAT_R32_TYPELESS;
++        view.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
++        view.Buffer = {UINT64(color) * 4, 4, 0, 0, D3D12_BUFFER_UAV_FLAG_RAW};
++        D3D12_CPU_DESCRIPTOR_HANDLE at = h->GetCPUDescriptorHandleForHeapStart();
++        at.ptr += SIZE_T(index) * step;
++        device->CreateUnorderedAccessView(data.p, nullptr, &view, at);
++    };
++    raw_view(heap_c.p, 2, 0);
++    raw_view(heap_d.p, 2, 1);
++    raw_view(heap_c.p, 3, 2);
++
++    D3D12_COMMAND_QUEUE_DESC queue_desc{};
++    queue_desc.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
++    Ref<ID3D12CommandQueue> queue;
++    Ref<ID3D12CommandAllocator> allocator;
++    Ref<ID3D12GraphicsCommandList> list;
++    Ref<ID3D12Fence> fence;
++    EXPECT(SUCCEEDED(device->CreateCommandQueue(&queue_desc, IID_PPV_ARGS(&queue.p))));
++    EXPECT(SUCCEEDED(device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&allocator.p))));
++    EXPECT(SUCCEEDED(device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, allocator.p, pso.p,
++                                               IID_PPV_ARGS(&list.p))));
++    EXPECT(SUCCEEDED(device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&fence.p))));
++
++    list->CopyBufferRegion(data.p, 0, upload.p, 0, sizeof(colors));
++    D3D12_RESOURCE_BARRIER to_read = transition(data.p, D3D12_RESOURCE_STATE_COPY_DEST,
++                                                D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE |
++                                                    D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
++    list->ResourceBarrier(1, &to_read);
++    list->SetGraphicsRootSignature(root.p);
++    list->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
++    const D3D12_INDEX_BUFFER_VIEW ibv{upload->GetGPUVirtualAddress() + index_offset, sizeof(indices),
++                                      DXGI_FORMAT_R16_UINT};
++    list->IASetIndexBuffer(&ibv);
++    const D3D12_VIEWPORT viewport{0, 0, float(size), float(size), 0, 1};
++    const D3D12_RECT scissor{0, 0, LONG(size), LONG(size)};
++    list->RSSetViewports(1, &viewport);
++    list->RSSetScissorRects(1, &scissor);
++    list->OMSetRenderTargets(1, &rtv, FALSE, nullptr);
++    const FLOAT clear[4] = {-7.0f, -7.0f, -7.0f, -7.0f};  // a pixel the draw missed shows
++    const auto draw = [&](ID3D12DescriptorHeap* h, UINT k, UINT n) {
++        list->ClearRenderTargetView(rtv, clear, 0, nullptr);
++        list->SetDescriptorHeaps(1, &h);
++        list->SetGraphicsRoot32BitConstant(0, k, 0);
++        list->DrawIndexedInstanced(6, 1, 0, 0, 0);
++        D3D12_RESOURCE_BARRIER b = transition(target.p, D3D12_RESOURCE_STATE_RENDER_TARGET,
++                                              D3D12_RESOURCE_STATE_COPY_SOURCE);
++        list->ResourceBarrier(1, &b);
++        D3D12_TEXTURE_COPY_LOCATION dst{};
++        dst.pResource = readback.p;
++        dst.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
++        dst.PlacedFootprint = {slice * n, {format, size, size, 1, UINT(pitch)}};
++        D3D12_TEXTURE_COPY_LOCATION src{};
++        src.pResource = target.p;
++        src.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
++        list->CopyTextureRegion(&dst, 0, 0, 0, &src, nullptr);
++        std::swap(b.Transition.StateBefore, b.Transition.StateAfter);
++        list->ResourceBarrier(1, &b);
++    };
++    draw(heap_c.p, 2, 0);
++    draw(heap_d.p, 2, 1);
++    draw(heap_c.p, 3, 2);
++    EXPECT(list->Close() == S_OK);
++    ID3D12CommandList* lists[] = {list.p};
++    queue->ExecuteCommandLists(1, lists);
++    EXPECT(rt::d3d12::last_execute_result(queue.p) == leonida::ReplayResult::success);
++    EXPECT(SUCCEEDED(queue->Signal(fence.p, 1)));
++    const HANDLE event = CreateEventW(nullptr, FALSE, FALSE, nullptr);
++    EXPECT(event != nullptr);
++    EXPECT(SUCCEEDED(fence->SetEventOnCompletion(1, event)));
++    if (WaitForSingleObject(event, 20000) != WAIT_OBJECT_0) {
++        std::fprintf(stderr, "the fence never reached 1\n");
++        return 1;
++    }
++    CloseHandle(event);
++
++    std::vector<std::uint8_t> got(slice * 3);
++    {
++        void* mapped = nullptr;
++        EXPECT(SUCCEEDED(readback->Map(0, nullptr, &mapped)));
++        std::memcpy(got.data(), mapped, got.size());
++        readback->Unmap(0, nullptr);
++    }
++    static const char* const names[3] = {"C[2]", "D[2]", "C[3]"};
++    unsigned bad = 0;
++    for (UINT n = 0; n < 3; ++n)
++        for (UINT y = 0; y < size; ++y)
++            for (UINT x = 0; x < size; ++x) {
++                float texel[4];
++                std::memcpy(texel, got.data() + slice * n + pitch * y + 16 * x, sizeof(texel));
++                ++texels_checked;
++                if (std::memcmp(texel, colors[n], sizeof(texel)) != 0 && bad++ < 8)
++                    std::fprintf(stderr, "%s pixel (%u, %u): %g %g %g %g, expected %g %g %g %g\n", names[n], x, y,
++                                 texel[0], texel[1], texel[2], texel[3], colors[n][0], colors[n][1], colors[n][2],
++                                 colors[n][3]);
++            }
++    EXPECT(bad == 0);
++    return 0;
++}
++
++}  // namespace
++
++int main() {
++    vktest::Device d;
++    const auto device_status = d.initialize();
++    if (device_status == vktest::DeviceStatus::unavailable) return 77;   // no Vulkan GPU: ctest skips
++    if (device_status != vktest::DeviceStatus::ready) return 1;
++    unsigned words = 0;
++    if (const int status = run(d, LEONIDA_TEST_HEAP_INDEX_DIR, words)) return status;
++    unsigned texels = 0;
++    if (const int status = run_graphics(d, LEONIDA_TEST_HEAP_INDEX_DIR, texels)) return status;
++    if (d.validation_errors()) {
++        std::fprintf(stderr, "%u validation errors\n", d.validation_errors());
++        return 1;
++    }
++    std::printf("d3d12_heap_index: %u words match through heap-indexed V#s (two heaps, run-time and static slots, "
++                "Dispatch and ExecuteIndirect), and %u texels drawn through them by a pixel shader\n",
++                words, texels);
++    return 0;
++}
+diff --git a/runtime/test/d3d12_m2_textured_test.cpp b/runtime/test/d3d12_m2_textured_test.cpp
+index cd9448c75759a116b68a4cf5e65a09ad890c2482..742d3f3f011a74d820ff6ac98a15f534f5ed3e4e 100644
+--- a/runtime/test/d3d12_m2_textured_test.cpp
++++ b/runtime/test/d3d12_m2_textured_test.cpp
+@@ -186,7 +186,7 @@ int main() {
+         indexed_params[0].DescriptorTable = {1, &indexed_range};
+         indexed_params[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+         indexed_params[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+-        indexed_params[2].Constants = {0, 0, 2};  // s4 = SRV index, s5 = SRV stride in bytes
++        indexed_params[2].Constants = {0, 0, 2};  // s10 = SRV index, s11 = SRV stride in bytes
+         D3D12_VERSIONED_ROOT_SIGNATURE_DESC indexed_desc = root_desc;
+         indexed_desc.Desc_1_0.NumParameters = 3;
+         indexed_desc.Desc_1_0.pParameters = indexed_params;
+diff --git a/runtime/test/glsl/ms_draw.mesh b/runtime/test/glsl/ms_draw.mesh
+index 8bfd21785d5cb0d91952c18ff14baf254ffd4874..e258379a3f42be2af8528b61b384a8fdeb5188b9 100644
+--- a/runtime/test/glsl/ms_draw.mesh
++++ b/runtime/test/glsl/ms_draw.mesh
+@@ -2,7 +2,7 @@
+ // A mesh shader written to the translator's runtime contract (docs/design.md, "User data" and "Mesh shaders"),
+ // standing in for a translated one in d3d12_mesh_test. Each workgroup emits one quad (4 vertices, 2 triangles) on a
+ // 4x4 grid of clip-space cells: column = WorkgroupId.x + WorkgroupId.z, row = WorkgroupId.y, so all three
+-// DispatchMesh counts reach the shader. s0, s1 (root constants) move the quad in clip space; the colour is red. The
++// DispatchMesh counts reach the shader. s16, s17 (root constants; a mesh shader's root arguments start at s16) move the quad in clip space; the colour is red. The
+ // corners are top-left, top-right, bottom-left, bottom-right and the triangles (0,1,2) and (2,1,3), clockwise in D3D
+ // screen space as in d3d12_draw_test, so they are front-facing with the default winding.
+ #extension GL_EXT_mesh_shader : require
+@@ -22,7 +22,7 @@ void main() {
+     SetMeshOutputsEXT(4, 2);
+     const uint i = gl_LocalInvocationIndex;
+     const float column = float(gl_WorkGroupID.x + gl_WorkGroupID.z), row = float(gl_WorkGroupID.y);
+-    const vec2 offset = vec2(uintBitsToFloat(pc.s[0]), uintBitsToFloat(pc.s[1]));
++    const vec2 offset = vec2(uintBitsToFloat(pc.s[16]), uintBitsToFloat(pc.s[17]));
+     if (i < 4) {
+         const vec2 corner = vec2(float(i & 1u), float(i >> 1));
+         const vec2 top_left = vec2(-1.0 + 0.5 * column, 1.0 - 0.5 * row);
+diff --git a/runtime/test/glsl/ps_depth_write.frag b/runtime/test/glsl/ps_depth_write.frag
+index 959d1dd9de6936e10f02e397532569824c7021ee..b176e08ccf125a7c0f1bc97764661133a6808c7a 100644
+--- a/runtime/test/glsl/ps_depth_write.frag
++++ b/runtime/test/glsl/ps_depth_write.frag
+@@ -1,5 +1,5 @@
+ #version 460
+-// A pixel shader that writes its own depth (SV_Depth), for d3d12_depth24_draw_test: s2 is the depth it writes. On a
++// A pixel shader that writes its own depth (SV_Depth), for d3d12_depth24_draw_test: s10 is the depth it writes. On a
+ // D24 target the value is stored quantised to 24 bits, and D3D applies no depth bias to it.
+ 
+ layout(push_constant) uniform UserData {
+@@ -9,5 +9,5 @@ layout(push_constant) uniform UserData {
+ } pc;
+ 
+ void main() {
+-    gl_FragDepth = uintBitsToFloat(pc.s[2]);
++    gl_FragDepth = uintBitsToFloat(pc.s[10]);
+ }
+diff --git a/runtime/test/glsl/ps_draw.frag b/runtime/test/glsl/ps_draw.frag
+index 2361330f41a76e662540387b8e2df15a872595e2..a2f00992d8f3e930928026ef93c33e44796410be 100644
+--- a/runtime/test/glsl/ps_draw.frag
++++ b/runtime/test/glsl/ps_draw.frag
+@@ -1,6 +1,6 @@
+ #version 460
+ // A pixel shader written to the translator's runtime contract, standing in for a translated one in
+-// d3d12_draw_test. s2:s3 is a root CBV: the console VA of three floats (a tint), read at heap base + VA. The output
++// d3d12_draw_test. s10:s11 is a root CBV (after the two root constants at s8, s9): the console VA of three floats (a tint), read at heap base + VA. The output
+ // is (red * tint.x, tint.y, blue * tint.z, 1).
+ #extension GL_EXT_buffer_reference : require
+ #extension GL_EXT_buffer_reference_uvec2 : require
+@@ -25,6 +25,6 @@ uvec2 add64(uvec2 a, uvec2 b) {
+ }
+ 
+ void main() {
+-    Floats tint = Floats(add64(pc.heap_base, uvec2(pc.s[2], pc.s[3])));
++    Floats tint = Floats(add64(pc.heap_base, uvec2(pc.s[10], pc.s[11])));
+     target = vec4(color.r * tint.f[0], tint.f[1], color.b * tint.f[2], 1.0);
+ }
+diff --git a/runtime/test/glsl/vs_depth.vert b/runtime/test/glsl/vs_depth.vert
+index de1d6ee40d8f78a396ac7e7b7d0aef03c04c07cc..1ade14c156dd91ffc0023375633bdd2b514912c6 100644
+--- a/runtime/test/glsl/vs_depth.vert
++++ b/runtime/test/glsl/vs_depth.vert
+@@ -1,7 +1,7 @@
+ #version 460
+ // A full-screen triangle at a chosen depth, written to the translator's runtime contract (docs/design.md, "User
+-// data"), for d3d12_depth24_draw_test: s0 is the depth at the centre and s1 how much it changes per unit of clip-space
+-// x, so s1 = 0 gives a flat triangle and anything else a constant slope across the target.
++// data"), for d3d12_depth24_draw_test: s8 is the depth at the centre and s9 how much it changes per unit of clip-space
++// x, so s9 = 0 gives a flat triangle and anything else a constant slope across the target.
+ 
+ layout(push_constant) uniform UserData {
+     uint s[32];
+@@ -12,5 +12,5 @@ layout(push_constant) uniform UserData {
+ void main() {
+     const vec2 corner = vec2(float(gl_VertexIndex & 2), float((gl_VertexIndex << 1) & 2));
+     const vec2 xy = corner * 2.0 - 1.0;
+-    gl_Position = vec4(xy, uintBitsToFloat(pc.s[0]) + uintBitsToFloat(pc.s[1]) * xy.x, 1.0);
++    gl_Position = vec4(xy, uintBitsToFloat(pc.s[8]) + uintBitsToFloat(pc.s[9]) * xy.x, 1.0);
+ }
+diff --git a/runtime/test/glsl/vs_draw.vert b/runtime/test/glsl/vs_draw.vert
+index 3cde02a50e1885dca5b630de01dbab6be193257f..d713854c9bd83d8357de478546390ca1ca224391 100644
+--- a/runtime/test/glsl/vs_draw.vert
++++ b/runtime/test/glsl/vs_draw.vert
+@@ -2,7 +2,7 @@
+ // A vertex shader written to the translator's runtime contract (docs/design.md, "Vertex fetch" and "User data"),
+ // standing in for a translated one in d3d12_draw_test. Inputs sit at location = D3D input register: COLOR is
+ // register 0 and POSITION register 1 here, the reverse of the input layout's order, so the test shows that the
+-// layout is matched by semantic. s0, s1 (root constants) move the vertex in clip space.
++// layout is matched by semantic. s8, s9 (root constants; a vertex shader's root arguments start at s8) move the vertex in clip space.
+ 
+ layout(location = 0) in vec4 color;     // COLOR0, input register 0
+ layout(location = 1) in vec4 position;  // POSITION0, input register 1
+@@ -16,7 +16,7 @@ layout(push_constant) uniform UserData {
+ } pc;
+ 
+ void main() {
+-    const vec2 offset = vec2(uintBitsToFloat(pc.s[0]), uintBitsToFloat(pc.s[1]));
++    const vec2 offset = vec2(uintBitsToFloat(pc.s[8]), uintBitsToFloat(pc.s[9]));
+     gl_Position = vec4(position.xy + offset, 0.0, 1.0);
+     out_color = color;
+ }
+diff --git a/runtime/test/glsl/vs_draw_int.vert b/runtime/test/glsl/vs_draw_int.vert
+index ea5782469226af057a761afabc423e7e8d440643..cb4f5ca73ba39dabb7a67ec7387709a49b306ff0 100644
+--- a/runtime/test/glsl/vs_draw_int.vert
++++ b/runtime/test/glsl/vs_draw_int.vert
+@@ -14,7 +14,7 @@ layout(push_constant) uniform UserData {
+ } pc;
+ 
+ void main() {
+-    const vec2 offset = vec2(uintBitsToFloat(pc.s[0]), uintBitsToFloat(pc.s[1]));
++    const vec2 offset = vec2(uintBitsToFloat(pc.s[8]), uintBitsToFloat(pc.s[9]));
+     gl_Position = vec4(position.xy + offset, 0.0, 1.0);
+     out_color = vec4(color);
+ }
+diff --git a/runtime/test/root_signature_test.cpp b/runtime/test/root_signature_test.cpp
+index 831739a8c3da8403dd23438d0607dec21c9ec808..080f780ded171bf3004e9f669c17f96242a9f20c 100644
+--- a/runtime/test/root_signature_test.cpp
++++ b/runtime/test/root_signature_test.cpp
+@@ -422,6 +422,49 @@ int main() {
+         // An empty signature is valid and uses nothing.
+         const StagePackResult empty = pack_stage(RootSignature{}, Stage::Compute);
+         check(empty.ok && empty.first_sgpr.empty() && empty.end_sgpr == 4, "pack_stage: empty signature");
++        check(empty.resource_heap_sgpr == kNoSgpr && empty.sampler_heap_sgpr == kNoSgpr,
++              "pack_stage: no heap-indexing flag, no heap SGPR");
++    }
++
++    // pack_stage: the bound heaps' bases follow the root arguments, CBV/SRV/UAV first (D3D-329). The shape of the
++    // game's commonest heap-indexing compute shader: two tables at s4/s5, four more dwords, the CBV/SRV/UAV heap base
++    // at s10 and the sampler heap base at s11, 12 user SGPRs.
++    {
++        RootSignature both;
++        both.params = {table(), table(), view(), view()};
++        both.flags = kFlagResourceHeapDirectlyIndexed | kFlagSamplerHeapDirectlyIndexed;
++        const StagePackResult r = pack_stage(both, Stage::Compute);
++        check(r.ok && r.first_sgpr == std::vector<uint32_t>({4, 5, 6, 8}) && r.resource_heap_sgpr == 10 &&
++                  r.sampler_heap_sgpr == 11 && r.end_sgpr == 12,
++              "pack_stage: CBV/SRV/UAV heap base at s10, sampler heap base at s11, 12 user SGPRs");
++        RootSignature res = both;
++        res.flags = kFlagResourceHeapDirectlyIndexed;
++        const StagePackResult rr = pack_stage(res, Stage::Compute);
++        check(rr.ok && rr.resource_heap_sgpr == 10 && rr.sampler_heap_sgpr == kNoSgpr && rr.end_sgpr == 11,
++              "pack_stage: CBV/SRV/UAV heap only");
++        RootSignature smp = both;
++        smp.flags = kFlagSamplerHeapDirectlyIndexed | 0x03000000u;  // the Xbox type byte does not move anything
++        const StagePackResult rs = pack_stage(smp, Stage::Compute);
++        check(rs.ok && rs.resource_heap_sgpr == kNoSgpr && rs.sampler_heap_sgpr == 10 && rs.end_sgpr == 11,
++              "pack_stage: sampler heap only takes the first free SGPR");
++        RootSignature none = both;
++        none.flags = 0;
++        const StagePackResult rn = pack_stage(none, Stage::Compute);
++        check(rn.ok && rn.resource_heap_sgpr == kNoSgpr && rn.sampler_heap_sgpr == kNoSgpr && rn.end_sgpr == 10,
++              "pack_stage: the same signature without the flags ends at s10");
++
++        // The heap bases count against the 28 compute SGPRs: one free slot takes the CBV/SRV/UAV base but not both.
++        RootSignature full;
++        full.params = {consts(27)};
++        full.flags = kFlagResourceHeapDirectlyIndexed;
++        const StagePackResult f1 = pack_stage(full, Stage::Compute);
++        check(f1.ok && f1.resource_heap_sgpr == 31 && f1.end_sgpr == 32, "pack_stage: heap base in s31");
++        full.flags |= kFlagSamplerHeapDirectlyIndexed;
++        const StagePackResult f2 = pack_stage(full, Stage::Compute);
++        check(!f2.ok && f2.first_sgpr.empty() && f2.resource_heap_sgpr == kNoSgpr &&
++                  f2.error.find("sampler heap base") != std::string::npos &&
++                  f2.error.find("spill") != std::string::npos && f2.spills,
++              "pack_stage: a heap base that does not fit is refused and named");
+     }
+ 
+     // pack_stage refuses a spill instead of truncating: compute has 28 SGPRs above s4, mesh 16 above s16.
+@@ -433,8 +476,11 @@ int main() {
+         over.params = {consts(27), view()};  // the view would need s31..s32
+         const StagePackResult r = pack_stage(over, Stage::Compute);
+         check(!r.ok && r.first_sgpr.empty() && r.error.find("root parameter 1") != std::string::npos &&
+-                  r.error.find("spill") != std::string::npos,
++                  r.error.find("spill") != std::string::npos && r.spills,
+               "pack_stage: a parameter that does not fit whole is refused and named");
++        // The same signature fits the graphics stages from s8 only up to 24 SGPRs: a spill there too, still valid.
++        const StagePackResult g = pack_stage(over, Stage::Pixel);
++        check(!g.ok && g.spills, "pack_stage: a valid signature that spills from s8 is marked as a spill");
+         RootSignature fits_old;
+         fits_old.params = {consts(30)};  // fits pack()'s 32 from s0, not 28 from s4
+         check(pack(fits_old).ok && !pack_stage(fits_old, Stage::Compute).ok,
+@@ -453,15 +499,23 @@ int main() {
+     {
+         RootSignature zero;
+         zero.params = {consts(0)};
+-        check(!pack_stage(zero, Stage::Compute).ok, "pack_stage: zero-value constants rejected");
+-        // Every parameter takes at least as many SGPRs as it costs, so the 32-SGPR budget refuses before the
+-        // 64-dword cost limit can; an over-cost signature is refused all the same.
++        check(!pack_stage(zero, Stage::Compute).ok && !pack_stage(zero, Stage::Compute).spills,
++              "pack_stage: zero-value constants rejected");
++        // The first parameter already spills, but the signature is invalid (over the 64-dword cost limit), and
++        // that is what pack_stage reports: an invalid signature is never taken for one that only spills.
+         RootSignature costly;
+         costly.params = {consts(40), consts(30)};
+-        check(!pack_stage(costly, Stage::Compute).ok, "pack_stage: over-cost signature refused");
++        const StagePackResult c = pack_stage(costly, Stage::Compute);
++        check(!c.ok && !c.spills && c.error.find("cost limit") != std::string::npos,
++              "pack_stage: over-cost signature refused as invalid, not as a spill");
++        RootSignature late;
++        late.params = {consts(30), consts(35)};  // spills at parameter 0, over the cost limit at parameter 1
++        check(!pack_stage(late, Stage::Compute).ok && !pack_stage(late, Stage::Compute).spills,
++              "pack_stage: an invalid parameter after a spill is still found");
+         RootSignature many;
+         many.params.assign(65, table());
+-        check(!pack_stage(many, Stage::Compute).ok, "pack_stage: more than 64 parameters rejected");
++        check(!pack_stage(many, Stage::Compute).ok && !pack_stage(many, Stage::Compute).spills,
++              "pack_stage: more than 64 parameters rejected");
+     }
+ 
+     if (g_failures != 0) std::printf("%d FAILURES\n", g_failures);
+diff --git a/runtime/test/shaders/cs_heap_index.asm b/runtime/test/shaders/cs_heap_index.asm
+new file mode 100644
+index 0000000000000000000000000000000000000000..af0b5710a98bafd848c0cc1c9ef6598456ee995a
+--- /dev/null
++++ b/runtime/test/shaders/cs_heap_index.asm
+@@ -0,0 +1,30 @@
++; group: 64,1,1
++; rsrc2: 0x8084
++; fssm-at: 0x150
++; fssm-data: 0x58444948 0x3d504148
++; Direct heap indexing (ResourceDescriptorHeap[k], docs/d3d12_vulkan.md section 3.4): hand-written RDNA2 in the shape
++; the game's heap-indexing compute shaders have. Run: d3d12_heap_index_test (a compute PSO found by the SHA-256 of its
++; synthetic FSSM header, as for the other cs_ shaders).
++; Root signature: [0] one 32-bit constant, flag CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED. The console puts the bound
++; CBV/SRV/UAV heap's base right after the root arguments, as a 32-bit pointer; the heap stride (32 bytes) is compiled
++; into the shader. RSRC2 0x8084 = two user SGPRs and TGID_X, so the group index is s2:
++;   s0 = k, the heap index   s1 = console VA of the bound CBV/SRV/UAV heap's first slot (high word 0)
++; D3D12 build: runtime/CMakeLists.txt builds this with LEONIDA_USER_DATA_SHIFT=4, so in the PSO every SGPR named here
++; is 4 higher (the root constant at s4, the heap base at s5).
++;   heap slot k (dynamic offset k * 32): a raw buffer UAV; lane g writes 0x1000 * k + g at byte 4 * g
++;   heap slot 1 (static offset 0x20):    a raw buffer UAV; lane g writes 0xa5000000 + g at byte 4 * g
++s_mov_b32 s4, s1
++s_mov_b32 s5, 0
++s_lshl_b32 s6, s0, 5
++s_load_dwordx4 s[8:11], s[4:5], s6
++s_load_dwordx4 s[12:15], s[4:5], 0x20
++s_lshl_b32 s7, s2, 6
++v_add_nc_u32_e32 v1, s7, v0
++v_lshlrev_b32_e32 v2, 2, v1
++s_lshl_b32 s3, s0, 12
++v_add_nc_u32_e32 v3, s3, v1
++v_add_nc_u32_e32 v4, 0xa5000000, v1
++s_waitcnt lgkmcnt(0)
++buffer_store_dword v3, v2, s[8:11], 0 offen
++buffer_store_dword v4, v2, s[12:15], 0 offen
++s_endpgm
+diff --git a/runtime/test/shaders/ps_heap_index.asm b/runtime/test/shaders/ps_heap_index.asm
+new file mode 100644
+index 0000000000000000000000000000000000000000..86f4fe4d2c08a6a0fcad2267cb69d21b3a0cab31
+--- /dev/null
++++ b/runtime/test/shaders/ps_heap_index.asm
+@@ -0,0 +1,20 @@
++; Direct heap indexing in a pixel shader (ResourceDescriptorHeap[k], docs/d3d12_vulkan.md sections 3.4 and 3.5), in
++; the shape of the game's heap-indexing pixel shaders. Run: d3d12_heap_index_test (a graphics PSO found by the SHA-256
++; of its FSSM program, with vs_m2.asm).
++; Root signature: [0] one 32-bit constant, flag CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED. The pixel stage's root arguments
++; start at s8, and the bound CBV/SRV/UAV heap's base follows them as a 32-bit pointer:
++;   s8 = k, the heap index   s9 = console VA of the bound CBV/SRV/UAV heap's first slot (high word 0)
++;   heap slot k (offset k * 32, the stride compiled in): a raw buffer view of 16 bytes, four floats
++;   mrt0 = those four floats, at every pixel
++; fssm-at: 0x10
++; fssm-data: 0x50414548 0x58444e49
++s_mov_b32 s20, s9
++s_mov_b32 s21, 0
++s_lshl_b32 s22, s8, 5
++s_load_dwordx4 s[24:27], s[20:21], s22
++v_mov_b32_e32 v6, 0
++s_waitcnt lgkmcnt(0)
++buffer_load_dwordx4 v[2:5], v6, s[24:27], 0 offen
++s_waitcnt vmcnt(0)
++exp mrt0 v2, v3, v4, v5 done vm
++s_endpgm
+diff --git a/runtime/test/shaders/ps_m15.asm b/runtime/test/shaders/ps_m15.asm
+index 4c924a72fc9985952ec9921ce94a7857ccddd095..bf76a0cf0f50fd0cef892d33c84c07d70f36e71f 100644
+--- a/runtime/test/shaders/ps_m15.asm
++++ b/runtime/test/shaders/ps_m15.asm
+@@ -5,7 +5,7 @@
+ ; code base, dwords 34-35, is the console VA of the FSSM program the layer uploaded). The table of four floats is at
+ ; blob offset 0x100: 0x100 - 4 = 0xfc. build.py writes that blob (fssm-at / fssm-data below) next to the SPIR-V, and
+ ; adds its SHA-256 to the index, as the translator's --fssm-dir does for the game's programs.
+-;   scale = (0.5, 2.0, 1.0, 1.0)      s4 = bias, a float from the root constants (s2, s3 are the VS offset)
++;   scale = (0.5, 2.0, 1.0, 1.0)      s11 = bias, a float from the root constants (s9, s10 are the VS offset)
+ ;   mrt0  = (r * 0.5 + bias, g * 2.0 + bias, b * 1.0 + bias, a * 1.0)
+ ; The test draws colour (0.25, 0.5, 0.75, 1) with bias 0 and 0.125, and colour (1, 0, 0.5, 1) with bias 0.25. Every
+ ; value is a short binary fraction, so the float render target holds the exact result, bit for bit:
+@@ -18,7 +18,7 @@
+ s_getpc_b64 s[6:7]
+ s_add_u32 s6, s6, 0xfc
+ s_addc_u32 s7, s7, 0
+-s_load_dwordx4 s[8:11], s[6:7], 0x0
++s_load_dwordx4 s[24:27], s[6:7], 0x0
+ v_interp_p1_f32_e32 v2, v0, attr0.x
+ v_interp_p2_f32_e32 v2, v1, attr0.x
+ v_interp_p1_f32_e32 v3, v0, attr0.y
+@@ -28,9 +28,9 @@ v_interp_p2_f32_e32 v4, v1, attr0.z
+ v_interp_p1_f32_e32 v5, v0, attr0.w
+ v_interp_p2_f32_e32 v5, v1, attr0.w
+ s_waitcnt lgkmcnt(0)
+-v_fma_f32 v2, v2, s8, s4
+-v_fma_f32 v3, v3, s9, s4
+-v_fma_f32 v4, v4, s10, s4
+-v_mul_f32_e32 v5, s11, v5
++v_fma_f32 v2, v2, s24, s11
++v_fma_f32 v3, v3, s25, s11
++v_fma_f32 v4, v4, s26, s11
++v_mul_f32_e32 v5, s27, v5
+ exp mrt0 v2, v3, v4, v5 done vm
+ s_endpgm
+diff --git a/runtime/test/shaders/ps_m2.asm b/runtime/test/shaders/ps_m2.asm
+index 0f23cefa3dfde5b9a04fbccc961a80d0fd2642be..8def37499699da4c461debde89277ca9648b3691 100644
+--- a/runtime/test/shaders/ps_m2.asm
++++ b/runtime/test/shaders/ps_m2.asm
+@@ -1,20 +1,25 @@
+ ; M2 pixel shader: samples a texture found through two root descriptor tables. Run: d3d12_m2_textured_test.
+ ; User data from the root signature ([0] a table holding one SRV, [1] a table holding one sampler):
+-;   s[0:1] = console VA of the SRV table's first slot: the 32 bytes of the T# CreateShaderResourceView wrote
+-;   s[2:3] = console VA of the sampler table's first slot: the 16 bytes of the S# CreateSampler wrote
++;   s8 = 32-bit console VA of the SRV table's first slot: the 32 bytes of the T# CreateShaderResourceView wrote
++;   s9 = 32-bit console VA of the sampler table's first slot: the 16 bytes of the S# CreateSampler wrote
++; One SGPR per table from s8 (docs/d3d12_vulkan.md section 3.5); the shader zeroes each pointer's high word.
+ ; The translator hashes the T# and the S# the shader loads and looks both up in the descriptor hash table (set 0,
+ ; binding 2); the indices pick the image (binding 0) and the sampler (binding 1) in the bindless set.
+ ; attr0.xy = (u, v), 0..1 over the quad.   mrt0 = the texel under the pixel.
+ ; fssm-at: 0x10
+ ; fssm-data: 0x324d5350 0x20535020
+-s_load_dwordx8 s[8:15], s[0:1], 0x0
+-s_load_dwordx4 s[16:19], s[2:3], 0x0
++s_mov_b32 s20, s8
++s_mov_b32 s21, 0
++s_mov_b32 s22, s9
++s_mov_b32 s23, 0
++s_load_dwordx8 s[24:31], s[20:21], 0x0
++s_load_dwordx4 s[32:35], s[22:23], 0x0
+ s_waitcnt lgkmcnt(0)
+ v_interp_p1_f32_e32 v2, v0, attr0.x
+ v_interp_p2_f32_e32 v2, v1, attr0.x
+ v_interp_p1_f32_e32 v3, v0, attr0.y
+ v_interp_p2_f32_e32 v3, v1, attr0.y
+-image_sample v[4:7], v[2:3], s[8:15], s[16:19] dmask:0xf dim:SQ_RSRC_IMG_2D
++image_sample v[4:7], v[2:3], s[24:31], s[32:35] dmask:0xf dim:SQ_RSRC_IMG_2D
+ s_waitcnt vmcnt(0)
+ exp mrt0 v4, v5, v6, v7 done vm
+ s_endpgm
+diff --git a/runtime/test/shaders/ps_m2_array.asm b/runtime/test/shaders/ps_m2_array.asm
+index 96260bd0a27b1af4a5a4654863e54903a42d73ac..9c0d1ea985399ca789be7ba944719bc54aff25e0 100644
+--- a/runtime/test/shaders/ps_m2_array.asm
++++ b/runtime/test/shaders/ps_m2_array.asm
+@@ -4,15 +4,19 @@
+ ; attr0.xy = (u, v), 0..1 over the quad.   mrt0 = the texel under the pixel.
+ ; fssm-at: 0x10
+ ; fssm-data: 0x324d5350 0x59525241
+-s_load_dwordx8 s[8:15], s[0:1], 0x0
+-s_load_dwordx4 s[16:19], s[2:3], 0x0
++s_mov_b32 s20, s8
++s_mov_b32 s21, 0
++s_mov_b32 s22, s9
++s_mov_b32 s23, 0
++s_load_dwordx8 s[24:31], s[20:21], 0x0
++s_load_dwordx4 s[32:35], s[22:23], 0x0
+ s_waitcnt lgkmcnt(0)
+ v_interp_p1_f32_e32 v2, v0, attr0.x
+ v_interp_p2_f32_e32 v2, v1, attr0.x
+ v_interp_p1_f32_e32 v3, v0, attr0.y
+ v_interp_p2_f32_e32 v3, v1, attr0.y
+ v_mov_b32 v4, 1.0
+-image_sample v[5:8], v[2:4], s[8:15], s[16:19] dmask:0xf dim:SQ_RSRC_IMG_2D_ARRAY
++image_sample v[5:8], v[2:4], s[24:31], s[32:35] dmask:0xf dim:SQ_RSRC_IMG_2D_ARRAY
+ s_waitcnt vmcnt(0)
+ exp mrt0 v5, v6, v7, v8 done vm
+ s_endpgm
+diff --git a/runtime/test/shaders/ps_m2_literal.asm b/runtime/test/shaders/ps_m2_literal.asm
+index f77ef197f46df4c693ff6d791aae5ffac729866d..a4399dd5294d4fc6c6233cf84c08de2ccf94513c 100644
+--- a/runtime/test/shaders/ps_m2_literal.asm
++++ b/runtime/test/shaders/ps_m2_literal.asm
+@@ -2,10 +2,12 @@
+ ; shaders do (docs/design.md, Literal samplers): CLAMP_LAST_TEXEL on all axes, bilinear min/mag, point mip, MAX_LOD
+ ; 12. No heap slot names this S#, so the layer registers it when a pipeline uses the shader; otherwise the shader's
+ ; hash lookup finds the fallback sampler. Run: d3d12_m2_textured_test.
+-;   s[0:1] = console VA of the SRV table's first slot (the T#).   attr0.xy = (u, v).   mrt0 = the sampled texel.
++;   s8 = 32-bit console VA of the SRV table's first slot (the T#; the shader zeroes the high word).   attr0.xy = (u, v).   mrt0 = the sampled texel.
+ ; fssm-at: 0x10
+ ; fssm-data: 0x324d5350 0x4c544c20
+-s_load_dwordx8 s[8:15], s[0:1], 0x0
++s_mov_b32 s20, s8
++s_mov_b32 s21, 0
++s_load_dwordx8 s[24:31], s[20:21], 0x0
+ s_movk_i32 s16, 0x92
+ s_mov_b32 s17, 0xc00000
+ s_mov_b32 s18, 0x14500000
+@@ -15,7 +17,7 @@ v_interp_p1_f32_e32 v2, v0, attr0.x
+ v_interp_p2_f32_e32 v2, v1, attr0.x
+ v_interp_p1_f32_e32 v3, v0, attr0.y
+ v_interp_p2_f32_e32 v3, v1, attr0.y
+-image_sample v[4:7], v[2:3], s[8:15], s[16:19] dmask:0xf dim:SQ_RSRC_IMG_2D
++image_sample v[4:7], v[2:3], s[24:31], s[16:19] dmask:0xf dim:SQ_RSRC_IMG_2D
+ s_waitcnt vmcnt(0)
+ exp mrt0 v4, v5, v6, v7 done vm
+ s_endpgm
+diff --git a/runtime/test/shaders/ps_m2_uoff.asm b/runtime/test/shaders/ps_m2_uoff.asm
+index 1c96f50d5504673b60d626d72c6f5765b1947957..96bc88ef26446fe9d6440b859e75a4ba8390a8d8 100644
+--- a/runtime/test/shaders/ps_m2_uoff.asm
++++ b/runtime/test/shaders/ps_m2_uoff.asm
+@@ -2,20 +2,24 @@
+ ; and the fallback sampler give the same pixels; with U + 1 the CLAMP sampler returns the last column and the WRAP one
+ ; the same texel as without the offset, so the pixels tell which sampler the draw used. Idea and measurements by
+ ; @Vonsek (#1489). Run: d3d12_m2_textured_test.
+-; The same unbounded SRV table stays bound across both draws. Root constants s4 and s5 hold
+-; the descriptor index and byte stride, respectively.
++; The same unbounded SRV table stays bound across both draws. Root constants s10 and s11 hold
++; the descriptor index and byte stride, respectively (after the two tables at s8 and s9).
+ ; fssm-at: 0x10
+ ; fssm-data: 0x324d5350 0x4f465520
+-s_mul_i32 s20, s4, s5
+-s_load_dwordx8 s[8:15], s[0:1], s20
+-s_load_dwordx4 s[16:19], s[2:3], 0x0
++s_mul_i32 s36, s10, s11
++s_mov_b32 s20, s8
++s_mov_b32 s21, 0
++s_mov_b32 s22, s9
++s_mov_b32 s23, 0
++s_load_dwordx8 s[24:31], s[20:21], s36
++s_load_dwordx4 s[32:35], s[22:23], 0x0
+ s_waitcnt lgkmcnt(0)
+ v_interp_p1_f32_e32 v2, v0, attr0.x
+ v_interp_p2_f32_e32 v2, v1, attr0.x
+ v_interp_p1_f32_e32 v3, v0, attr0.y
+ v_interp_p2_f32_e32 v3, v1, attr0.y
+ v_add_f32_e32 v2, 1.0, v2
+-image_sample v[4:7], v[2:3], s[8:15], s[16:19] dmask:0xf dim:SQ_RSRC_IMG_2D
++image_sample v[4:7], v[2:3], s[24:31], s[32:35] dmask:0xf dim:SQ_RSRC_IMG_2D
+ s_waitcnt vmcnt(0)
+ exp mrt0 v4, v5, v6, v7 done vm
+ s_endpgm
+diff --git a/runtime/test/shaders/ps_m3.asm b/runtime/test/shaders/ps_m3.asm
+index be2a59e2db028a95c6156035020a1fcb777a7bca..c0e8ee5102d778d57fdb6c6987c370a9675349fa 100644
+--- a/runtime/test/shaders/ps_m3.asm
++++ b/runtime/test/shaders/ps_m3.asm
+@@ -1,14 +1,14 @@
+ ; M3 pixel shader, pass 1: two render targets from root constants. Run: d3d12_m3_frame_test.
+-; User data (the root signature of vs_m3.asm, [0], eight 32-bit constants): s5, s6, s7 = c0, c1, c2 (floats, k/255).
++; User data (the root signature of vs_m3.asm, [0], eight 32-bit constants): s13, s14, s15 = c0, c1, c2 (floats, k/255; from s8).
+ ;   mrt0 = (c0, c1, c2, 1.0)   an R8G8B8A8_UNORM target
+ ;   mrt1 = (c1 + c2)           an R32_FLOAT target: one float add, so the CPU gets the same bits
+ ; fssm-at: 0x10
+ ; fssm-data: 0x33535350 0x20535020
+-v_mov_b32_e32 v2, s5
+-v_mov_b32_e32 v3, s6
+-v_mov_b32_e32 v4, s7
++v_mov_b32_e32 v2, s13
++v_mov_b32_e32 v3, s14
++v_mov_b32_e32 v4, s15
+ v_mov_b32_e32 v5, 1.0
+-v_add_f32_e32 v6, s6, v4
++v_add_f32_e32 v6, s14, v4
+ exp mrt0 v2, v3, v4, v5
+ exp mrt1 v6, off, off, off done vm
+ s_endpgm
+diff --git a/runtime/test/shaders/ps_m3_post.asm b/runtime/test/shaders/ps_m3_post.asm
+index 8488030587419473d39bfe67944aee8af72435b2..0183379804ee744532fb3de4788230bf494601fe 100644
+--- a/runtime/test/shaders/ps_m3_post.asm
++++ b/runtime/test/shaders/ps_m3_post.asm
+@@ -1,20 +1,25 @@
+ ; M3 pixel shader, pass 2: samples the first render target of pass 1 (read through an SRV in a descriptor table) and
+ ; swaps red and blue. Run: d3d12_m3_frame_test.
+ ; User data from the root signature ([0] a table of one SRV, [1] a table of one sampler, [2] one 32-bit constant):
+-;   s[0:1] = console VA of the SRV table's first slot (the T#);   s[2:3] = console VA of the sampler table's slot (the S#)
+-;   s4 = the output's alpha, a float (changes every frame)
+-; attr0.xy = (u, v), 0..1 over the target.   mrt0 = (texel.b, texel.g, texel.r, s4)
++;   s8 = 32-bit console VA of the SRV table's first slot (the T#);   s9 = that of the sampler table's slot (the S#)
++;   s10 = the output's alpha, a float (changes every frame)
++; One SGPR per table from s8 (docs/d3d12_vulkan.md section 3.5); the shader zeroes each pointer's high word.
++; attr0.xy = (u, v), 0..1 over the target.   mrt0 = (texel.b, texel.g, texel.r, s10)
+ ; fssm-at: 0x10
+ ; fssm-data: 0x33505350 0x20535020
+-s_load_dwordx8 s[8:15], s[0:1], 0x0
+-s_load_dwordx4 s[16:19], s[2:3], 0x0
++s_mov_b32 s20, s8
++s_mov_b32 s21, 0
++s_mov_b32 s22, s9
++s_mov_b32 s23, 0
++s_load_dwordx8 s[24:31], s[20:21], 0x0
++s_load_dwordx4 s[32:35], s[22:23], 0x0
+ s_waitcnt lgkmcnt(0)
+ v_interp_p1_f32_e32 v2, v0, attr0.x
+ v_interp_p2_f32_e32 v2, v1, attr0.x
+ v_interp_p1_f32_e32 v3, v0, attr0.y
+ v_interp_p2_f32_e32 v3, v1, attr0.y
+-image_sample v[4:7], v[2:3], s[8:15], s[16:19] dmask:0xf dim:SQ_RSRC_IMG_2D
++image_sample v[4:7], v[2:3], s[24:31], s[32:35] dmask:0xf dim:SQ_RSRC_IMG_2D
+ s_waitcnt vmcnt(0)
+-v_mov_b32_e32 v8, s4
++v_mov_b32_e32 v8, s10
+ exp mrt0 v6, v5, v4, v8 done vm
+ s_endpgm
+diff --git a/runtime/test/shaders/ps_m3_query.asm b/runtime/test/shaders/ps_m3_query.asm
+index 0693cf5e23dcff76aadb15fb27d2baeb2c9bb0d0..cfe957471b65257ee284602c2e68eb82f8b7e076 100644
+--- a/runtime/test/shaders/ps_m3_query.asm
++++ b/runtime/test/shaders/ps_m3_query.asm
+@@ -4,9 +4,9 @@
+ ; Keep the probe single-output so its count can be compared exactly with the CPU's visible rectangle area.
+ ; fssm-at: 0x10
+ ; fssm-data: 0x33515350 0x20535020
+-v_mov_b32_e32 v2, s5
+-v_mov_b32_e32 v3, s6
+-v_mov_b32_e32 v4, s7
++v_mov_b32_e32 v2, s13
++v_mov_b32_e32 v3, s14
++v_mov_b32_e32 v4, s15
+ v_mov_b32_e32 v5, 1.0
+ exp mrt0 v2, v3, v4, v5 done vm
+ s_endpgm
+diff --git a/runtime/test/shaders/vs_m15.asm b/runtime/test/shaders/vs_m15.asm
+index 3ac449b0b4f56000816048abb5b051f7d6c5a234..f494c28bf703431a2e265feda791c3fcc3397da5 100644
+--- a/runtime/test/shaders/vs_m15.asm
++++ b/runtime/test/shaders/vs_m15.asm
+@@ -3,23 +3,27 @@
+ ; a D3D12 graphics PSO found by the SHA-256 of its FSSM program).
+ ;
+ ; User data, from the root signature [0] descriptor table, [1] four 32-bit constants (docs/d3d12_vulkan.md 3.5):
+-;   s[0:1] = console VA of the table's first slot: the 16 bytes of a V# (base VA, stride 32, 9 records)
+-;   s2, s3 = the draw's clip-space offset (x, y) as floats;   s4, s5 = used by the pixel shader (s4: bias)
++;   s8 = 32-bit console VA of the table's first slot: the 16 bytes of a V# (base VA, stride 32, 9 records). As in
++;        the game's shaders, the table is one SGPR and the shader zeroes the pointer's high word itself.
++;   s9, s10 = the draw's clip-space offset (x, y) as floats;   s11, s12 = used by the pixel shader (s11: bias)
++; (the console layout of a vertex shader's root arguments starts at s8, docs/d3d12_vulkan.md section 3.5)
+ ; v0 = VertexIndex. The draw has BaseVertex 0 and BaseInstance 0, so v0 is the same with and without the translator's
+ ; zero-based ids (PR 436): both give 0, 1, 2, ... for DrawInstanced(n, 1, 0, 0). A non-zero StartVertexLocation would
+ ; make the two differ (hardware: zero-based, base in an SGPR), so the test never uses one.
+ ; Vertex record, 32 bytes: position xyzw at 0, colour rgba at 16 (both float).
+-;   pos0   = (position.x + s2, position.y + s3, position.z, position.w)
++;   pos0   = (position.x + s9, position.y + s10, position.z, position.w)
+ ;   param0 = colour
+ ; fssm-at: 0x10
+ ; fssm-data: 0x35314d56 0x20535620
+-s_load_dwordx4 s[8:11], s[0:1], 0x0
++s_mov_b32 s20, s8
++s_mov_b32 s21, 0
++s_load_dwordx4 s[24:27], s[20:21], 0x0
+ s_waitcnt lgkmcnt(0)
+-buffer_load_dwordx4 v[4:7], v0, s[8:11], 0 idxen
+-buffer_load_dwordx4 v[8:11], v0, s[8:11], 0 idxen offset:16
++buffer_load_dwordx4 v[4:7], v0, s[24:27], 0 idxen
++buffer_load_dwordx4 v[8:11], v0, s[24:27], 0 idxen offset:16
+ s_waitcnt vmcnt(0)
+-v_add_f32_e32 v4, s2, v4
+-v_add_f32_e32 v5, s3, v5
++v_add_f32_e32 v4, s9, v4
++v_add_f32_e32 v5, s10, v5
+ exp pos0 v4, v5, v6, v7 done
+ exp param0 v8, v9, v10, v11
+ s_endpgm
+diff --git a/runtime/test/shaders/vs_m3.asm b/runtime/test/shaders/vs_m3.asm
+index 3bcc2278e747c6159c55c0bee2a52561d7bb0efc..0fe6960f21fb9e5d029c5b9dfdf447c45e6a2a4c 100644
+--- a/runtime/test/shaders/vs_m3.asm
++++ b/runtime/test/shaders/vs_m3.asm
+@@ -1,8 +1,9 @@
+ ; M3 vertex shader: a rectangle from the vertex index, placed and set at a depth by root constants. Run:
+ ; d3d12_m3_frame_test (found by the SHA-256 of its FSSM program, as vs_m15 and vs_m2 are).
+-; User data, from the root signature [0], eight 32-bit constants (floats) = s0..s7:
+-;   s0, s1 = clip-space x, y of the first corner;   s2, s3 = x, y of the opposite corner;   s4 = depth (clip z)
+-;   s5, s6, s7 = used by the pixel shader
++; User data, from the root signature [0], eight 32-bit constants (floats) = s8..s15 (the console layout starts a
++; vertex shader's root arguments at s8, docs/d3d12_vulkan.md section 3.5):
++;   s8, s9 = clip-space x, y of the first corner;   s10, s11 = x, y of the opposite corner;   s12 = depth (clip z)
++;   s13, s14, s15 = used by the pixel shader
+ ; v0 = VertexIndex, 0..3 (the test draws indices 0 1 2 2 1 3 with DrawIndexedInstanced and base vertex 0):
+ ;   u = v0 & 1, v = (v0 >> 1) & 1;   pos0 = (x0 + u * (x1 - x0), y0 + v * (y1 - y0), z, 1)
+ ; The corners are multiples of 1/32 and the depths are dyadic, so every operation here is exact however it is fused.
+@@ -13,15 +14,15 @@ v_and_b32_e32 v2, 2, v0
+ v_cvt_f32_u32_e32 v1, v1
+ v_cvt_f32_u32_e32 v2, v2
+ v_mul_f32_e32 v2, 0.5, v2
+-v_mov_b32_e32 v7, s0
+-v_mov_b32_e32 v8, s1
+-v_mov_b32_e32 v9, s2
+-v_mov_b32_e32 v10, s3
++v_mov_b32_e32 v7, s8
++v_mov_b32_e32 v8, s9
++v_mov_b32_e32 v9, s10
++v_mov_b32_e32 v10, s11
+ v_sub_f32_e32 v9, v9, v7
+ v_sub_f32_e32 v10, v10, v8
+ v_fma_f32 v3, v1, v9, v7
+ v_fma_f32 v4, v2, v10, v8
+-v_mov_b32_e32 v5, s4
++v_mov_b32_e32 v5, s12
+ v_mov_b32_e32 v6, 1.0
+ exp pos0 v3, v4, v5, v6 done
+ s_endpgm

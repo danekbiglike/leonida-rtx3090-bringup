@@ -201,3 +201,20 @@ $env:LEONIDA_SHADOW_LOW_IMPORTS = '1'
 .\build\d3d12_title_va_test.exe
 .\build\title_va_alias_test.exe
 ```
+
+### Graphics root arguments and the retail draw
+
+Apply `patches/frame-graphics-root-registers.patch` after the title-memory patch. This integrates [PR 9014](https://github.com/ItsNotRexed/Leonida/pull/9014) and [PR 9276](https://github.com/ItsNotRexed/Leonida/pull/9276) while retaining the descriptor counts used to scan bound tables. Graphics arguments start at s8, each table takes one dword and the bound heap bases follow the arguments.
+
+On the RTX 3090 the draw fixture matched all 4,096 pixels. The direct heap-index fixture verified 384 compute results and 192 pixel-shader texels, including bindings changed between dispatches and indirect execution. The root signature, compute, title-memory and depth fixtures also passed.
+
+With the same small shader catalogue and shadow settings, a subsequent title run submitted draws and produced 44 GPU readbacks. All 2,720,404 sampled pixels were black in each readback through present 488. The run stopped on a write in VCRUNTIME140 after 110.76 seconds. These are sampled presents. The relationship between the process stop and the missing pipelines remains undetermined.
+
+```powershell
+cmake --build build --target root_signature_test d3d12_draw_test d3d12_heap_index_test
+.\build\root_signature_test.exe
+.\build\d3d12_draw_test.exe
+.\build\d3d12_heap_index_test.exe
+```
+
+The heap-index target requires llvm-mc, spirv-as and spirv-val when configuring the build.
