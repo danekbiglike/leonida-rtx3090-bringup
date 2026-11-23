@@ -1,6 +1,6 @@
 # GTA VI Xbox to PC on an RTX 3090 with Leonida
 
-The Xbox build opens its own window on a Windows RTX 3090. In a 52-second offline run the title completed 9,746 DirectStorage file requests and submitted draws. Four reads of the 4K draw target and all 22 sampled presents were black. An interactive menu remains unverified. See [the measured frame and storage results](#draw-target-and-storage-completions).
+The Xbox build opens its own window on a Windows RTX 3090. The loader creates Xbox command lists and 216 native graphics pipelines. In a 27-second run all 164 submitted draws went into one intermediate target. The two presentation surfaces received clears and none of those draws. An interactive menu remains unverified. See [the native pipeline experiment](#native-graphics-pipelines-and-the-missing-presentation-draw).
 
 ## Reproduce the first black frames
 
@@ -241,3 +241,51 @@ On Windows with an RTX 3090, the same 102-entry shader catalogue and the title-m
 A preceding 35-second run using the draw-target probe without the descriptor-writeback patch also returned black from all four target reads. Both runs used a small shader catalogue. The remaining pipeline misses and the relationship between the draw target and the two presentation sources are still open. The local ladder base also forwards Xbox device slot 57 to the PC lifetime-tracker method. The [slot-57 graphics pipeline implementation](https://github.com/ItsNotRexed/Leonida/pull/8890) addresses that different ABI.
 
 Validation included the native draw, heap-index, device-proxy, Xbox proxy mock and title-VA fixtures, 337 DirectStorage checks and 22 Python trace tests. All twelve patches applied in sequence to the pinned ladder base. Build the shader fixtures with LLVM and SPIRV-Tools available at configure time.
+
+## Native graphics pipelines and the missing presentation draw
+
+The older ladder proxy forwarded Xbox device slot 57 to the Windows lifetime tracker. This port uses the integration branch's native graphics pipeline decoder and hash index, keeps PSO streams for derived pipelines at slot 55, and creates streams through the queried `ID3D12Device2` at slot 86. Credit goes to enx and the contributors to the [pinned integration tree](https://github.com/ASTROWwwW/Leonida/tree/1812e0bd1ee1bfc54006edcc1e400e91d5cdd57f).
+
+Start in the ladder checkout with the twelve patches above applied. The nine files below are byte-identical to the integration revision.
+
+```powershell
+$integration = '1812e0bd1ee1bfc54006edcc1e400e91d5cdd57f'
+git fetch https://github.com/ASTROWwwW/Leonida.git $integration
+$files = @(
+    'runtime/src/native_pso.h',
+    'runtime/shims/d3d12_xs_native_pso.h',
+    'runtime/shims/d3d12_xs_pso_stream.h',
+    'runtime/shims/d3d12_xs_pso_stream.cpp',
+    'runtime/test/native_pso_test.cpp',
+    'runtime/test/xs_native_pso_test.cpp',
+    'runtime/test/pso_stream_test.cpp',
+    'tools/native_pso_hashes.py',
+    'tests/test_native_pso_hashes.py'
+)
+git restore --source=$integration --worktree -- $files
+git apply ../leonida-rtx3090-bringup/patches/frame-native-graphics-pipelines.patch
+git apply ../leonida-rtx3090-bringup/patches/frame-draw-pipeline-routing.patch
+cmake --build build --target gta6rt native_pso_test xs_native_pso_test pso_stream_test
+python -I tools/native_pso_hashes.py $dxbc $smallCatalog
+```
+
+`$dxbc` holds the local DXBC containers. `$smallCatalog` is the 40-entry main graphics catalogue with its embedded and BVH subfolders. Set `LEONIDA_SHADERS` to that catalogue, enable both frame probes, and leave pipeline stubs disabled.
+
+| Measured on the RTX 3090 | Result |
+| --- | --- |
+| 40 graphics digests, 102 total shader entries | At the sampled submission the runtime had handled 25,450 requests through slot 57, created 180 real pipelines and refused 25,270. Zero stubs. |
+| First 256 native requests matched offline to original containers | 252 requested a vertex and a pixel stage, four requested just a vertex stage. Two missing pixel programs each occurred with an available vertex program 18 times. Both passed SPIR-V validation for Vulkan 1.3. |
+| 42 graphics digests, 104 total shader entries | 216 pipelines created and 25,234 refused for the same 25,450 calls. The gain of 36 matches the two request groups. All four 4K color-target reads and all 24 sampled presents through present 262 were black. The process stopped on a write in VCRUNTIME140.dll at 56.99 s. Its cause remains undetermined. |
+| Separate 27-second run with draw routing enabled | 164 submitted draws in 164 draw-containing batches used one vertex/pixel pair and one intermediate target. Neither added fragment program was bound on those draws. The two presentation sources received 165 clears between them. Neither was the first color target of any submitted draw. All 11 swapchain samples through present 231 were black. The harness stopped the process on time. |
+
+The [catalogue extension tool](tools/extend_native_graphics_catalog.py) matches the first 256 traced native requests offline. It copies the two highest-frequency missing class-A wave64-emulated pixel programs with an available vertex program. With the baseline trace its output matched every file in the trial catalogue byte for byte.
+
+```powershell
+python ../leonida-rtx3090-bringup/tools/extend_native_graphics_catalog.py --leonida . --dxbc $dxbc --translated $fullCatalog --preferred $translatedGraphics --base $smallCatalog --log $runtimeLog --output $newCatalog --validator spirv-val
+```
+
+`$fullCatalog` supplies the full translation index for offline matching. `$translatedGraphics` holds the translated graphics modules and wave64-emulation metadata. `$runtimeLog` is the small-catalogue run's diagnostic stderr. Use a new directory for `$newCatalog`. The RTX 3090 runs used the small catalogues.
+
+A contributor using a full catalogue on Wine/RDNA2 measured two intermediate draws followed by a draw into the surface passed to PresentX. On this ladder run, the observed command stream lacked that final draw. The target and pipeline probes let another implementation compare the composition draw and its input surface. [Full-catalogue draw trace](https://github.com/ProjectLeonida/Leonida/issues/8851#issuecomment-7115442902).
+
+The native decoder, native proxy, stream, existing Xbox proxy and Windows device proxy tests passed. The four native-map Python tests passed. The instrumented draw fixture matched all 4,096 pixels. All fourteen patches and nine pinned files replayed successfully against the original ladder base.

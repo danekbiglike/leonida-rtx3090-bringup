@@ -1,0 +1,509 @@
+diff --git a/runtime/CMakeLists.txt b/runtime/CMakeLists.txt
+index 9e0cd08dee3ce8efdbee219154204f9bdd8ef7d8..77bba4a0d25cf0b9303a53e72207386badf0ecd5 100644
+--- a/runtime/CMakeLists.txt
++++ b/runtime/CMakeLists.txt
+@@ -112,7 +112,7 @@ if(WIN32 AND LEONIDA_BUILD_WINDOWS_RUNTIME)
+     shims/acphal.cpp
+     shims/xapu_chad.cpp
+     shims/d3d12_xs.cpp
+-    shims/d3d12_xs_device.cpp
++    shims/d3d12_xs_device.cpp shims/d3d12_xs_pso_stream.cpp
+     shims/xgameruntime.cpp
+     shims/xgameruntime_user.cpp
+     shims/xgameruntime_gamesave.cpp
+@@ -163,7 +163,7 @@ if(WIN32 AND LEONIDA_BUILD_WINDOWS_RUNTIME)
+       test/root_sig_test.cpp
+       shims/registry.cpp
+       shims/d3d12_xs.cpp
+-      shims/d3d12_xs_device.cpp
++      shims/d3d12_xs_device.cpp shims/d3d12_xs_pso_stream.cpp
+     )
+     target_link_libraries(root_sig_test PRIVATE gta6rt_d3d12_xs_rootsig ${D3D12_LIBRARY})
+     target_compile_definitions(root_sig_test PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
+@@ -187,7 +187,7 @@ if(WIN32 AND LEONIDA_BUILD_WINDOWS_RUNTIME)
+         test/device_proxy_test.cpp
+         shims/registry.cpp
+         shims/d3d12_xs.cpp
+-        shims/d3d12_xs_device.cpp
++        shims/d3d12_xs_device.cpp shims/d3d12_xs_pso_stream.cpp
+       )
+       target_link_libraries(device_proxy_test PRIVATE gta6rt_d3d12_xs_rootsig ${D3D12_LIBRARY} ${DXGI_LIBRARY})
+       target_compile_definitions(device_proxy_test PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
+@@ -198,9 +198,15 @@ if(WIN32 AND LEONIDA_BUILD_WINDOWS_RUNTIME)
+     endif()
+     # The queue and fence proxies over synthetic COM objects: no D3D12 runtime, no GPU. Replaces operator new and
+     # patches its own import table to inject failures, so the proxy source is compiled into it alone.
++    add_executable(xs_native_pso_test test/xs_native_pso_test.cpp shims/d3d12_xs_device.cpp shims/d3d12_xs_pso_stream.cpp)
++    target_compile_definitions(xs_native_pso_test PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
++    target_compile_options(xs_native_pso_test PRIVATE /W4 /permissive- /utf-8 /EHsc)
++    add_executable(pso_stream_test test/pso_stream_test.cpp shims/d3d12_xs_pso_stream.cpp)
++    target_include_directories(pso_stream_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/shims)
++    target_compile_definitions(pso_stream_test PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
+     add_executable(xs_proxy_mock_test
+       test/xs_proxy_mock_test.cpp
+-      shims/d3d12_xs_device.cpp
++      shims/d3d12_xs_device.cpp shims/d3d12_xs_pso_stream.cpp
+     )
+     target_compile_definitions(xs_proxy_mock_test PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
+     target_compile_options(xs_proxy_mock_test PRIVATE /W4 /permissive- /utf-8 /EHsc)
+@@ -620,7 +626,7 @@ if(BUILD_TESTING)
+       shims/registry.cpp
+       shims/xmem.cpp
+       shims/d3d12_xs.cpp
+-      shims/d3d12_xs_device.cpp
++      shims/d3d12_xs_device.cpp shims/d3d12_xs_pso_stream.cpp
+     )
+     target_include_directories(pe_loader_test PRIVATE
+       ${CMAKE_CURRENT_SOURCE_DIR}/src
+@@ -761,7 +767,7 @@ if(BUILD_TESTING)
+       shims/registry.cpp
+       shims/xmem.cpp
+       shims/d3d12_xs.cpp
+-      shims/d3d12_xs_device.cpp
++      shims/d3d12_xs_device.cpp shims/d3d12_xs_pso_stream.cpp
+     )
+     target_include_directories(test_pe_loader_bounds PRIVATE
+       ${CMAKE_CURRENT_SOURCE_DIR}/src
+@@ -984,6 +990,10 @@ if(BUILD_TESTING)
+         PASS_REGULAR_EXPRESSION "D3D12XboxCreateDevice params\\[24\\] =1234abcd"
+         FAIL_REGULAR_EXPRESSION "FAIL;D3D12XboxCreateDevice adapter=")
+   endif()
++  if(TARGET xs_native_pso_test)
++    add_test(NAME xs_native_pso COMMAND xs_native_pso_test)
++    add_test(NAME pso_stream COMMAND pso_stream_test)
++  endif()
+   if(TARGET xs_proxy_mock_test)
+     add_test(NAME xs_proxy_mock COMMAND xs_proxy_mock_test)
+     # The guard region's setup failing (one process each: the tables are built once per process).
+@@ -1012,6 +1022,8 @@ if(BUILD_TESTING)
+   add_test(NAME resource_detile COMMAND resource_detile_test)
+   add_executable(descriptor_table_test test/descriptor_table_test.cpp)
+   add_test(NAME descriptor_table COMMAND descriptor_table_test)
++  add_executable(native_pso_test test/native_pso_test.cpp)
++  add_test(NAME native_pso COMMAND native_pso_test)
+   add_executable(shader_library_test test/shader_library_test.cpp)
+   add_test(NAME shader_library COMMAND shader_library_test)
+   add_executable(spirv_f16_halves_test test/spirv_f16_halves_test.cpp)
+@@ -1080,7 +1092,7 @@ if(BUILD_TESTING)
+         shims/registry.cpp
+         shims/xmem.cpp
+         shims/d3d12_xs.cpp
+-        shims/d3d12_xs_device.cpp
++        shims/d3d12_xs_device.cpp shims/d3d12_xs_pso_stream.cpp
+       )
+       target_compile_definitions(fsr_dispatch_test PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX _CRT_SECURE_NO_WARNINGS)
+       target_compile_options(fsr_dispatch_test PRIVATE /W4 /permissive- /EHsc /utf-8)
+@@ -1097,7 +1109,7 @@ if(BUILD_TESTING)
+         shims/registry.cpp
+         shims/xmem.cpp
+         shims/d3d12_xs.cpp
+-        shims/d3d12_xs_device.cpp
++        shims/d3d12_xs_device.cpp shims/d3d12_xs_pso_stream.cpp
+       )
+       target_compile_definitions(bvh_builder_test PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX _CRT_SECURE_NO_WARNINGS)
+       target_compile_options(bvh_builder_test PRIVATE /W4 /permissive- /EHsc /utf-8)
+@@ -1316,7 +1328,7 @@ if(LEONIDA_D3D12_SHIM_TESTS)
+     test/d3d12_xs_root_signature_test.cpp
+     shims/d3d12_xs.cpp
+     shims/registry.cpp
+-    shims/d3d12_xs_device.cpp
++    shims/d3d12_xs_device.cpp shims/d3d12_xs_pso_stream.cpp
+   )
+   target_include_directories(d3d12_xs_root_signature_test PRIVATE shims)
+   target_compile_definitions(d3d12_xs_root_signature_test PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
+@@ -1625,7 +1637,7 @@ if(TARGET Vulkan::Headers)
+       DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/../tools/gen_d3d12_stubs.py ${LEONIDA_D3D12_HEADER}
+       COMMENT "Generating D3D12 COM stubs"
+       VERBATIM)
+-    add_library(gta6rt_d3d12_com STATIC shims/d3d12_com.cpp shims/d3d12_vulkan_device.cpp shims/d3d12_xs_device.cpp shims/xbox_present.cpp
++    add_library(gta6rt_d3d12_com STATIC shims/d3d12_com.cpp shims/d3d12_vulkan_device.cpp shims/d3d12_xs_device.cpp shims/d3d12_xs_pso_stream.cpp shims/xbox_present.cpp
+                 shims/dxgi_com.cpp ${LEONIDA_STUBS})   # d3d12_vulkan_device.cpp reads the PC device behind the proxy (#224)
+     target_include_directories(gta6rt_d3d12_com PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/generated)
+     target_link_libraries(gta6rt_d3d12_com PUBLIC Vulkan::Headers gta6rt_root_signature)
+@@ -2247,7 +2259,7 @@ if(TARGET Vulkan::Headers)
+     set_tests_properties(d3d12_present PROPERTIES SKIP_RETURN_CODE 77)
+ 
+     # Per-pipeline --f16-interp-fallback linking (SHADER-378): 16-param VS + colliding PS rendered on Vulkan.
+-    add_executable(d3d12_f16_halves_test test/d3d12_f16_halves_test.cpp shims/d3d12_xs_device.cpp)
++    add_executable(d3d12_f16_halves_test test/d3d12_f16_halves_test.cpp shims/d3d12_xs_device.cpp shims/d3d12_xs_pso_stream.cpp)
+     target_link_libraries(d3d12_f16_halves_test PRIVATE gta6rt_d3d12_com d3d12 dxgi)
+     target_compile_definitions(d3d12_f16_halves_test PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
+     target_compile_options(d3d12_f16_halves_test PRIVATE /W4 /permissive- /utf-8)
+@@ -2283,7 +2295,7 @@ if(TARGET Vulkan::Headers)
+ 
+     # First light through D3D12 (docs/first_light.md): the real model and translated VS/PS that tools/first_light.py
+     # wrote to LEONIDA_FIRST_LIGHT_DIR, drawn through the device proxy. Skips (77) unless that variable is set.
+-    add_executable(d3d12_first_light_test test/d3d12_first_light_test.cpp shims/d3d12_xs_device.cpp)
++    add_executable(d3d12_first_light_test test/d3d12_first_light_test.cpp shims/d3d12_xs_device.cpp shims/d3d12_xs_pso_stream.cpp)
+     target_link_libraries(d3d12_first_light_test PRIVATE gta6rt_d3d12_com)
+     target_compile_definitions(d3d12_first_light_test PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX _CRT_SECURE_NO_WARNINGS)
+     target_compile_options(d3d12_first_light_test PRIVATE /W4 /permissive- /utf-8)
+@@ -2323,7 +2335,7 @@ if(TARGET Vulkan::Headers)
+                 ${CMAKE_CURRENT_SOURCE_DIR}/../tools/rdna2spirv.py
+         COMMENT "Translating vs_m15 and ps_m15 for the translated draw test"
+         VERBATIM)
+-      add_executable(d3d12_translated_draw_test test/d3d12_translated_draw_test.cpp shims/d3d12_xs_device.cpp
++      add_executable(d3d12_translated_draw_test test/d3d12_translated_draw_test.cpp shims/d3d12_xs_device.cpp shims/d3d12_xs_pso_stream.cpp
+                      ${LEONIDA_M15_FILES})
+       target_link_libraries(d3d12_translated_draw_test PRIVATE gta6rt_d3d12_com)
+       target_compile_definitions(d3d12_translated_draw_test PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX
+@@ -2380,7 +2392,7 @@ if(TARGET Vulkan::Headers)
+                 ${CMAKE_CURRENT_SOURCE_DIR}/../tools/rdna2spirv.py
+         COMMENT "Translating vs_m2 and ps_m2 for the textured draw test"
+         VERBATIM)
+-      add_executable(d3d12_m2_textured_test test/d3d12_m2_textured_test.cpp shims/d3d12_xs_device.cpp
++      add_executable(d3d12_m2_textured_test test/d3d12_m2_textured_test.cpp shims/d3d12_xs_device.cpp shims/d3d12_xs_pso_stream.cpp
+                      ${LEONIDA_M2_FILES})
+       target_link_libraries(d3d12_m2_textured_test PRIVATE gta6rt_d3d12_com)
+       target_compile_definitions(d3d12_m2_textured_test PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX
+@@ -2408,7 +2420,7 @@ if(TARGET Vulkan::Headers)
+                 ${CMAKE_CURRENT_SOURCE_DIR}/../tools/rdna2spirv.py
+         COMMENT "Translating vs_m2, ps_m2 and ps_m2_array for the M2 formats test"
+         VERBATIM)
+-      add_executable(d3d12_m2_formats_test test/d3d12_m2_formats_test.cpp shims/d3d12_xs_device.cpp
++      add_executable(d3d12_m2_formats_test test/d3d12_m2_formats_test.cpp shims/d3d12_xs_device.cpp shims/d3d12_xs_pso_stream.cpp
+                      ${LEONIDA_M2F_FILES})
+       target_link_libraries(d3d12_m2_formats_test PRIVATE gta6rt_d3d12_com)
+       target_compile_definitions(d3d12_m2_formats_test PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX
+@@ -2440,7 +2452,7 @@ if(TARGET Vulkan::Headers)
+                 ${CMAKE_CURRENT_SOURCE_DIR}/../tools/rdna2spirv.py
+         COMMENT "Translating M3 frame and single-output occlusion-probe shaders"
+         VERBATIM)
+-      add_executable(d3d12_m3_frame_test test/d3d12_m3_frame_test.cpp shims/d3d12_xs_device.cpp ${LEONIDA_M3_FILES})
++      add_executable(d3d12_m3_frame_test test/d3d12_m3_frame_test.cpp shims/d3d12_xs_device.cpp shims/d3d12_xs_pso_stream.cpp ${LEONIDA_M3_FILES})
+       target_link_libraries(d3d12_m3_frame_test PRIVATE gta6rt_d3d12_com)
+       target_compile_definitions(d3d12_m3_frame_test PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX
+                                  LEONIDA_TEST_M3_DIR="${LEONIDA_M3_DIR}")
+@@ -2473,7 +2485,7 @@ if(TARGET Vulkan::Headers)
+                 ${CMAKE_CURRENT_SOURCE_DIR}/../tools/rdna2spirv.py
+         COMMENT "Translating cs_m4_fill and cs_m4_indirect for the compute test"
+         VERBATIM)
+-      add_executable(d3d12_m4_compute_test test/d3d12_m4_compute_test.cpp shims/d3d12_xs_device.cpp ${LEONIDA_M4_FILES})
++      add_executable(d3d12_m4_compute_test test/d3d12_m4_compute_test.cpp shims/d3d12_xs_device.cpp shims/d3d12_xs_pso_stream.cpp ${LEONIDA_M4_FILES})
+       target_link_libraries(d3d12_m4_compute_test PRIVATE gta6rt_d3d12_com)
+       target_compile_definitions(d3d12_m4_compute_test PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX
+                                  LEONIDA_TEST_M4_DIR="${LEONIDA_M4_DIR}")
+@@ -2500,7 +2512,7 @@ if(TARGET Vulkan::Headers)
+                 ${CMAKE_CURRENT_SOURCE_DIR}/../tools/rdna2spirv.py
+         COMMENT "Translating cs_b5g5r5a1_store for the B5G5R5A1 UAV store test"
+         VERBATIM)
+-      add_executable(d3d12_b5g5r5a1_store_test test/d3d12_b5g5r5a1_store_test.cpp shims/d3d12_xs_device.cpp
++      add_executable(d3d12_b5g5r5a1_store_test test/d3d12_b5g5r5a1_store_test.cpp shims/d3d12_xs_device.cpp shims/d3d12_xs_pso_stream.cpp
+                      ${LEONIDA_B5G5R5A1_STORE_FILES})
+       target_link_libraries(d3d12_b5g5r5a1_store_test PRIVATE gta6rt_d3d12_com)
+       target_compile_definitions(d3d12_b5g5r5a1_store_test PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX
+@@ -2531,7 +2543,7 @@ if(TARGET Vulkan::Headers)
+                 ${CMAKE_CURRENT_SOURCE_DIR}/../tools/rdna2spirv.py
+         COMMENT "Translating cs_buf_typed and cs_buf_counter for the buffer UAV test"
+         VERBATIM)
+-      add_executable(d3d12_buffer_uav_test test/d3d12_buffer_uav_test.cpp shims/d3d12_xs_device.cpp ${LEONIDA_BUFFER_UAV_FILES})
++      add_executable(d3d12_buffer_uav_test test/d3d12_buffer_uav_test.cpp shims/d3d12_xs_device.cpp shims/d3d12_xs_pso_stream.cpp ${LEONIDA_BUFFER_UAV_FILES})
+       target_link_libraries(d3d12_buffer_uav_test PRIVATE gta6rt_d3d12_com)
+       target_compile_definitions(d3d12_buffer_uav_test PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX
+                                  LEONIDA_TEST_BUFFER_UAV_DIR="${LEONIDA_BUFFER_UAV_DIR}")
+@@ -2684,7 +2696,7 @@ if(TARGET Vulkan::Headers)
+         DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/test/glsl/cs_user_data.comp
+         COMMENT "Compiling the compute test shader"
+         VERBATIM)
+-      add_executable(d3d12_compute_test test/d3d12_compute_test.cpp shims/d3d12_xs_device.cpp ${LEONIDA_TEST_CS})
++      add_executable(d3d12_compute_test test/d3d12_compute_test.cpp shims/d3d12_xs_device.cpp shims/d3d12_xs_pso_stream.cpp ${LEONIDA_TEST_CS})
+       target_link_libraries(d3d12_compute_test PRIVATE gta6rt_d3d12_com)
+       target_compile_definitions(d3d12_compute_test PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX
+                                  LEONIDA_TEST_CS_SPV="${LEONIDA_TEST_CS}")
+@@ -2692,7 +2704,7 @@ if(TARGET Vulkan::Headers)
+       add_test(NAME d3d12_compute COMMAND d3d12_compute_test)
+       set_tests_properties(d3d12_compute PROPERTIES SKIP_RETURN_CODE 77)
+       # A buffer at the title's own VA (device slot 133) read by the same shader through a root view and a V#.
+-      add_executable(d3d12_title_va_test test/d3d12_title_va_test.cpp shims/d3d12_xs_device.cpp ${LEONIDA_TEST_CS})
++      add_executable(d3d12_title_va_test test/d3d12_title_va_test.cpp shims/d3d12_xs_device.cpp shims/d3d12_xs_pso_stream.cpp ${LEONIDA_TEST_CS})
+       target_link_libraries(d3d12_title_va_test PRIVATE gta6rt_d3d12_com)
+       target_compile_definitions(d3d12_title_va_test PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX
+                                  LEONIDA_TEST_CS_SPV="${LEONIDA_TEST_CS}")
+@@ -2700,7 +2712,7 @@ if(TARGET Vulkan::Headers)
+       add_test(NAME d3d12_title_va COMMAND d3d12_title_va_test)
+       set_tests_properties(d3d12_title_va PROPERTIES SKIP_RETURN_CODE 77)
+       # Compute PSOs from FSPX programs (docs/fspx.md): an ACCC container at slot 62 and a bare kind-6 program.
+-      add_executable(d3d12_fspx_compute_test test/d3d12_fspx_compute_test.cpp shims/d3d12_xs_device.cpp ${LEONIDA_TEST_CS})
++      add_executable(d3d12_fspx_compute_test test/d3d12_fspx_compute_test.cpp shims/d3d12_xs_device.cpp shims/d3d12_xs_pso_stream.cpp ${LEONIDA_TEST_CS})
+       target_link_libraries(d3d12_fspx_compute_test PRIVATE gta6rt_d3d12_com)
+       target_compile_definitions(d3d12_fspx_compute_test PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX
+                                  LEONIDA_TEST_CS_SPV="${LEONIDA_TEST_CS}")
+@@ -2727,7 +2739,7 @@ if(TARGET Vulkan::Headers)
+           COMMENT "Compiling the draw test shader ${source}"
+           VERBATIM)
+       endforeach()
+-      add_executable(d3d12_draw_test test/d3d12_draw_test.cpp shims/d3d12_xs_device.cpp ${LEONIDA_TEST_VS}
++      add_executable(d3d12_draw_test test/d3d12_draw_test.cpp shims/d3d12_xs_device.cpp shims/d3d12_xs_pso_stream.cpp ${LEONIDA_TEST_VS}
+                      ${LEONIDA_TEST_PS} ${LEONIDA_TEST_PS_UINT} ${LEONIDA_TEST_VS_FULLSCREEN} ${LEONIDA_TEST_VS_INT})
+       target_link_libraries(d3d12_draw_test PRIVATE gta6rt_d3d12_com)
+       target_compile_definitions(d3d12_draw_test PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX
+@@ -2794,7 +2806,7 @@ if(TARGET Vulkan::Headers)
+       add_test(NAME d3d12_conservative_tier3 COMMAND d3d12_conservative_tier3_test)
+       set_tests_properties(d3d12_inner_coverage_guards d3d12_inner_coverage_native d3d12_conservative_tier3
+         PROPERTIES SKIP_RETURN_CODE 77)
+-      add_executable(d3d12_msaa_draw_test test/d3d12_msaa_draw_test.cpp shims/d3d12_xs_device.cpp
++      add_executable(d3d12_msaa_draw_test test/d3d12_msaa_draw_test.cpp shims/d3d12_xs_device.cpp shims/d3d12_xs_pso_stream.cpp
+                      ${LEONIDA_TEST_VS} ${LEONIDA_TEST_PS})
+       target_link_libraries(d3d12_msaa_draw_test PRIVATE gta6rt_d3d12_com)
+       target_compile_definitions(d3d12_msaa_draw_test PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX
+@@ -2803,7 +2815,7 @@ if(TARGET Vulkan::Headers)
+       add_test(NAME d3d12_msaa_draw COMMAND d3d12_msaa_draw_test)
+       set_tests_properties(d3d12_msaa_draw PROPERTIES SKIP_RETURN_CODE 77)
+       # Geometry shaders: a VS+GS+PS pipeline whose GS emits each triangle twice.
+-      add_executable(d3d12_geometry_test test/d3d12_geometry_test.cpp shims/d3d12_xs_device.cpp
++      add_executable(d3d12_geometry_test test/d3d12_geometry_test.cpp shims/d3d12_xs_device.cpp shims/d3d12_xs_pso_stream.cpp
+                      ${LEONIDA_TEST_VS} ${LEONIDA_TEST_GS_DOUBLE} ${LEONIDA_TEST_PS})
+       target_link_libraries(d3d12_geometry_test PRIVATE gta6rt_d3d12_com)
+       target_compile_definitions(d3d12_geometry_test PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX
+@@ -2830,7 +2842,7 @@ if(TARGET Vulkan::Headers)
+           COMMENT "Compiling the D24 draw test shader ${source}"
+           VERBATIM)
+       endforeach()
+-      add_executable(d3d12_depth24_draw_test test/d3d12_depth24_draw_test.cpp shims/d3d12_xs_device.cpp
++      add_executable(d3d12_depth24_draw_test test/d3d12_depth24_draw_test.cpp shims/d3d12_xs_device.cpp shims/d3d12_xs_pso_stream.cpp
+                      ${LEONIDA_TEST_VS_DEPTH} ${LEONIDA_TEST_PS_DEPTH_EMPTY} ${LEONIDA_TEST_PS_DEPTH_WRITE}
+                      ${LEONIDA_TEST_GS_DEPTH})
+       target_link_libraries(d3d12_depth24_draw_test PRIVATE gta6rt_d3d12_com)
+@@ -2854,7 +2866,7 @@ if(TARGET Vulkan::Headers)
+         DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/test/glsl/cs_set0_sample.comp
+         COMMENT "Compiling the set-0 compute test shader"
+         VERBATIM)
+-      add_executable(d3d12_set0_compute_test test/d3d12_set0_compute_test.cpp shims/d3d12_xs_device.cpp
++      add_executable(d3d12_set0_compute_test test/d3d12_set0_compute_test.cpp shims/d3d12_xs_device.cpp shims/d3d12_xs_pso_stream.cpp
+                      ${LEONIDA_TEST_CS_SET0_SAMPLE})
+       target_link_libraries(d3d12_set0_compute_test PRIVATE gta6rt_d3d12_com)
+       target_compile_definitions(d3d12_set0_compute_test PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX
+@@ -2864,7 +2876,7 @@ if(TARGET Vulkan::Headers)
+       set_tests_properties(d3d12_set0_compute PROPERTIES SKIP_RETURN_CODE 77)
+       # Bindless table churn on a direct and a compute queue: the table grows and live keys move without a
+       # device-idle wait (D3D-314); the same shader, run twice (deferred retirement, and the old wait for timing).
+-      add_executable(d3d12_bindless_churn_test test/d3d12_bindless_churn_test.cpp shims/d3d12_xs_device.cpp
++      add_executable(d3d12_bindless_churn_test test/d3d12_bindless_churn_test.cpp shims/d3d12_xs_device.cpp shims/d3d12_xs_pso_stream.cpp
+                      ${LEONIDA_TEST_CS_SET0_SAMPLE})
+       target_link_libraries(d3d12_bindless_churn_test PRIVATE gta6rt_d3d12_com)
+       target_compile_definitions(d3d12_bindless_churn_test PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX
+@@ -2930,7 +2942,7 @@ if(TARGET Vulkan::Headers)
+         DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/test/glsl/ms_draw.mesh
+         COMMENT "Compiling the mesh test shader ms_draw.mesh"
+         VERBATIM)
+-      add_executable(d3d12_mesh_test test/d3d12_mesh_test.cpp shims/d3d12_xs_device.cpp ${LEONIDA_TEST_MS}
++      add_executable(d3d12_mesh_test test/d3d12_mesh_test.cpp shims/d3d12_xs_device.cpp shims/d3d12_xs_pso_stream.cpp ${LEONIDA_TEST_MS}
+                      ${LEONIDA_TEST_PS} ${LEONIDA_TEST_VS_FULLSCREEN})
+       target_link_libraries(d3d12_mesh_test PRIVATE gta6rt_d3d12_com)
+       target_compile_definitions(d3d12_mesh_test PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX
+@@ -2998,7 +3010,7 @@ if(TARGET Vulkan::Headers)
+           VERBATIM)
+         list(APPEND LEONIDA_SG_INDEXES ${output})
+       endforeach()
+-      add_executable(d3d12_subgroup_test test/d3d12_subgroup_test.cpp shims/d3d12_xs_device.cpp ${LEONIDA_SG_INDEXES})
++      add_executable(d3d12_subgroup_test test/d3d12_subgroup_test.cpp shims/d3d12_xs_device.cpp shims/d3d12_xs_pso_stream.cpp ${LEONIDA_SG_INDEXES})
+       target_link_libraries(d3d12_subgroup_test PRIVATE gta6rt_d3d12_com)
+       target_compile_definitions(d3d12_subgroup_test PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX
+                                  LEONIDA_TEST_SUBGROUP_SHADERS="${LEONIDA_SG_DIR}")
+diff --git a/runtime/shims/d3d12_com.cpp b/runtime/shims/d3d12_com.cpp
+index 76d7edebbaac537c8fc9595fbf84f8e3fb360782..8ee72b1aec21f79c0fc5076bc74865f3af3628d4 100644
+--- a/runtime/shims/d3d12_com.cpp
++++ b/runtime/shims/d3d12_com.cpp
+@@ -1,4 +1,5 @@
+ #include "d3d12_com.h"
++#include "d3d12_xs_native_pso.h"
+ 
+ #include "d3d12_stubs.h"  // generated
+ #include "d3d12_com_object.h"
+@@ -1794,6 +1795,13 @@ public:
+     void observe_submission(const std::vector<const leonida::CommandList*>& recorded) {
+         static std::atomic_uint64_t batches{0}, draws{0};
+         const auto batch = ++batches;
++        if ((batch & (batch - 1)) == 0) {
++            const auto stats = rt::d3d12_xs::native_pso_stats();
++            std::fprintf(stderr, "[frame-graph] submitted=%llu native-calls=%llu created=%llu refused=%llu stubbed=%llu\n",
++                         static_cast<unsigned long long>(batch), static_cast<unsigned long long>(stats.calls),
++                         static_cast<unsigned long long>(stats.created), static_cast<unsigned long long>(stats.refused),
++                         static_cast<unsigned long long>(stats.stubbed));
++        }
+         if (batch > 4096) return;
+         for (const auto* list : recorded) for (const auto& command : list->commands()) {
+             if (const auto* draw = std::get_if<leonida::Draw>(&command)) {
+diff --git a/runtime/shims/d3d12_vulkan_device.cpp b/runtime/shims/d3d12_vulkan_device.cpp
+index 7197b3d2022410c6e922e77f636d8da5f04d61de..cbb28c2894a43040f28b73e529f66a22075b998d 100644
+--- a/runtime/shims/d3d12_vulkan_device.cpp
++++ b/runtime/shims/d3d12_vulkan_device.cpp
+@@ -14,6 +14,7 @@
+ #include "d3d12_com_object.h"
+ #include "d3d12_trace.h"
+ #include "d3d12_xs_device.h"
++#include "d3d12_xs_native_pso.h"
+ #include "dxgi_com.h"
+ #include "../src/arena_size.h"
+ #include "../src/gfx10_descriptors.h"
+@@ -5401,6 +5402,7 @@ public:
+         // Every Vulkan device serves Xbox device slot 133, whichever entry made it: create_vulkan_device and the
+         // standalone device gta6rt --run uses both come through here (found in review: registering only in
+         // create_vulkan_device left the retail path without it).
++        rt::d3d12_xs::set_native_shader_directory_provider(&configured_shader_directory);
+         rt::d3d12_xs::set_placed_at_va_handler([](ID3D12Device* base, void* address, const D3D12_RESOURCE_DESC& desc,
+                                                  std::uint32_t layout, const D3D12_CLEAR_VALUE* clear,
+                                                  REFIID riid, void** out) -> HRESULT {
+diff --git a/runtime/shims/d3d12_xs_device.cpp b/runtime/shims/d3d12_xs_device.cpp
+index a079afd855524563d9e149b75a6a4a047224073b..d3f80c4cdfb3a81b5d15530a6c5b6941ee14d9c4 100644
+--- a/runtime/shims/d3d12_xs_device.cpp
++++ b/runtime/shims/d3d12_xs_device.cpp
+@@ -25,6 +25,8 @@
+ // for a trace that disagrees. The frame-event calls answer from a per-device token counter: there is no vblank source
+ // behind the device before a presenter exists, so WaitFrameEventX returns at once with a fresh non-zero token.
+ #include "d3d12_xs_device.h"
++#include "d3d12_xs_pso_stream.h"
++#include "d3d12_xs_native_pso.h"
+ #include "../src/frame_pacer.h"
+ #include "d3d12_trace.h"
+ #include "d3d12_xs_alloc_size.h"
+@@ -329,6 +331,8 @@ const char* slot_name(unsigned slot) {
+         case 46: return "SetResidencyPriority (proxies unwrapped)";
+         case 48: return "Xbox CreateCommandQueueX (32-byte desc) -> queue proxy";
+         case 50: return "EnqueueMakeResident (proxies unwrapped)";
++        case 55: return "Xbox CreateDerivedPipelineState";
++        case 57: return "Xbox native graphics pipeline";
+         case 56: return "GetResourceAllocationInfo1 (C or PC form)";
+         case 61: return "Xbox CreateSamplerX -> PC CreateSampler";
+         case 62: return "Xbox CreateComputePipelineState";
+@@ -3495,15 +3499,102 @@ std::uint64_t proxy_slot74(std::uint64_t a1, std::uint64_t a2, std::uint64_t a3)
+     return hr_to_u64(S_OK);
+ }
+ 
++// A bounded list of public container identifiers for matching a small local shader catalogue offline.
++// Reading a stage here is optional and independent of native pipeline creation.
++void observe_native_pipeline(const void* descriptor, HRESULT hr) {
++    namespace np = leonida::native_pso;
++    static std::atomic_uint64_t samples{0};
++    const auto number = ++samples;
++    if (number > 256 || !descriptor ||
++        !descriptor_memory_accessible(reinterpret_cast<SIZE_T>(descriptor), sizeof(np::GraphicsDesc), false)) return;
++    const auto& desc = *static_cast<const np::GraphicsDesc*>(descriptor);
++    std::string keys;
++    for (const auto& stage : desc.stages) {
++        const auto& pair = stage.records;
++        if (!pair.size) continue;
++        if (np::pair_state(pair) != np::PairState::present || pair.size > 65536 ||
++            !descriptor_memory_accessible(reinterpret_cast<SIZE_T>(pair.data), static_cast<SIZE_T>(pair.size), false))
++            return;
++        keys += " [";
++        for (const auto& digest : np::record_digests(np::bytes(pair))) {
++            if (keys.size() > 4096) return;
++            keys += np::hex(digest);
++            keys += ' ';
++        }
++        keys += ']';
++    }
++    std::fprintf(stderr, "[frame-graph] native-request=%llu hr=%08lx%s\n",
++                 static_cast<unsigned long long>(number), static_cast<unsigned long>(hr), keys.c_str());
++}
++
++// Keeps a copy of the stream a PSO was created from, on the PSO, so slot 55 can derive from it. A stream the module
++// does not model is logged once: the PSO is still returned, and slot 55 refuses it as a base.
++void keep_pso_stream(IUnknown* pso, const D3D12_PIPELINE_STATE_STREAM_DESC& desc) {
++    ID3D12Object* object = nullptr;
++    if (FAILED(pso->QueryInterface(__uuidof(ID3D12Object), reinterpret_cast<void**>(&object))) || !object) return;
++    auto record = PsoStreamRecord::capture(desc);
++    static std::atomic<bool> logged{false};
++    if (!record || !attach_pso_record(object, std::move(record))) {
++        if (!logged.exchange(true, std::memory_order_relaxed))
++            std::fprintf(stderr, "[rt] d3d12_xs: a pipeline state stream is not kept for derivation (unmodelled subobject or allocation failure); slot 55 refuses that PSO as a base\n");
++    }
++    object->Release();
++}
++
++// The PC CreatePipelineState (PC slot 47) that slots 86 and 55 share: on success the stream is kept on the PSO.
++HRESULT create_pso_from_stream(DeviceProxy* self, const D3D12_PIPELINE_STATE_STREAM_DESC* desc, const IID* riid,
++                               void** out) {
++    if (!riid) return E_POINTER;
++    // Through the queried ID3D12Device2 (#8517): supporting an interface does not make its pointer or vtable the
++    // base device's.
++    ID3D12Device2* device2 = nullptr;
++    const HRESULT query = self->real->QueryInterface(__uuidof(ID3D12Device2), reinterpret_cast<void**>(&device2));
++    if (FAILED(query) || !device2) return FAILED(query) ? query : E_NOINTERFACE;
++    const HRESULT hr = device2->CreatePipelineState(desc, *riid, out);
++    device2->Release();
++    if (SUCCEEDED(hr) && out && *out && desc) keep_pso_stream(static_cast<IUnknown*>(*out), *desc);
++    return hr;
++}
++
+ // Xbox slot 86: CreatePipelineState(desc, riid, out), forwarded to PC ID3D12Device2::CreatePipelineState (PC slot 47).
+ HRESULT proxy_create_pipeline_state(DeviceProxy* self, const D3D12_PIPELINE_STATE_STREAM_DESC* desc, const IID* riid,
+                                     void** out) {
+     note_slot(86);
+     if (out) *out = nullptr;
+     if (self->slot_count <= 47) return refuse_beyond_device(86, self->slot_count);  // predates ID3D12Device2
+-    if (!riid) return E_POINTER;
+-    using Fn = HRESULT(WINAPI*)(ID3D12Device*, const D3D12_PIPELINE_STATE_STREAM_DESC*, const IID*, void**);
+-    return reinterpret_cast<Fn>(self->real_vtable[47])(self->real, desc, riid, out);
++    return create_pso_from_stream(self, desc, riid, out);
++}
++
++// Logs a slot 55 refusal once per reason, and returns the HRESULT.
++HRESULT refuse_derived(unsigned reason, const char* why, HRESULT hr) {
++    static std::atomic<bool> logged[4]{};
++    if (!logged[reason].exchange(true, std::memory_order_relaxed))
++        std::fprintf(stderr, "[rt] d3d12_xs: derived pipeline state (device slot 55) refused: %s\n", why);
++    return hr;
++}
++
++// Xbox slot 55: CreateDerivedPipelineState(pBasePSO, n, pRecords, riid, ppv). The base must be a PSO that slot 86 or
++// slot 55 created with a kept stream; n is 1..4 records of 0x14c bytes (d3d12_xs_pso_stream.h). The patched stream
++// goes through the slot 86 path. Every refusal leaves *ppv null and returns a failure, never a fake success.
++HRESULT proxy_create_derived_pso(DeviceProxy* self, ID3D12PipelineState* base, std::uint32_t count,
++                                 const unsigned char* records, const IID* riid, void** out) {
++    note_slot(55);
++    if (out) *out = nullptr;
++    if (self->slot_count <= 47) return refuse_beyond_device(55, self->slot_count);  // predates ID3D12Device2
++    if (!out || !riid || !records) return E_POINTER;
++    const PsoStreamRecord* base_record = base ? find_pso_record(base) : nullptr;
++    if (!base_record) return refuse_derived(0, "base PSO has no kept stream", E_FAIL);
++    std::vector<unsigned char> patched;
++    switch (derive_stream(*base_record, records, count, patched)) {
++        case DeriveStatus::ok: break;
++        case DeriveStatus::unknown_tag: return refuse_derived(1, "record tag not known", E_INVALIDARG);
++        case DeriveStatus::missing_state: return refuse_derived(2, "base has no subobject for a record", E_INVALIDARG);
++        case DeriveStatus::malformed: return refuse_derived(3, "record count or base stream malformed", E_INVALIDARG);
++    }
++    D3D12_PIPELINE_STATE_STREAM_DESC desc{};
++    desc.SizeInBytes = patched.size();
++    desc.pPipelineStateSubobjectStream = patched.data();
++    return create_pso_from_stream(self, &desc, riid, out);
+ }
+ 
+ // Xbox slot 101: CreateStateObject(desc, riid, out), forwarded to PC ID3D12Device5::CreateStateObject (PC slot 62,
+@@ -3683,6 +3774,25 @@ std::uint64_t WINAPI proxy_slot(DeviceProxy* self, std::uint64_t a1, std::uint64
+     } else if constexpr (Slot == 61) {
+         proxy_create_sampler_x(self, reinterpret_cast<const D3D12_SAMPLER_DESC*>(a1), a2);
+         return 0;
++    } else if constexpr (Slot == 55) {
++        return hr_to_u64(proxy_create_derived_pso(
++            self, reinterpret_cast<ID3D12PipelineState*>(a1), static_cast<std::uint32_t>(a2),
++            reinterpret_cast<const unsigned char*>(a3), reinterpret_cast<const IID*>(a4),
++            reinterpret_cast<void**>(a5)));
++    } else if constexpr (Slot == 57) {
++        note_slot(57);
++        log_xbox_route_once(57, "native graphics pipeline (desc, riid, out)", a1, a2, a3, a4, a5);
++        // Through slot 86's stream path, which keeps the stream so slot 55 can derive from these pipelines.
++        const PipelineStreamCreator stream = [](void* proxy, const D3D12_PIPELINE_STATE_STREAM_DESC* desc,
++                                                const IID* riid, void** out) {
++            auto* device = static_cast<DeviceProxy*>(proxy);
++            return device->slot_count <= 47 ? E_NOTIMPL : create_pso_from_stream(device, desc, riid, out);
++        };
++        const auto* desc = reinterpret_cast<const void*>(a1);
++        const HRESULT hr = create_native_graphics_pipeline(stream, self, desc, reinterpret_cast<const IID*>(a2),
++                                                           reinterpret_cast<void**>(a3));
++        if (GetEnvironmentVariableW(L"LEONIDA_FRAME_GRAPH", nullptr, 0)) observe_native_pipeline(desc, hr);
++        return hr_to_u64(hr);
+     } else if constexpr (Slot == 67) {
+         return hr_to_u64(proxy_create_compute_pipeline_from_native_code(
+             self, reinterpret_cast<const void*>(a1), reinterpret_cast<const IID*>(a2),
+@@ -4061,7 +4171,7 @@ std::shared_ptr<leonida::FrameTokenSource> device_frame_tokens(const void* devic
+ 
+ bool device_slot_overridden(unsigned slot) {
+     if (slot <= 2 || slot == 8 || slot == 9 || slot == 12 || slot == 14 || (slot >= 17 && slot <= 24) || slot == 25 || slot == 26 || slot == 31 || slot == 32 ||
+-        slot == 34 || slot == 35 || slot == 36 || slot == 45 || slot == 46 || slot == 50 || slot == 56 || slot == 62 ||
++        slot == 34 || slot == 35 || slot == 36 || slot == 45 || slot == 46 || slot == 50 || slot == 55 || slot == 56 || slot == 57 || slot == 62 ||
+         slot == 67 || slot == 70 || slot == 75 || slot == 76 || slot == kCreateCommittedResource3X || slot == 133 || slot == 41 || slot == 61 || slot == 74 || slot == 86 || slot == 101 || slot == 108)
+         return true;
+     const XboxDeviceSlotRoutes& routes = xbox_device_slot_routes();

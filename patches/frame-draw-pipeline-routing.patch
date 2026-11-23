@@ -1,0 +1,38 @@
+diff --git a/runtime/shims/d3d12_com.cpp b/runtime/shims/d3d12_com.cpp
+index 8ee72b1aec21f79c0fc5076bc74865f3af3628d4..fe5e14452cebbba17edf0f4b6cb43ef4d8bca49e 100644
+--- a/runtime/shims/d3d12_com.cpp
++++ b/runtime/shims/d3d12_com.cpp
+@@ -1808,6 +1808,10 @@ public:
+                 if (!draw->views || !draw->views->render_target_count) continue;
+                 const auto& target = draw->views->render_targets[0];
+                 const auto n = ++draws;
++                std::fprintf(stderr, "[frame-graph] draw-route batch=%llu draw=%llu target=%llx pipeline=%llx\n",
++                             static_cast<unsigned long long>(batch), static_cast<unsigned long long>(n),
++                             static_cast<unsigned long long>(target.resource),
++                             static_cast<unsigned long long>(draw->pipeline));
+                 if (n <= 2 || n == 8 || n == 32) sample_submitted_target(target, n);
+             } else if (const auto* copy = std::get_if<leonida::CopyResource>(&command)) {
+                 std::fprintf(stderr, "[frame-graph] copy-resource %llx %llx\n",
+diff --git a/runtime/shims/d3d12_vulkan_device.cpp b/runtime/shims/d3d12_vulkan_device.cpp
+index cbb28c2894a43040f28b73e529f66a22075b998d..51b32f48722643d8debe401ec337f4150235af85 100644
+--- a/runtime/shims/d3d12_vulkan_device.cpp
++++ b/runtime/shims/d3d12_vulkan_device.cpp
+@@ -4348,6 +4348,18 @@ public:
+             code_base_ = offset;
+             graphics_.code_base = offset;
+         }
++        if (GetEnvironmentVariableW(L"LEONIDA_FRAME_GRAPH", nullptr, 0)) {
++            std::string names;
++            for (const auto& stage : stages) {
++                if (!stage.entry) continue;
++                names += " ";
++                names += stage.name;
++                names += "=";
++                names += stage.entry->name;
++            }
++            std::fprintf(stderr, "[frame-graph] graphics-pso=%llx stages%s\n",
++                         static_cast<unsigned long long>(id()), names.c_str());
++        }
+         device_.context->add_graphics_pipeline(id(), graphics_);
+         registered_ = true;
+         is_graphics_ = true;
