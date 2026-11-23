@@ -1,0 +1,51 @@
+diff --git a/runtime/shims/file_system.cpp b/runtime/shims/file_system.cpp
+index a7b64d75..e7645c8d 100644
+--- a/runtime/shims/file_system.cpp
++++ b/runtime/shims/file_system.cpp
+@@ -666,7 +666,20 @@ HANDLE WINAPI create_file_w(LPCWSTR name, DWORD access, DWORD share, LPSECURITY_
+         SetLastError(t.error);
+         return INVALID_HANDLE_VALUE;
+     }
+-    const HANDLE h = ::CreateFileW(t.path.c_str(), access, share, attributes, disposition, flags, template_file);
++    HANDLE h = ::CreateFileW(t.path.c_str(), access, share, attributes, disposition, flags, template_file);
++    // A host application may hold a writable package handle that allows readers. DirectStorage asks
++    // for shared read access; retain that access and allow the pre-existing writer on the second open.
++    if (h == INVALID_HANDLE_VALUE && GetLastError() == ERROR_SHARING_VIOLATION &&
++        access == GENERIC_READ && share == FILE_SHARE_READ && disposition == OPEN_EXISTING &&
++        !(flags & FILE_FLAG_DELETE_ON_CLOSE)) {
++        const Roots r = roots();
++        if (!r.game.empty() && lies_under(t.path.wstring(), r.game)) {
++            h = ::CreateFileW(t.path.c_str(), access, share | FILE_SHARE_WRITE,
++                              attributes, disposition, flags, template_file);
++        } else {
++            SetLastError(ERROR_SHARING_VIOLATION);
++        }
++    }
+     if (h == INVALID_HANDLE_VALUE) {
+         const DWORD error = GetLastError();
+         note_open_failure("CreateFileW", name, error, _ReturnAddress());
+diff --git a/runtime/test/file_system_test.cpp b/runtime/test/file_system_test.cpp
+index 2ebc339e..661beeb3 100644
+--- a/runtime/test/file_system_test.cpp
++++ b/runtime/test/file_system_test.cpp
+@@ -244,6 +244,20 @@ void run_checks(const std::filesystem::path& root) {
+         check(h != INVALID_HANDLE_VALUE, "CreateFileW opens GAME:\\data\\hello.txt from the package");
+         check(read_handle(h) == "package", "the package file's bytes come back unchanged");
+         if (h != INVALID_HANDLE_VALUE) ::CloseHandle(h);
++        const auto shared_fixture = package / "data" / "hello.txt";
++        HANDLE host_writer = ::CreateFileW(shared_fixture.c_str(), GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE,
++                                           nullptr, OPEN_EXISTING, 0, nullptr);
++        check(host_writer != INVALID_HANDLE_VALUE, "host writer allows package readers");
++        if (host_writer != INVALID_HANDLE_VALUE) {
++            h = create_w(L"GAME:\\data\\hello.txt", GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, 0, nullptr);
++            check(h != INVALID_HANDLE_VALUE && read_handle(h) == "package", "shared read coexists with a host writer");
++            if (h != INVALID_HANDLE_VALUE) ::CloseHandle(h);
++            h = create_w(L"GAME:\\data\\hello.txt", GENERIC_READ, 0, nullptr, OPEN_EXISTING, 0, nullptr);
++            check(h == INVALID_HANDLE_VALUE && GetLastError() == ERROR_SHARING_VIOLATION,
++                  "exclusive open still reports the host writer");
++            if (h != INVALID_HANDLE_VALUE) ::CloseHandle(h);
++            ::CloseHandle(host_writer);
++        }
+         h = create_w(L"game:/data/hello.txt", GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, 0, nullptr);
+         check(h != INVALID_HANDLE_VALUE, "the prefix is case-insensitive and accepts forward slashes");
+         if (h != INVALID_HANDLE_VALUE) ::CloseHandle(h);

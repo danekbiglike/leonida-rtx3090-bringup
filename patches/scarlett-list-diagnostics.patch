@@ -1,0 +1,336 @@
+--- a/runtime/shims/d3d12_xs_device.cpp
++++ b/runtime/shims/d3d12_xs_device.cpp
+@@ -44,7 +44,7 @@
+ namespace rt::d3d12_xs {
+ namespace {
+ 
+-constexpr unsigned kMaxSlots = 128;
++constexpr unsigned kMaxSlots = 192;  // includes the resource-at-address call in device slot 133
+ static_assert(kMaxSlots > 83, "the proxy table must cover ID3D12Device14 (83 slots)");
+ static_assert(sizeof(void*) == 8, "the Xbox-ABI proxy is x64-only");
+ static_assert(sizeof(D3D12_CPU_DESCRIPTOR_HANDLE) == 8,
+@@ -641,11 +641,7 @@
+ // passed there: queue Signal/Wait (14/15) take a fence; device CreateSharedHandle (31) a device child,
+ // MakeResident/Evict (34/35), SetResidencyPriority (46) and EnqueueMakeResident (50) pageables, and
+ // SetEventOnMultipleFenceCompletion (45) and EnqueueMakeResident fences. The heap proxies of slot 14 are pageables
+-// and device children too and are unwrapped in the same places. Command lists are not wrapped yet, so
+-// ExecuteCommandLists passes them through, and a heap proxy still reaches the real runtime through the list's
+-// SetDescriptorHeaps. A command-list proxy (docs/d3d12_command_objects.md §3.5a) adds its vtable to
+-// proxy_real_object, which every unwrap goes through, and a queue slot 10 branch in child_slot that unwraps the list
+-// array (UnwrappedArray) before forwarding, and unwraps heap proxies in its own SetDescriptorHeaps.
++// and device children too and are unwrapped in the same places. The queue also unwraps Scarlett command lists for ExecuteCommandLists.
+ //
+ // QueryInterface answers only the interfaces the proxy models (the base chain and its own interface, Fence1 when
+ // the real fence has it), like the device and heap proxies, so the COM identity holds and no real object leaks to
+@@ -881,10 +877,45 @@
+     return object && *reinterpret_cast<void* const*>(object) == reinterpret_cast<void*>(get_child_vtable<K>());
+ }
+ 
+-// The real object behind a heap, queue or fence proxy, or null when `object` is none of them.
++// Only the measured console IID takes this path. PC IIDs retain their native vtable layout.
++constexpr IID kScarlettListIid{0xc3827890, 0x4024, 0x474c, {0x98, 0xcf, 0x64, 0x5b, 0x51, 0xdc, 0x48, 0x74}};
++void** scarlett_list_vtable();
++
++struct ScarlettList {
++    void** vtable = scarlett_list_vtable();
++    // The SDK can access guest fields inline. Keep the write cursor and its limits equal (no inline space).
++    // All host pointers and lifetime state live outside the guest-visible prefix.
++    alignas(8) std::uint8_t console_fields[0x4000 - sizeof(void*)]{};
++    ID3D12GraphicsCommandList* real;
++    DeviceProxy* device;
++    std::atomic<ULONG> refs{1};
++    // Preserve the two startup extension records in call order until the list is submitted or reset.
++    struct Extension { unsigned slot; UINT64 args[4]; };
++    Extension pending[2]{};
++    unsigned pending_count = 0;
++    HRESULT recording_error = S_OK;
++    bool closed = false;
++
++    ScarlettList(ID3D12GraphicsCommandList* host, DeviceProxy* parent) : real(host), device(parent) {
++        proxy_add_ref(device);
++    }
++    ~ScarlettList() {
++        real->Release();
++        proxy_release(device);
++    }
++};
++static_assert(offsetof(ScarlettList, real) == 0x4000);
++
++ScarlettList* as_scarlett_list(const void* object) {
++    if (!object || *static_cast<void* const* const*>(object) != scarlett_list_vtable()) return nullptr;
++    return static_cast<ScarlettList*>(const_cast<void*>(object));
++}
++
++// The underlying host interface for objects implemented in this translation unit.
+ IUnknown* proxy_real_object(const void* object) {
+     if (!object) return nullptr;
+     void* const vtable = *reinterpret_cast<void* const*>(object);
++    if (auto* list = as_scarlett_list(object)) return list->real;
+     if (vtable == reinterpret_cast<void*>(get_heap_vtable())) return static_cast<const HeapProxy*>(object)->real;
+     if (vtable == reinterpret_cast<void*>(get_child_vtable<ChildKind::queue>()) ||
+         vtable == reinterpret_cast<void*>(get_child_vtable<ChildKind::fence>()) ||
+@@ -927,6 +958,27 @@
+     std::unique_ptr<std::uint64_t[]> heap_;
+     std::uint64_t* data_ = nullptr;
+ };
++
++// A failed recording must never be submitted, even if the caller ignored the HRESULT from Close.
++void execute_xbox_lists(ID3D12CommandQueue* queue, UINT count, ID3D12CommandList* const* lists) {
++    if (count && !lists) return;
++    for (UINT i = 0; i < count; ++i) {
++        if (!lists[i]) return;
++        if (auto* list = as_scarlett_list(lists[i])) {
++            if (!list->closed || FAILED(list->recording_error)) return;
++            if (list->pending_count) {
++                const ULONG_PTR slot = list->pending[0].slot;
++                std::fprintf(stderr, "[rt] ExecuteCommandLists needs translation of Scarlett list slot %zu\n", slot);
++                // ExecuteCommandLists has no HRESULT. Stop before any list in this batch reaches the driver.
++                RaiseException(0xe047434c, EXCEPTION_NONCONTINUABLE, 1, &slot);
++                return;
++            }
++        }
++    }
++    UnwrappedArray host;
++    if (!host.fill(reinterpret_cast<std::uintptr_t>(lists), count)) return;
++    queue->ExecuteCommandLists(count, count ? reinterpret_cast<ID3D12CommandList* const*>(host.data()) : lists);
++}
+ 
+ // The vtable read for a slot past a table faults in the reservation behind it; name the slot. Only reads the
+ // exception record and writes with WriteFile, so it is safe whatever the faulting thread holds.
+@@ -983,6 +1035,12 @@
+         return child_add_ref<K>(self);
+     } else if constexpr (Slot == 2) {
+         return child_release<K>(self);
++    } else if constexpr (K == ChildKind::queue && Slot == 10) {
++        note_child_slot<K>(Slot);
++        d3d12_trace::record(child_trace_name<K>(Slot));
++        execute_xbox_lists(static_cast<ID3D12CommandQueue*>(self->real), static_cast<UINT>(a1),
++                           reinterpret_cast<ID3D12CommandList* const*>(a2));
++        return 0;
+     } else if constexpr (Slot == 7) {
+         d3d12_trace::record(child_trace_name<K>(Slot));
+         return hr_to_u64(child_get_device<K>(self, reinterpret_cast<const IID*>(a1),
+@@ -1184,6 +1242,112 @@
+     return S_OK;
+ }
+ 
++HRESULT WINAPI scarlett_list_query(ScarlettList* list, REFIID iid, void** out) {
++    if (!out) return E_POINTER;
++    *out = nullptr;
++    if (!IsEqualIID(iid, kScarlettListIid) && !IsEqualIID(iid, __uuidof(IUnknown)) &&
++        !IsEqualIID(iid, __uuidof(ID3D12Object)) && !IsEqualIID(iid, __uuidof(ID3D12DeviceChild)) &&
++        !IsEqualIID(iid, __uuidof(ID3D12CommandList))) return E_NOINTERFACE;
++    list->refs.fetch_add(1, std::memory_order_relaxed);
++    *out = list;
++    return S_OK;
++}
++
++ULONG WINAPI scarlett_list_addref(ScarlettList* list) { return ++list->refs; }
++
++ULONG WINAPI scarlett_list_release(ScarlettList* list) {
++    const ULONG refs = --list->refs;
++    if (!refs) delete list;
++    return refs;
++}
++
++HRESULT WINAPI scarlett_list_close(ScarlettList* list) {
++    const HRESULT native_hr = list->real->Close();
++    list->closed = SUCCEEDED(native_hr);
++    const HRESULT hr = FAILED(native_hr) ? native_hr : list->recording_error;
++    std::fprintf(stderr, "[rt] ScarlettList Close host=0x%08lx result=0x%08lx\n",
++                 static_cast<unsigned long>(native_hr), static_cast<unsigned long>(hr));
++    return hr;
++}
++
++HRESULT WINAPI scarlett_list_reset(ScarlettList* list, ID3D12CommandAllocator* allocator, ID3D12PipelineState* pso) {
++    auto* host = allocator_proxy_real_allocator(allocator);
++    const HRESULT hr = list->real->Reset(host ? host : allocator, pso);
++    if (SUCCEEDED(hr)) {
++        list->closed = false;
++        list->pending_count = 0;
++        list->recording_error = S_OK;
++    }
++    return hr;
++}
++
++// Recording and executing are separate operations. Capture each argument verbatim. The backend cannot execute
++// these extensions yet; ExecuteCommandLists checks for them before it unwraps or submits the batch.
++template <unsigned Slot>
++void WINAPI scarlett_record_extension(ScarlettList* list, UINT64 a, UINT64 b, UINT64 c, UINT64 d) {
++    if (list->closed || list->pending_count == std::size(list->pending)) {
++        list->recording_error = E_NOTIMPL;
++        return;
++    }
++    list->pending[list->pending_count++] = {Slot, {a, b, c, d}};
++    std::fprintf(stderr, "[rt] ScarlettList captured slot %u args=0x%llx,0x%llx,0x%llx,0x%llx\n",
++                 Slot, a, b, c, d);
++}
++
++void WINAPI scarlett_set_heaps(ScarlettList* list, UINT count, ID3D12DescriptorHeap* const* heaps) {
++    UnwrappedArray host;
++    if ((count && !heaps) || !host.fill(reinterpret_cast<std::uintptr_t>(heaps), count)) {
++        list->recording_error = count && !heaps ? E_INVALIDARG : E_OUTOFMEMORY;
++        return;
++    }
++    list->real->SetDescriptorHeaps(count, count ? reinterpret_cast<ID3D12DescriptorHeap* const*>(host.data()) : heaps);
++}
++
++// For a slot with unknown signature, neither a fabricated HRESULT nor a null return is generally valid.
++template <std::size_t Slot>
++void WINAPI scarlett_unmodelled(ScarlettList*) {
++    std::fprintf(stderr, "[rt] ScarlettList unmodelled slot %zu\n", Slot);
++    const ULONG_PTR slot = Slot;
++    RaiseException(0xe047434c, EXCEPTION_NONCONTINUABLE, 1, &slot);
++}
++
++template <std::size_t... I>
++void fill_scarlett_slots(void** slots, std::index_sequence<I...>) {
++    ((slots[I] = reinterpret_cast<void*>(&scarlett_unmodelled<I>)), ...);
++}
++
++void** scarlett_list_vtable() {
++    static void* slots[160];
++    static const bool filled = [] {
++        fill_scarlett_slots(slots, std::make_index_sequence<std::size(slots)>{});
++        slots[0] = reinterpret_cast<void*>(&scarlett_list_query);
++        slots[1] = reinterpret_cast<void*>(&scarlett_list_addref);
++        slots[2] = reinterpret_cast<void*>(&scarlett_list_release);
++        slots[3] = reinterpret_cast<void*>(+[](ScarlettList* l, REFGUID key, UINT* size, void* dst) {
++            return l->real->GetPrivateData(key, size, dst);
++        });
++        slots[4] = reinterpret_cast<void*>(+[](ScarlettList* l, REFGUID key, UINT size, const void* src) {
++            return l->real->SetPrivateData(key, size, src);
++        });
++        slots[5] = reinterpret_cast<void*>(+[](ScarlettList* l, REFGUID key, const IUnknown* value) {
++            return l->real->SetPrivateDataInterface(key, value);
++        });
++        slots[6] = reinterpret_cast<void*>(+[](ScarlettList* l, LPCWSTR name) { return l->real->SetName(name); });
++        slots[7] = reinterpret_cast<void*>(+[](ScarlettList* l, REFIID iid, void** out) {
++            return proxy_query_interface(l->device, &iid, out);
++        });
++        slots[8] = reinterpret_cast<void*>(+[](ScarlettList* l) { return l->real->GetType(); });
++        slots[9] = reinterpret_cast<void*>(&scarlett_list_close);
++        slots[10] = reinterpret_cast<void*>(&scarlett_list_reset);
++        slots[32] = reinterpret_cast<void*>(&scarlett_set_heaps);
++        slots[131] = reinterpret_cast<void*>(&scarlett_record_extension<131>);
++        slots[132] = reinterpret_cast<void*>(&scarlett_record_extension<132>);
++        return true;
++    }();
++    (void)filled;
++    return slots;
++}
++
+ // Xbox device slot 73 (public HLE): CreateCommandListX(desc, allocator, initial_state, riid, out). The console call is
+ // not the PC six-argument form: the type is the first word of D3D12XBOX_COMMAND_LIST_DESC and there is no node mask
+ // (the HLE passes 0). The second desc word is logged, not interpreted: its public layout is not established.
+@@ -1212,6 +1376,21 @@
+     auto* allocator = allocator_proxy_real_allocator(reinterpret_cast<void*>(allocator_word));
+     if (!allocator) allocator = reinterpret_cast<ID3D12CommandAllocator*>(allocator_word);
+     auto* initial_state = reinterpret_cast<ID3D12PipelineState*>(initial_state_word);
++    if (IsEqualIID(*riid, kScarlettListIid)) {
++        ID3D12GraphicsCommandList* real = nullptr;
++        const HRESULT hr = self->real->CreateCommandList(0, type, allocator, initial_state, IID_PPV_ARGS(&real));
++        std::fprintf(stderr, "[rt] CreateCommandListX Scarlett host list type=%d hr=0x%08lx\n",
++                     static_cast<int>(type), static_cast<unsigned long>(hr));
++        if (FAILED(hr)) return hr;
++        if (!real) return E_UNEXPECTED;
++        auto* list = new (std::nothrow) ScarlettList(real, self);
++        if (!list) {
++            real->Release();
++            return E_OUTOFMEMORY;
++        }
++        *out = list;
++        return S_OK;
++    }
+     return self->real->CreateCommandList(0, type, allocator, initial_state, *riid, out);
+ }
+ 
+--- a/runtime/shims/d3d12_xs_device.h
++++ b/runtime/shims/d3d12_xs_device.h
+@@ -11,7 +11,7 @@
+ //             D3D12_COMMAND_QUEUE_DESC's (public HLE).
+ //   slot 73   CreateCommandListX(desc, allocator, initialState, riid, out) -> PC CreateCommandList(0, type, allocator,
+ //             initialState, riid, out). The type is the first word of the Xbox desc; there is no node-mask argument
+-//             in the console call (public HLE; the PC six-argument form differs).
++//             in the console call. The Scarlett list IID creates an Xbox-layout proxy around a native list.
+ //   slots 78/79/80  SetFrameIntervalX, ScheduleFrameEventX, WaitFrameEventX. A per-device token state machine answers
+ //             them before the PC vtable is indexed; WaitFrameEventX returns at once with a fresh non-zero token.
+ //             Slot 80 is outside a PC ID3D12Device11 table, so it is checked before the beyond-table refusal.
+@@ -42,8 +42,8 @@
+ // keeps the public slots is an assumption (docs/d3d12_command_objects.md §5.2). Heap, queue and fence proxies are
+ // unwrapped wherever a device or queue method hands them to the real runtime: queue Signal/Wait (14/15), device
+ // CreateSharedHandle (31), MakeResident/Evict (34/35), SetEventOnMultipleFenceCompletion (45), SetResidencyPriority
+-// (46) and EnqueueMakeResident (50). Command lists are not wrapped, so ExecuteCommandLists passes them through and a
+-// heap proxy given to a list's SetDescriptorHeaps reaches the real list as it is. QueryInterface answers only the
++// (46) and EnqueueMakeResident (50). Scarlett list proxies are unwrapped at ExecuteCommandLists, and their
++// SetDescriptorHeaps unwraps heap proxies. Lists requested by a PC IID keep their PC layout. QueryInterface answers only the
+ // modelled interfaces; one the real object has but the proxy does not model is logged once and refused.
+ #pragma once
+ 
+--- a/runtime/test/device_proxy_test.cpp
++++ b/runtime/test/device_proxy_test.cpp
+@@ -83,6 +83,15 @@
+     heap.CreationNodeMask = 1;
+     heap.VisibleNodeMask = 1;
+     return heap;
++}
++
++bool refuses_untranslated_submission(ID3D12CommandQueue* queue, ID3D12CommandList* list) {
++    __try {
++        queue->ExecuteCommandLists(1, &list);
++    } __except (GetExceptionCode() == 0xe047434c ? EXCEPTION_EXECUTE_HANDLER : EXCEPTION_CONTINUE_SEARCH) {
++        return true;
++    }
++    return false;
+ }
+ 
+ bool load_compute_shader(ComPtr<ID3DBlob>& bytecode) {
+@@ -377,6 +386,48 @@
+                            : hr;
+         check(hr == S_OK && xbox_list != nullptr, "slot 73 CreateCommandListX returns a command list");
+         check(rt::d3d12_xs::device_slot_hits(73) == 1, "slot 73 hit counter is 1");
++
++        xbox_list.Reset();
++        const IID scarlett{0xc3827890, 0x4024, 0x474c, {0x98, 0xcf, 0x64, 0x5b, 0x51, 0xdc, 0x48, 0x74}};
++        hr = reinterpret_cast<CreateListXFn>(proxy_vtbl[73])(device.Get(), &list_desc, xbox_allocator.Get(), nullptr,
++                                                            &scarlett, reinterpret_cast<void**>(xbox_list.GetAddressOf()));
++        check(hr == S_OK && xbox_list, "CreateCommandListX accepts the Scarlett list IID");
++        if (xbox_list) {
++            ComPtr<IUnknown> id;
++            hr = xbox_list->QueryInterface(scarlett, reinterpret_cast<void**>(id.GetAddressOf()));
++            check(hr == S_OK && id.Get() == xbox_list.Get(), "Scarlett list preserves COM identity");
++            ComPtr<ID3D12Device> parent;
++            hr = xbox_list->GetDevice(IID_PPV_ARGS(parent.GetAddressOf()));
++            check(hr == S_OK && parent.Get() == device.Get(), "Scarlett list returns its Xbox device");
++            check(xbox_list->GetType() == D3D12_COMMAND_LIST_TYPE_DIRECT, "Scarlett list reports its native type");
++            check(xbox_list->Close() == S_OK, "empty Scarlett list closes on the host");
++            check(xbox_list->Reset(xbox_allocator.Get(), nullptr) == S_OK, "Scarlett list resets on the host");
++            auto** vt = *reinterpret_cast<void***>(xbox_list.Get());
++            using ExtendedFn = void(WINAPI*)(void*, UINT64, UINT64, UINT64, UINT64);
++            reinterpret_cast<ExtendedFn>(vt[132])(xbox_list.Get(), 1, 2, 3, 4);
++            reinterpret_cast<ExtendedFn>(vt[131])(xbox_list.Get(), 5, 6, 7, 8);
++            check(xbox_list->Close() == S_OK, "deferred Scarlett commands are recorded and sealed");
++            if (xbox_queue_proxy)
++                check(refuses_untranslated_submission(xbox_queue_proxy.Get(), xbox_list.Get()),
++                      "deferred commands stop queue submission before reaching the driver");
++            check(xbox_list->Reset(xbox_allocator.Get(), nullptr) == S_OK, "reset discards deferred commands");
++            for (unsigned i = 0; i < 3; ++i) reinterpret_cast<ExtendedFn>(vt[131])(xbox_list.Get(), 1, 2, 3, 4);
++            check(xbox_list->Close() == E_NOTIMPL, "Close reports a recording that could not be retained");
++            check(xbox_list->Reset(xbox_allocator.Get(), nullptr) == S_OK && xbox_list->Close() == S_OK,
++                  "fresh recording clears the previous recording error");
++            if (xbox_queue_proxy) {
++                ID3D12CommandList* lists[] = {xbox_list.Get()};
++                xbox_queue_proxy->ExecuteCommandLists(1, lists);
++                ComPtr<ID3D12Fence> completion;
++                hr = device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(completion.GetAddressOf()));
++                if (SUCCEEDED(hr)) hr = xbox_queue_proxy->Signal(completion.Get(), 1);
++                HANDLE done = CreateEventW(nullptr, FALSE, FALSE, nullptr);
++                if (SUCCEEDED(hr) && done) hr = completion->SetEventOnCompletion(1, done);
++                check(SUCCEEDED(hr) && done && WaitForSingleObject(done, 5000) == WAIT_OBJECT_0 &&
++                      completion->GetCompletedValue() == 1, "wrapped list submission reaches a queue fence");
++                if (done) CloseHandle(done);
++            }
++        }
+     }
+ 
+     // Slot 62: an empty root signature and a trivial compute shader through the Xbox signature. The PC entry at
