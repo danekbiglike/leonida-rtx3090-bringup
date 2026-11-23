@@ -22,7 +22,7 @@ git apply ../leonida-rtx3090-bringup/patches/frame-dispatch-inputs.patch
 git apply ../leonida-rtx3090-bringup/patches/frame-volume-uav.patch
 cmake --build build --target gta6rt d3d12_draw_test d3d12_compute_test d3d12_descriptor_test vk_bindless_test
 ctest --test-dir build --output-on-failure -R '^(d3d12_descriptor|d3d12_compute|vk_bindless_ps_imgatomic)$'
-.uild\d3d12_draw_test.exe --upload-vertices
+./build/d3d12_draw_test.exe --upload-vertices
 ```
 
 The descriptor fixture checks both ways of naming the entire depth at mip one, the default view at mip zero and five rejected ranges. The Vulkan atomic fixture separately verified all 64 voxels of a 4 × 4 × 4 volume. All three CTest fixtures passed. Look for `volume-uav` with `registered=1` in a local run with `LEONIDA_FRAME_GRAPH=1`. The input probe uses `input-snapshot`, `vertex-color` and `constant-prefix`. The `dispatch-input` probe records pipeline and layout availability at the call. [Microsoft's definition of a 3D UAV](https://learn.microsoft.com/en-us/windows/win32/api/d3d12/ns-d3d12-d3d12_tex3d_uav).
