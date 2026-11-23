@@ -85,6 +85,16 @@ The buffer-import and existing-heap code comes from [upstream PR 7218](https://g
 
 The new retail run passed the former depth-layout stop. Twelve samples of 2,564 × 1,061 pixels contained zero nonblack RGB pixels. The final sample was present 12,527. The process exited at 28.25 s with a memory access error whose cause is undetermined. At the time of that run the small shader catalogue still lacked 472 distinct requested vertex programs and the runtime refused 2,689 pipeline-library requests. The counts do not establish the cause of the exit. The focused release build passed nine CTest targets plus the separate Xbox D16+S8 comparison.
 
+The last retail measurement preceded a small correction for discard transitions and the addition of a successful-allocation diagnostic. The published revision includes both changes. Its verification was the focused synthetic suite.
+
+### Offline shader coverage after the last launch
+
+On the translator checkout at `ffc6f6da01095e322bd5fcc2aaaf8387cd1c3a87`, `patches/offline-llvm-input-lines.patch` wraps LLVM's input after every 32 bytes. LLVM accepts newlines between bytes, including inside a multiword instruction. A synthetic program with an eight-byte instruction across that boundary produced identical disassembly in both representations.
+
+Processing the compute pipeline library yielded 2,684 programs. Of these, 1,538 assembled and passed the translator's Vulkan 1.2 SPIR-V validation. All 1,538 code/state keys were distinct. The last launch requested 2,680 distinct library code hashes, of which 1,538 occur in this offline index. Target matching by code alone does not verify the state of a particular call. One validator-passing module also carried an LLVM decode warning. The remaining 1,146 source programs produced no validated module in this pass.
+
+The main shader index separately matched all 472 missing vertex programs and 58 of 59 missing pixel programs from the final small-catalogue run. The library extraction, five translation shards and index merge finished in 8 min 21 s. All disassembly files together measured 1.40 GiB. No module from this new library index was submitted to a GPU during this check.
+
 ## Reproduce the Windows package-read fix
 
 The test machine hit Windows sharing violation 32 when DirectStorage opened an archive for reading. The successful sharing modes pointed to an existing writable host handle. A synthetic test reproduced the conflict. Repeating the open with read sharing alone reproduced the stop. Allowing the existing writer on the retry let the process initialize its graphics resources.
