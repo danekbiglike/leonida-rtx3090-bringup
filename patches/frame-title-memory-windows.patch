@@ -1,0 +1,1989 @@
+diff --git a/runtime/CMakeLists.txt b/runtime/CMakeLists.txt
+index a3f137b766618bccda3085ef09b79bf7c3ef69dd..5887056bccb917fd88f4e71988bd3e9acc995234 100644
+--- a/runtime/CMakeLists.txt
++++ b/runtime/CMakeLists.txt
+@@ -2660,6 +2660,14 @@ if(TARGET Vulkan::Headers)
+       target_compile_options(d3d12_compute_test PRIVATE /W4 /permissive- /utf-8)
+       add_test(NAME d3d12_compute COMMAND d3d12_compute_test)
+       set_tests_properties(d3d12_compute PROPERTIES SKIP_RETURN_CODE 77)
++      # A buffer at the title's own VA (device slot 133) read by the same shader through a root view and a V#.
++      add_executable(d3d12_title_va_test test/d3d12_title_va_test.cpp shims/d3d12_xs_device.cpp ${LEONIDA_TEST_CS})
++      target_link_libraries(d3d12_title_va_test PRIVATE gta6rt_d3d12_com)
++      target_compile_definitions(d3d12_title_va_test PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX
++                                 LEONIDA_TEST_CS_SPV="${LEONIDA_TEST_CS}")
++      target_compile_options(d3d12_title_va_test PRIVATE /W4 /permissive- /utf-8)
++      add_test(NAME d3d12_title_va COMMAND d3d12_title_va_test)
++      set_tests_properties(d3d12_title_va PROPERTIES SKIP_RETURN_CODE 77)
+       # Compute PSOs from FSPX programs (docs/fspx.md): an ACCC container at slot 62 and a bare kind-6 program.
+       add_executable(d3d12_fspx_compute_test test/d3d12_fspx_compute_test.cpp shims/d3d12_xs_device.cpp ${LEONIDA_TEST_CS})
+       target_link_libraries(d3d12_fspx_compute_test PRIVATE gta6rt_d3d12_com)
+@@ -3228,6 +3236,9 @@ if(TARGET Vulkan::Headers)
+     add_executable(arena_size_test test/arena_size_test.cpp)
+     target_link_libraries(arena_size_test PRIVATE Vulkan::Headers)
+     add_test(NAME arena_size COMMAND arena_size_test)
++    # Title-placed buffer VAs (device slot 133) and the console VA shaders reach them by (src/title_va_alias.h).
++    add_executable(title_va_alias_test test/title_va_alias_test.cpp)
++    add_test(NAME title_va_alias COMMAND title_va_alias_test)
+   endif()
+ else()
+   include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/vulkan_headers_missing.cmake")
+diff --git a/runtime/shims/d3d12_com.cpp b/runtime/shims/d3d12_com.cpp
+index 905c47178070174b948b52c8f58193e6fea81f99..6010a94e92c111b25d3aacf982c9d016e66254d1 100644
+--- a/runtime/shims/d3d12_com.cpp
++++ b/runtime/shims/d3d12_com.cpp
+@@ -6,13 +6,16 @@
+ #include "d3d12_trace.h"
+ #include "d3d12_xs_device.h"
+ #include "../src/gfx10_descriptors.h"
++#include "../src/title_va_alias.h"
+ 
+ #include <algorithm>
+ #include <array>
+ #include <atomic>
+ #include <bit>
++#include <chrono>
+ #include <condition_variable>
+ #include <functional>
++#include <map>
+ #include <memory>
+ #include <optional>
+ #include <cstdio>
+@@ -199,6 +202,8 @@ public:
+     }
+ 
+     const leonida::CommandList& commands() const { return list_; }
++    // The descriptor tables this recording binds (console VAs), for the scan before a submission.
++    const std::vector<std::pair<std::uint64_t, std::uint32_t>>& tables() const { return tables_; }
+     // The pipeline states and root signatures the recording names (it holds a reference to each until Reset).
+     const std::vector<IUnknown*>& pinned() const { return held_; }
+     UINT front_stencil_ref() const { return front_stencil_ref_; }
+@@ -240,6 +245,7 @@ public:
+         record_into(command_allocator);
+         invalid_ = false;
+         calls_.clear();
++        tables_.clear();
+         release_held();  // what the old recording used: it was replayed at ExecuteCommandLists
+         reset_state(state);  // Reset returns every list state to its default
+         if (type_ == D3D12_COMMAND_LIST_TYPE_BUNDLE) set_initial_pipeline(state);  // reset_state holds it
+@@ -1322,6 +1328,13 @@ private:
+             return;
+         const RootArgumentLayout::Parameter* p = parameter(state, index, type);
+         if (!p) return;
++        // A root view into the title's own memory (a slot-133 buffer, a constant ring) gets the console VA of a GPU
++        // copy of it, so the shader's heap_base + VA reaches it (src/title_va_alias.h). A descriptor table is in one
++        // of the layer's heaps: kept, and its buffer V#s are rewritten the same way before each submission.
++        if (type == rt::rootsig::ParamType::Descriptor)
++            va = leonida::title_va_aliases().resolve(va, kRootViewBytes, leonida::TitleVaAliases::root_view);
++        else if (va && p->table_descriptors && (tables_.empty() || tables_.back().first != va))
++            tables_.push_back({va, p->table_descriptors});
+         const std::uint32_t first = first_dword(state, *p);
+         write(state, first, std::uint32_t(va));
+         // In the compute layout a descriptor table is one dword, the 32-bit VA of its first descriptor (the heaps
+@@ -1346,6 +1359,10 @@ private:
+     std::uint32_t topology_ = 0;  // D3D_PRIMITIVE_TOPOLOGY_UNDEFINED
+     std::array<leonida::VertexBufferView, D3D12_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT> vertex_buffers_{};
+     leonida::IndexBufferView index_{};
++    // SetGraphicsRootDescriptorTable / SetComputeRootDescriptorTable: VA, CBV/SRV/UAV slots the signature declares
++    std::vector<std::pair<std::uint64_t, std::uint32_t>> tables_;
++    // The span a root view may read: D3D12's largest constant buffer (4096 x 16 bytes).
++    static constexpr std::uint64_t kRootViewBytes = 65536;
+     leonida::Viewport viewport_{};
+     leonida::Rect scissor_{};
+     std::array<leonida::TargetView, D3D12_SIMULTANEOUS_RENDER_TARGET_COUNT> render_targets_{};
+@@ -1460,13 +1477,16 @@ private:
+ 
+     void set_vertex_buffers(UINT start, UINT count, const D3D12_VERTEX_BUFFER_VIEW* views) {
+         if (count) draw_views_stale_ = true;
+-        for (UINT i = 0; i < count; ++i)
++        for (UINT i = 0; i < count; ++i) {
++            if (views) leonida::title_va_aliases().note(views[i].BufferLocation, leonida::TitleVaAliases::vertex_view);
+             vertex_buffers_[start + i] = views ? leonida::VertexBufferView{views[i].BufferLocation, views[i].SizeInBytes,
+                                                                           views[i].StrideInBytes}
+                                                : leonida::VertexBufferView{};
++        }
+     }
+ 
+     void set_index_buffer(const D3D12_INDEX_BUFFER_VIEW* view) {
++        if (view) leonida::title_va_aliases().note(view->BufferLocation, leonida::TitleVaAliases::index_view);
+         index_ = view ? leonida::IndexBufferView{view->BufferLocation, view->SizeInBytes, u(view->Format)}
+                       : leonida::IndexBufferView{};
+     }
+@@ -1729,6 +1749,21 @@ public:
+             recorded.push_back(&list->commands());
+             graphics.push_back(list);
+         }
++        // Buffer V#s the title wrote into a bound table itself may name its own memory: rewritten to a GPU copy's
++        // console VA before the copies are refreshed for this submission (src/title_va_alias.h).
++        {
++            std::map<std::uint64_t, std::uint32_t> tables;  // each table once, with the most slots it was bound with
++            for (const GraphicsCommandList* list : graphics)
++                for (const auto& [table, descriptors] : list->tables())
++                    tables[table] = std::max(tables[table], descriptors);
++            if (!tables.empty()) {
++                const auto start = std::chrono::steady_clock::now();
++                for (const auto& [table, descriptors] : tables) leonida::title_va_aliases().scan_table(table, descriptors);
++                leonida::title_va_aliases().note_scan(std::uint64_t(
++                    std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - start)
++                        .count()));
++            }
++        }
+         last_result_ = queue_.execute(recorded, [&graphics] { return pin_lists(graphics); });
+         d3d12_trace::record(method, last_result_ == leonida::ReplayResult::success ? "ok" : "failed");
+         if (last_result_ != leonida::ReplayResult::success)
+diff --git a/runtime/shims/d3d12_com.h b/runtime/shims/d3d12_com.h
+index 5b33831cbb39a26001f85298f27b3ab0d482ec10..1f10aaeeab3be9efbb62ab19b574b5be08075589 100644
+--- a/runtime/shims/d3d12_com.h
++++ b/runtime/shims/d3d12_com.h
+@@ -380,6 +380,9 @@ struct RootArgumentLayout {
+         std::uint32_t user_offset;     // graphics: first dword; unused for a parameter with no dwords
+         std::uint32_t constant_count;  // constants only
+         std::uint32_t compute_offset = rt::rootsig::kNoSgpr;  // compute: first user SGPR
++        // A table: the CBV/SRV/UAV slots its ranges declare (an unbounded range counts as 1024), for the scan of
++        // title-written V#s before a submission (src/title_va_alias.h). 0: a sampler table, or not a table.
++        std::uint32_t table_descriptors = 0;
+     };
+     std::vector<Parameter> parameters;
+     std::uint32_t flags = 0;  // D3D12_ROOT_SIGNATURE_FLAGS from the serialized blob
+diff --git a/runtime/shims/d3d12_vulkan_device.cpp b/runtime/shims/d3d12_vulkan_device.cpp
+index ad67fdcf18ad08da637a3d9d85a72522bbc2ea97..a02a5ebf97dd2b385f43c165a67a74cdbda8440b 100644
+--- a/runtime/shims/d3d12_vulkan_device.cpp
++++ b/runtime/shims/d3d12_vulkan_device.cpp
+@@ -28,6 +28,7 @@
+ #include "../src/shader_library.h"
+ #include "../src/spirv_f16_halves.h"
+ #include "../src/spirv_stores.h"
++#include "../src/title_va_alias.h"
+ #include "../src/vulkan_present.h"
+ #include "../src/vulkan_device_filter.h"
+ #include "../src/vulkan13_features.h"
+@@ -41,6 +42,7 @@
+ #include <atomic>
+ #include <bit>
+ #include <cctype>
++#include <chrono>
+ #include <climits>
+ #include <cstdlib>
+ #include <filesystem>
+@@ -54,6 +56,7 @@
+ #include <string>
+ #include <type_traits>
+ #include <cwchar>
++#include <smmintrin.h>
+ #include <vector>
+ 
+ namespace rt::d3d12 {
+@@ -84,6 +87,86 @@ void log_once(const char* what, int value) {
+     if (seen.insert({what, value}).second) std::fprintf(stderr, "[rt] d3d12: %s %d\n", what, value);
+ }
+ 
++// The base address a V# gets for a buffer address: in the title's own memory (a slot-133 buffer, a constant ring),
++// the console VA of a GPU copy of it (src/title_va_alias.h, docs/d3d12_vulkan.md section 3.3); anything else
++// unchanged. A V# keeps 48 address bits. An arena copy always fits; an imported buffer's address is its device
++// address minus heap_base, which wraps when the driver put it below the arena: logged, and written as before.
++std::uint64_t vsharp_address(std::uint64_t va, std::uint64_t bytes,
++                             leonida::TitleVaAliases::Kind kind = leonida::TitleVaAliases::created_view) {
++    const std::uint64_t to = leonida::title_va_aliases().resolve(va, bytes, kind);
++    if (to != va && (to >> 48))
++        log_once("a V# names a title-placed buffer whose GPU copy lies below heap_base, out of a V#'s 48 bits; "
++                 "address bits 48-63:",
++                 int(to >> 48));
++    return to;
++}
++
++// The CBV/SRV/UAV slots a descriptor table declares: the end of its furthest range (D3D12 appends a range at
++// D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND), an unbounded range counted as 1024. 0 for a sampler table or no table.
++std::uint32_t table_view_descriptors(const rt::rootsig::RootParameter& param) {
++    if (param.type != rt::rootsig::ParamType::Table) return 0;
++    constexpr std::uint32_t kUnbounded = 1024;
++    std::uint64_t next = 0, end = 0;
++    for (const auto& range : param.ranges) {
++        const std::uint64_t start = range.offset_in_table == D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND ? next
++                                                                                                    : range.offset_in_table;
++        const std::uint64_t count = range.num_descriptors == UINT_MAX ? kUnbounded : range.num_descriptors;
++        next = start + count;
++        if (range.range_type != D3D12_DESCRIPTOR_RANGE_TYPE_SAMPLER) end = std::max(end, next);
++    }
++    return std::uint32_t(std::min<std::uint64_t>(end, kUnbounded));
++}
++
++// memcpy that a page fault ends instead of killing the process: the title may decommit a page between the
++// VirtualQuery that saw it committed and the read. No C++ objects here: it is a __try frame.
++// `streaming` reads with MOVNTDQA, for write-combined pages: ordinary loads from them are not cached, and memcpy
++// read 64 MiB of them in 253 ms on a Core i9-13900K (253 MiB/s), MOVNTDQA in 13 to 17 ms (4 to 5 GiB/s). Paid at every submission.
++#if defined(__clang__) && defined(_M_X64)
++__attribute__((target("sse4.1")))
++#endif
++bool copy_guarded(std::uint8_t* to, const std::uint8_t* from, std::size_t bytes, bool streaming) {
++    __try {
++        if (streaming) {
++            const std::size_t head = std::min<std::size_t>(bytes, (0 - reinterpret_cast<std::uintptr_t>(from)) & 63);
++            std::memcpy(to, from, head);
++            to += head, from += head, bytes -= head;
++            for (; bytes >= 64; to += 64, from += 64, bytes -= 64) {
++                const auto* in = reinterpret_cast<const __m128i*>(from);
++                const __m128i a = _mm_stream_load_si128(in), b = _mm_stream_load_si128(in + 1);
++                const __m128i c = _mm_stream_load_si128(in + 2), d = _mm_stream_load_si128(in + 3);
++                auto* out = reinterpret_cast<__m128i*>(to);
++                _mm_storeu_si128(out, a), _mm_storeu_si128(out + 1, b);
++                _mm_storeu_si128(out + 2, c), _mm_storeu_si128(out + 3, d);
++            }
++        }
++        std::memcpy(to, from, bytes);
++        return true;
++    } __except (EXCEPTION_EXECUTE_HANDLER) {
++        return false;
++    }
++}
++
++// Copies [from, from + bytes) of the title's address space to `to`, for a slot-133 shadow buffer. Only committed,
++// readable pages are read (xmem commits on first touch, and a read of a reserved page faults); the rest is zero.
++void copy_title_pages(std::uint8_t* to, const std::uint8_t* from, std::size_t bytes) {
++    constexpr DWORD readable = PAGE_READONLY | PAGE_READWRITE | PAGE_WRITECOPY | PAGE_EXECUTE_READ |
++                               PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY;
++    for (std::size_t at = 0; at < bytes;) {
++        MEMORY_BASIC_INFORMATION region{};
++        std::size_t run = bytes - at;
++        bool read = false;
++        if (VirtualQuery(from + at, &region, sizeof(region))) {
++            const auto end = reinterpret_cast<std::uintptr_t>(region.BaseAddress) + region.RegionSize;
++            run = std::min<std::size_t>(run, end - reinterpret_cast<std::uintptr_t>(from + at));
++            read = region.State == MEM_COMMIT && (region.Protect & readable) &&
++                   !(region.Protect & (PAGE_GUARD | PAGE_NOACCESS));
++        }
++        if (!read || !copy_guarded(to + at, from + at, run, (region.Protect & PAGE_WRITECOMBINE) != 0))
++            std::memset(to + at, 0, run);
++        at += run;
++    }
++}
++
+ // Two test settings that make the standalone device look like a GPU with fewer Vulkan queues, so the path where D3D12
+ // queues share a VkQueue runs on any GPU; both together give the Intel UHD 770 on Windows and lavapipe (one family,
+ // one queue). LEONIDA_VK_MAX_QUEUES_PER_FAMILY=N (1 to 16): at most N VkQueues per queue family (unset, or not a
+@@ -686,6 +769,159 @@ struct DeviceState {
+     // VK_EXT_external_memory_host; null unless info.host_pointer_alignment is set and the entry point loaded.
+     PFN_vkGetMemoryHostPointerPropertiesEXT get_host_pointer_properties = nullptr;
+ 
++    // The live shadow buffers of Xbox device slot 133 (Resource::create_shadow_buffer): title-placed buffers whose
++    // pages the driver would not import. Each is re-copied from the title's pages before every submission of
++    // command lists (VulkanContext::set_before_execute), since nothing says which pages the title wrote. The first
++    // per-submission copy of each buffer size is timed and logged, so the cost shows in a run's log.
++    struct Shadow {
++        const std::uint8_t* pages;  // the title's
++        std::uint8_t* mapped;       // the shadow's memory
++        std::size_t size;
++    };
++    std::mutex shadow_mutex;  // a leaf: nothing else is taken under it
++    std::vector<Shadow> shadows;
++    std::set<std::size_t> shadow_sizes_logged;
++
++    void add_shadow(const Shadow& shadow) {
++        std::lock_guard lock(shadow_mutex);
++        shadows.push_back(shadow);
++    }
++    void remove_shadow(const std::uint8_t* mapped) {
++        std::lock_guard lock(shadow_mutex);
++        std::erase_if(shadows, [mapped](const Shadow& s) { return s.mapped == mapped; });
++    }
++    void refresh_shadows() {
++        std::lock_guard lock(shadow_mutex);
++        for (const Shadow& s : shadows) {
++            if (!shadow_sizes_logged.insert(s.size).second) {
++                copy_title_pages(s.mapped, s.pages, s.size);
++                continue;
++            }
++            const auto start = std::chrono::steady_clock::now();
++            copy_title_pages(s.mapped, s.pages, s.size);
++            const double ms =
++                std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
++            std::fprintf(stderr, "[rt] d3d12: slot-133 shadow buffer of %llu KiB: copied from the title's pages in "
++                                 "%.3f ms (%.0f MiB/s), paid at every submission\n",
++                         static_cast<unsigned long long>(s.size / 1024), ms,
++                         ms > 0 ? double(s.size) / (1024.0 * 1024.0) / (ms / 1000.0) : 0.0);
++        }
++    }
++
++    // Windows of the title's own memory in the GPU address arena (src/title_va_alias.h, docs/d3d12_vulkan.md
++    // section 3.3 "Title-chosen addresses"): a root view or buffer V# that names the title's memory outside any
++    // slot-133 buffer (a per-frame constant ring, #8862 section 3.5) gets a copy of the 64 KiB-aligned pages it
++    // covers, refreshed before every submission like a slot-133 shadow, and the address of that copy. Windows are
++    // kept until the device goes (the ring comes round to the same pages), up to LEONIDA_TITLE_WINDOWS_MB (64 MiB
++    // by default); past that, or with the arena full, the address is left as it was and counted.
++    struct TitleWindow {
++        std::uint64_t start;
++        std::uint64_t shader_va;
++    };
++    static constexpr std::uint64_t kTitleWindowAlign = 65536;
++    static constexpr std::uint64_t kTitleWindowMax = 16ull << 20;  // the most one address pulls in
++    std::mutex title_window_mutex;  // taken before shadow_mutex, never under it
++    std::vector<TitleWindow> title_windows;
++    std::uint64_t title_window_bytes = 0;
++    std::uint64_t title_window_cap = 64ull << 20;
++
++    // Called through title_va_aliases().resolve for an address with no copy yet. False: not the title's memory.
++    bool resolve_title_memory(std::uint64_t va, std::uint64_t bytes, std::uint64_t& out) {
++        out = va;
++        if (!arena.mapped || va < arena.size || !context) return false;
++        if (context->knows_buffer_va(va)) return false;  // an upload or readback buffer's biased VA, say
++        auto& aliases = leonida::title_va_aliases();
++        // Only the title's own memory gets a copy (xmem's ranges): an address anywhere else, the runtime's or a host
++        // DLL's memory included, is left as it was and counted.
++        std::uint64_t title_lo = 0, title_hi = 0;
++        if (!aliases.title_memory(va, title_lo, title_hi)) return true;
++        MEMORY_BASIC_INFORMATION mbi{};
++        if (!VirtualQuery(reinterpret_cast<const void*>(static_cast<std::uintptr_t>(va)), &mbi, sizeof(mbi)) ||
++            mbi.State != MEM_COMMIT || !mbi.Protect || (mbi.Protect & (PAGE_NOACCESS | PAGE_GUARD)))
++            return true;
++        std::lock_guard lock(title_window_mutex);
++        if (const std::uint64_t made = aliases.shader_va(va); made != va) {  // another thread made it meanwhile
++            out = made;
++            return true;
++        }
++        std::uint64_t lo = 0, hi = UINT64_MAX;
++        aliases.gap(va, lo, hi);  // never over a slot-133 buffer's range or another window
++        lo = std::max(lo, title_lo);  // nor past the title's range
++        hi = std::min(hi, title_hi);
++        const std::uint64_t want = std::clamp<std::uint64_t>(bytes, 1, kTitleWindowMax);
++        const std::uint64_t start = std::max(va & ~(kTitleWindowAlign - 1), lo);
++        std::uint64_t end = va > UINT64_MAX - want - kTitleWindowAlign ? UINT64_MAX
++                                                                        : (va + want + kTitleWindowAlign - 1) &
++                                                                              ~(kTitleWindowAlign - 1);
++        end = std::min(end, hi);
++        if (end <= va) return true;
++        const std::uint64_t size = end - start;
++        if (title_window_bytes + size > title_window_cap) {
++            log_once("title memory named by a shader address is past LEONIDA_TITLE_WINDOWS_MB, left untranslated; "
++                     "MiB copied so far:",
++                     int(title_window_bytes >> 20));
++            return true;
++        }
++        VkDeviceSize offset = 0;
++        if (!arena_allocate(size, kTitleWindowAlign, offset, arena_buffer)) {
++            log_once("GPU address arena full (raise LEONIDA_ARENA_MB): title memory left untranslated; window KiB:",
++                     int(std::min<std::uint64_t>(size >> 10, INT_MAX)));
++            return true;
++        }
++        auto* mapped = arena.mapped + offset;
++        const auto* pages = reinterpret_cast<const std::uint8_t*>(static_cast<std::uintptr_t>(start));
++        copy_title_pages(mapped, pages, std::size_t(size));
++        add_shadow({pages, mapped, std::size_t(size)});
++        aliases.add(start, size, offset);
++        title_windows.push_back({start, offset});
++        title_window_bytes += size;
++        if (title_windows.size() <= 4 || !(title_windows.size() & (title_windows.size() - 1)))
++            std::fprintf(stderr, "[rt] d3d12: a %llu KiB window of the title's memory, named by a shader address, is "
++                                 "copied into the GPU address arena before every submission (%zu windows, %llu KiB)\n",
++                         static_cast<unsigned long long>(size >> 10), title_windows.size(),
++                         static_cast<unsigned long long>(title_window_bytes >> 10));
++        out = offset + (va - start);
++        return true;
++    }
++
++    // The shader-visible CBV/SRV/UAV heaps (arena offset -> end), for the scan of bound tables before a submission.
++    std::mutex cbv_heap_mutex;
++    std::map<VkDeviceSize, VkDeviceSize> cbv_heaps;
++    static constexpr VkDeviceSize kTableScanDescriptors = 1024;  // per table and submission
++
++    // The buffer V#s of the table at `table_va` whose base is in the title's own memory get the address of a copy,
++    // written in place: the title wrote them itself (or copied them), so no Create*View saw them. Images (T#s) and
++    // null slots are skipped; so is a V# already in the arena, so a rewritten one is left alone next time.
++    void scan_title_table(std::uint64_t table_va, std::uint32_t descriptors) {
++        VkDeviceSize end = 0;
++        {
++            std::lock_guard lock(cbv_heap_mutex);
++            auto it = cbv_heaps.upper_bound(table_va);
++            if (it == cbv_heaps.begin()) return;
++            --it;
++            if (table_va >= it->second) return;
++            end = std::min<VkDeviceSize>(
++                it->second, table_va + VkDeviceSize(std::min<std::uint32_t>(descriptors, kTableScanDescriptors)) *
++                                           kDescriptorSize);
++        }
++        auto& aliases = leonida::title_va_aliases();
++        // Slots the title wrote in its own backing of this heap, if it gave the heap one.
++        aliases.pull_descriptors(arena.mapped + table_va, std::size_t(end - table_va));
++        for (VkDeviceSize at = table_va; at + 16 <= end; at += kDescriptorSize) {
++            auto* w = reinterpret_cast<std::uint32_t*>(arena.mapped + at);
++            const std::uint32_t w0 = w[0], w1 = w[1], w2 = w[2], w3 = w[3];
++            if (!(w0 | w1 | w2 | w3) || (w3 >> 30)) continue;  // null, or not a buffer V# (TYPE, dword 3 bits 30-31)
++            const std::uint64_t base = std::uint64_t(w0) | (std::uint64_t(w1 & 0xFFFFu) << 32);
++            if (base < arena.size) continue;
++            const std::uint32_t stride = (w1 >> 16) & 0x3FFFu;
++            const std::uint64_t to =
++                aliases.resolve(base, std::uint64_t(w2) * (stride ? stride : 1), leonida::TitleVaAliases::table_view);
++            if (to == base || (to >> 48)) continue;
++            w[0] = std::uint32_t(to);
++            w[1] = (w1 & 0xFFFF0000u) | std::uint32_t((to >> 32) & 0xFFFFu);
++        }
++    }
++
+     // WriteToSubresource/ReadFromSubresource without host image copy: one staging copy at a time, submitted to
+     // the device's VkQueue and waited for. Created on first use.
+     std::mutex staging_mutex;
+@@ -1764,6 +2000,10 @@ public:
+             in_arena_ = true;
+             cpu_ = device.arena.mapped + arena_offset_;
+             std::memset(cpu_, 0, std::size_t(bytes));
++            if (desc.Type == D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV) {
++                std::lock_guard lock(device.cbv_heap_mutex);
++                device.cbv_heaps[arena_offset_] = arena_offset_ + bytes;
++            }
+         } else {
+             storage_.reset(new std::byte[std::size_t(bytes)]());
+             cpu_ = reinterpret_cast<std::uint8_t*>(storage_.get());
+@@ -1771,6 +2011,10 @@ public:
+     }
+ 
+     ~DescriptorHeap() override {
++        if (in_arena_ && desc_.Type == D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV) {
++            std::lock_guard lock(device_.cbv_heap_mutex);
++            device_.cbv_heaps.erase(arena_offset_);
++        }
+         if (in_arena_) device_.arena_release(arena_offset_, VkDeviceSize(desc_.NumDescriptors) * kDescriptorSize,
+                                             DeviceState::arena_descriptor_heap);
+     }
+@@ -1827,6 +2071,7 @@ public:
+             live_depth_storage_pairs.fetch_sub(1, std::memory_order_relaxed);
+             depth_storage_peer_->Release();
+         }
++        if (aliased_) leonida::title_va_aliases().remove(va_, title_alias_);
+         if (accel_) {
+             device_.context->unregister_acceleration_structure(gpu_va_);
+             if (buffer_va_ && buffer_va_ != gpu_va_) device_.context->unregister_acceleration_structure(buffer_va_);
+@@ -1834,6 +2079,8 @@ public:
+         }
+         if (image_address_) device_.forget_image(image_address_);
+         device_.context->remove_resource(id());
++        // Before the memory goes to the deferred queue: no submission copies into it after this.
++        if (shadow_) device_.remove_shadow(shadow_);
+         if (host_import_) {
+             // VK_EXT_external_memory_host needs the caller's pages to stay valid for the imported memory's whole
+             // lifetime, and a title may free them right after releasing the resource. So the memory is not left to
+@@ -2016,8 +2263,9 @@ public:
+     // with VK_EXT_external_memory_host and the buffer bound to it at offset 0, so the CPU's writes there are the GPU's
+     // reads with no copy. Its console VA is `address` itself, the VA the title chose, so vertex, index and immediate
+     // writes the title names by that VA find this buffer (VulkanContext::buffer_at). A shader that adds heap_base to
+-    // that VA does not reach it: the title's own V#s into these pages need the single address space of
+-    // docs/d3d12_vulkan.md section 3.3, which this does not decide. The pages stay the caller's: nothing is zeroed.
++    // that VA would not reach it, so the root views and V#s the layer writes for it name its device address minus
++    // heap_base instead (alias_title_va, docs/d3d12_vulkan.md section 3.3 "Title-placed buffers"); V#s the title
++    // writes into memory itself keep its VA. The pages stay the caller's: nothing is zeroed.
+     HRESULT create_host_buffer(void* address) {
+         auto& vk = device_.context->vk;
+         const VkDeviceSize alignment = device_.info.host_pointer_alignment;
+@@ -2113,6 +2361,108 @@ public:
+         binding.host_readable = true;
+         binding.va = va_;
+         device_.context->add_resource(id(), binding);
++        // Shaders reach the imported pages by their device address (src/title_va_alias.h).
++        if (buffer_va_) alias_title_va(buffer_va_ - device_.arena.address);
++        return S_OK;
++    }
++
++    // Registers [va_, va_ + width) as reached by shaders at `shader_va` (src/title_va_alias.h): the root views and
++    // buffer V#s the layer writes for an address in it get the matching address of the buffer's GPU copy.
++    void alias_title_va(std::uint64_t shader_va) {
++        if (!leonida::title_va_aliases().add(va_, desc_.Width, shader_va)) return;
++        title_alias_ = shader_va;
++        aliased_ = true;
++    }
++
++    // The fallback of create_host_buffer, for pages the driver will not import: write-combined or uncached ones (in
++    // retail 74 MiB of the title's 182 MiB range), pages not committed yet, a device without
++    // VK_EXT_external_memory_host, or a driver past its import budget (an RTX 3070 Ti answers
++    // VK_ERROR_OUT_OF_DEVICE_MEMORY after about 64 MiB of imports). The buffer has its own host-visible memory, a
++    // shadow of the title's pages, but keeps the title's VA as its console VA, so the descriptors and views the title
++    // builds from that VA still find it (an ordinary buffer here had another VA and none of the data: slot 70 wrote
++    // a null SRV and the UI draws sampled nothing). It is filled from the pages now and again before every
++    // submission of command lists (DeviceState::refresh_shadows).
++    // One way only: what the GPU writes to the shadow is NOT copied back to the title's pages, and the next
++    // submission's copy overwrites it. A title that reads GPU output at `address` needs the import.
++    HRESULT create_shadow_buffer(void* address) {
++        auto& vk = device_.context->vk;
++        if (!address || !desc_.Width || desc_.Width > ~UINT64(0) - D3D12_DEFAULT_RESOURCE_PLACEMENT_ALIGNMENT)
++            return E_INVALIDARG;
++        const auto* pages = static_cast<const std::uint8_t*>(address);
++        // The shadow is a range of the GPU address arena when it fits there (docs/d3d12_vulkan.md section 3.3).
++        // The title's VA is a user-mode Windows address far above 4 GiB, past the arena, so a shader's heap_base + VA would miss
++        // any buffer of the layer's; the root views and V#s the layer writes for that VA name the arena offset
++        // instead (src/title_va_alias.h), a VA below 4 GiB that a root view and a V#'s 48 bits both hold. The arena
++        // is host-visible, so the per-submission copy writes it in place.
++        if (device_.arena.mapped && device_.arena_allocate(desc_.Width, D3D12_DEFAULT_RESOURCE_PLACEMENT_ALIGNMENT,
++                                                           arena_offset_, DeviceState::arena_buffer)) {
++            in_arena_ = true;
++            shadow_ = device_.arena.mapped + arena_offset_;
++            copy_title_pages(shadow_, pages, std::size_t(desc_.Width));
++            mapped_ = address;
++            va_ = reinterpret_cast<std::uintptr_t>(address);
++            buffer_va_ = gpu_va_ = device_.arena.address + arena_offset_;
++            device_.log_va("title-placed buffer (arena shadow)", va_, desc_.Width);
++            leonida::ResourceBinding binding{};
++            binding.buffer = device_.arena.buffer;
++            binding.buffer_offset = arena_offset_;
++            binding.size = desc_.Width;
++            binding.host = shadow_;
++            binding.va = va_;
++            device_.context->add_resource(id(), binding);
++            device_.add_shadow({pages, shadow_, std::size_t(desc_.Width)});
++            alias_title_va(arena_offset_);
++            return S_OK;
++        }
++        log_once("a title-placed shadow buffer does not fit the GPU address arena (raise LEONIDA_ARENA_MB), so it "
++                 "has its own memory; size in KiB:",
++                 int(desc_.Width / 1024));
++        const bool need_bda = device_.info.buffer_device_address || device_.arena.buffer != VK_NULL_HANDLE;
++        VkBufferCreateInfo info{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
++        info.size = desc_.Width;
++        info.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT |
++                     VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT |
++                     VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
++                     VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT;
++        if (device_.info.conditional_rendering) info.usage |= VK_BUFFER_USAGE_CONDITIONAL_RENDERING_BIT_EXT;
++        if (need_bda) info.usage |= VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
++        device_.share(info);
++        if (vk.vkCreateBuffer(device_.info.device, &info, nullptr, &buffer_) != VK_SUCCESS) return E_OUTOFMEMORY;
++        VkMemoryRequirements requirements{};
++        vk.vkGetBufferMemoryRequirements(device_.info.device, buffer_, &requirements);
++        // As an upload buffer (D3D-96): the CPU writes it at every submission and the GPU reads it, so VRAM through
++        // Resizable BAR where there is one, system memory otherwise.
++        memory_ = device_.allocate(requirements,
++                                   VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
++                                   device_.upload_in_vram ? VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT : 0, &memory_flags_,
++                                   need_bda);
++        void* shadow = nullptr;
++        if (!memory_ || vk.vkBindBufferMemory(device_.info.device, buffer_, memory_, 0) != VK_SUCCESS ||
++            vk.vkMapMemory(device_.info.device, memory_, 0, VK_WHOLE_SIZE, 0, &shadow) != VK_SUCCESS)
++            return E_OUTOFMEMORY;
++        shadow_ = static_cast<std::uint8_t*>(shadow);
++        copy_title_pages(shadow_, pages, std::size_t(desc_.Width));
++        // Map() answers the title's own pages, as the imported buffer does: a write to the shadow's memory would be
++        // overwritten by the next copy.
++        mapped_ = address;
++        va_ = reinterpret_cast<std::uintptr_t>(address);
++        if (need_bda && vk.vkGetBufferDeviceAddress) {
++            VkBufferDeviceAddressInfo bda{VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO};
++            bda.buffer = buffer_;
++            buffer_va_ = vk.vkGetBufferDeviceAddress(device_.info.device, &bda);
++            gpu_va_ = buffer_va_;
++        }
++        device_.log_va("title-placed buffer (shadow)", va_, desc_.Width);
++        leonida::ResourceBinding binding{};
++        binding.buffer = buffer_;
++        binding.size = desc_.Width;
++        // CPU-side reads take the shadow, not the title's pages: it is as fresh as what the GPU reads and every byte
++        // of it can be read, which the pages do not promise. Not host_readable: GPU writes are not handed back.
++        binding.host = shadow_;
++        binding.va = va_;
++        device_.context->add_resource(id(), binding);
++        device_.add_shadow({pages, shadow_, std::size_t(desc_.Width)});
++        if (buffer_va_) alias_title_va(buffer_va_ - device_.arena.address);
+         return S_OK;
+     }
+ 
+@@ -2673,6 +3023,9 @@ private:
+     std::uint64_t buffer_va_ = 0;
+     std::uint64_t gpu_va_ = 0;
+     bool host_import_ = false;  // memory_ is the caller's pages (create_host_buffer): freed at once, not deferred
++    std::uint8_t* shadow_ = nullptr;  // create_shadow_buffer: memory_ mapped, in DeviceState::shadows
++    bool aliased_ = false;            // va_ is in leonida::title_va_aliases(), reached at title_alias_
++    std::uint64_t title_alias_ = 0;
+     bool reserved_ = false;
+     bool sparse_image_ = false;
+     bool placed_ = false;
+@@ -5152,6 +5505,21 @@ public:
+                                                                   info.conditional_rendering, info.ray_tracing,
+                                                                   info.xdxr_acceleration_structures &&
+                                                                       info.buffer_device_address);
++        state_.context->set_before_execute([this] { state_.refresh_shadows(); });
++        {
++            char text[16] = {};
++            size_t length = 0;
++            if (getenv_s(&length, text, "LEONIDA_TITLE_WINDOWS_MB") == 0 && length > 1)
++                state_.title_window_cap = std::strtoull(text, nullptr, 10) << 20;
++        }
++        leonida::title_va_aliases().set_hooks(
++            &state_,
++            [](void* device, std::uint64_t va, std::uint64_t bytes, std::uint64_t& out) {
++                return static_cast<DeviceState*>(device)->resolve_title_memory(va, bytes, out);
++            },
++            [](void* device, std::uint64_t table, std::uint32_t descriptors) {
++                static_cast<DeviceState*>(device)->scan_title_table(table, descriptors);
++            });
+         if (info.physical && state_.format_properties) {
+             state_.context->set_color_attachment_format(
+                 [physical = info.physical, get_props = state_.format_properties](VkFormat format) {
+@@ -5496,6 +5864,13 @@ public:
+     }
+ 
+     ~Device() override {
++        leonida::title_va_aliases().clear_hooks(&state_);
++        {
++            std::lock_guard lock(state_.title_window_mutex);
++            for (const auto& window : state_.title_windows)
++                leonida::title_va_aliases().remove(window.start, window.shader_va);
++            state_.title_windows.clear();
++        }
+         if (state_.context) {
+             {
+                 std::lock_guard lock(state_.context->submit_mutex());
+@@ -5555,7 +5930,27 @@ public:
+             found = resource;
+             return true;
+         });
+-        return ok ? found : nullptr;
++        if (ok || !bytes || va > UINT64_MAX - bytes) return found;
++        // Slot 70 can name a view directly in a title-owned allocation without a placed resource. The
++        // device owns the arena window and refreshes it before submissions. This short-lived metadata
++        // object is used only to encode the descriptor and never owns or clears the window.
++        std::uint64_t relocated = va;
++        if (!state_.resolve_title_memory(va, bytes, relocated) || relocated == va ||
++            relocated >= state_.arena.size || bytes > state_.arena.size - relocated ||
++            leonida::title_va_aliases().shader_va(va + bytes - 1) != relocated + bytes - 1)
++            return nullptr;
++        D3D12_RESOURCE_DESC desc{};
++        desc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
++        desc.Width = bytes;
++        desc.Height = desc.DepthOrArraySize = desc.MipLevels = desc.SampleDesc.Count = 1;
++        desc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
++        const D3D12_HEAP_PROPERTIES defaults{D3D12_HEAP_TYPE_DEFAULT};
++        auto* view = new (std::nothrow) Resource(state_, desc, defaults, D3D12_HEAP_FLAG_NONE, relocated);
++        if (!view) return nullptr;
++        view->attach_device(identity());
++        start = va;
++        size = bytes;
++        return view;
+     }
+ 
+     UINT STDMETHODCALLTYPE GetNodeCount() override { return 1; }
+@@ -6086,7 +6481,8 @@ public:
+                     break;
+                 }
+             layout.parameters.push_back({parsed.sig.params[i].type, first, parsed.sig.params[i].num_values,
+-                                         compute.ok ? compute.first_sgpr[i] : rt::rootsig::kNoSgpr});
++                                         compute.ok ? compute.first_sgpr[i] : rt::rootsig::kNoSgpr,
++                                         table_view_descriptors(parsed.sig.params[i])});
+         }
+         register_static_samplers(parsed.sig);
+         auto* signature = new RootSignature(
+@@ -6446,6 +6842,8 @@ public:
+         buffer.num_records = desc->SizeInBytes;
+         buffer.format = leonida::gfx10::format_from_vulkan(VK_FORMAT_R32_UINT);
+         buffer.oob_select = leonida::gfx10::OobSelect::raw;
++        buffer.address = vsharp_address(buffer.address, desc->SizeInBytes);
++        if (buffer.address >> 48) return;
+         const leonida::gfx10::BufferWords words = leonida::gfx10::encode(buffer);
+         std::memcpy(reinterpret_cast<void*>(destination.ptr), words.data(), sizeof(words));
+     }
+@@ -6537,6 +6935,9 @@ public:
+                 }
+                 buffer.oob_select = leonida::gfx10::OobSelect::structured;
+             }
++            buffer.address = vsharp_address(
++                buffer.address, std::uint64_t(buffer.num_records) * (buffer.stride ? buffer.stride : 1));
++            if (buffer.address >> 48) return;
+             const leonida::gfx10::BufferWords words = leonida::gfx10::encode(buffer);
+             std::memcpy(reinterpret_cast<void*>(destination.ptr), words.data(), sizeof(words));
+             return;
+@@ -6694,13 +7095,17 @@ public:
+         buffer.swizzle = channels;
+         buffer.oob_select = typed ? g::OobSelect::structured
+                                   : structured ? g::OobSelect::structured_with_offset : g::OobSelect::raw;
++        buffer.address = vsharp_address(buffer.address,
++                                        std::uint64_t(buffer.num_records) * (buffer.stride ? buffer.stride : 1));
++        if (buffer.address >> 48) return;
+         const g::BufferWords words = g::encode(buffer);
+         std::memcpy(reinterpret_cast<void*>(destination.ptr), words.data(), sizeof(words));
+         if (counter) {
+             g::Buffer counter_buffer{};
+-            counter_buffer.address = counter_va + view.CounterOffsetInBytes;
++            counter_buffer.address = vsharp_address(counter_va + view.CounterOffsetInBytes, 4);
+             counter_buffer.num_records = 4;
+             counter_buffer.oob_select = g::OobSelect::raw;
++            if (counter_buffer.address >> 48) return;
+             const g::BufferWords counter_words = g::encode(counter_buffer);
+             std::memcpy(reinterpret_cast<char*>(destination.ptr) + sizeof(words), counter_words.data(),
+                         sizeof(counter_words));
+@@ -7208,16 +7613,34 @@ public:
+             resource->Release();
+             return d3d12_trace::result(method, hr);
+         }
+-        if (FAILED(hr)) {
++        const bool shadow_for_descriptor = SUCCEEDED(hr) && !resource->descriptor_va() &&
++            GetEnvironmentVariableW(L"LEONIDA_SHADOW_LOW_IMPORTS", nullptr, 0);
++        if (FAILED(hr) || shadow_for_descriptor) {
++            if (shadow_for_descriptor)
++                log_once("slot 133 uses a synchronized shadow for an import outside the descriptor range",
++                         0);
+             // The driver would not import these pages: RADV refuses a view of a pagefile-backed section, the form
+             // xmem's physical pages take (found in review on an RX 9070 XT under Wine), and a device without
+-            // VK_EXT_external_memory_host has no import at all. The boot goes on with an ordinary DEFAULT buffer
+-            // of the same description, as #6915's stand-in did: the title gets a resource, but its writes at
+-            // `address` do not reach it.
++            // VK_EXT_external_memory_host has no import at all; write-combined and uncommitted pages are not tried,
++            // and some drivers stop importing after a budget (create_shadow_buffer). The title then gets a shadow
++            // buffer at its VA, copied from its pages before every submission.
++            resource->Release();
++            resource = new Resource(state_, desc, heap, D3D12_HEAP_FLAG_NONE);
++            resource->attach_device(identity());
++            const HRESULT shadow = resource->create_shadow_buffer(address);
++            if (SUCCEEDED(shadow)) {
++                log_once("a title-placed buffer (device slot 133) could not import its pages, so it is a shadow "
++                         "copied from them before every submission; HRESULT",
++                         int(hr));
++                return d3d12_trace::result(method, hand_out(resource, riid, out));
++            }
++            // No memory for the shadow either: the boot goes on with an ordinary DEFAULT buffer of the same
++            // description, as #6915's stand-in did. The title gets a resource, but neither its VA nor its writes at
++            // `address` reach it.
+             resource->Release();
+-            log_once("a title-placed buffer (device slot 133) could not import its pages, so it is an ordinary buffer "
+-                     "the title's writes do not reach; HRESULT",
+-                     int(hr));
++            log_once("a title-placed buffer (device slot 133) could neither import its pages nor get a shadow, so it "
++                     "is an ordinary buffer the title's writes do not reach; HRESULT",
++                     int(shadow));
+             const D3D12_HEAP_PROPERTIES fallback{D3D12_HEAP_TYPE_DEFAULT};
+             return d3d12_trace::result(method, create_committed(&fallback, D3D12_HEAP_FLAG_NONE, &desc,
+                                                                 D3D12_RESOURCE_STATE_COMMON, 0, nullptr, riid, out));
+diff --git a/runtime/shims/xmem.cpp b/runtime/shims/xmem.cpp
+index a96ba82dea3eb63fca6f9aa5b39a979d8d55f6cf..71e940adce1a8e85e66db5edb2710eb053039959 100644
+--- a/runtime/shims/xmem.cpp
++++ b/runtime/shims/xmem.cpp
+@@ -35,6 +35,7 @@
+ 
+ #include "shims.h"
+ #include "startup_trace.h"
++#include "../src/title_va_alias.h"
+ 
+ namespace {
+ 
+@@ -66,14 +67,27 @@ void note_attributes(const char* api, uint64_t attributes, size_t size, const vo
+ 
+ void* allocate_block(size_t size) { return _aligned_malloc(size ? size : 1, kAlign); }
+ 
++// Every block and range the title gets here is recorded as the title's memory (src/title_va_alias.h): a shader
++// address into it can be given a GPU copy, and an address anywhere else cannot.
++void* title_block(size_t size) {
++    void* p = allocate_block(size);
++    leonida::title_va_aliases().add_title_memory(reinterpret_cast<uintptr_t>(p), size ? size : 1);
++    return p;
++}
++
++void free_title_block(void* p) {
++    if (p) leonida::title_va_aliases().remove_title_memory(reinterpret_cast<uintptr_t>(p));
++    _aligned_free(p);
++}
++
+ void* __stdcall XMemAlloc(size_t size, uint64_t attributes) {
+     note_attributes("XMemAlloc", attributes, size, _ReturnAddress());
+-    return allocate_block(size);
++    return title_block(size);
+ }
+ 
+ void __stdcall XMemFree(void* p, uint64_t attributes) {
+     note_attributes("XMemFree", attributes, kNoSize, _ReturnAddress());
+-    _aligned_free(p);
++    free_title_block(p);
+ }
+ 
+ // XMemAllocDefault / XMemFreeDefault: the GDK's own allocator behind XMemAlloc and XMemFree, which a title that hooks
+@@ -82,12 +96,12 @@ void __stdcall XMemFree(void* p, uint64_t attributes) {
+ // released by either free.
+ void* __stdcall XMemAllocDefault(size_t size, uint64_t attributes) {
+     note_attributes("XMemAllocDefault", attributes, size, _ReturnAddress());
+-    return allocate_block(size);
++    return title_block(size);
+ }
+ 
+ void __stdcall XMemFreeDefault(void* p, uint64_t attributes) {
+     note_attributes("XMemFreeDefault", attributes, kNoSize, _ReturnAddress());
+-    _aligned_free(p);
++    free_title_block(p);
+ }
+ 
+ // BOOL XMemIsToolsMemAvailable(void). The measured title calls it from one helper, which six out-of-memory paths reach
+@@ -328,8 +342,18 @@ PVOID reserve_placeholder(void* address, SIZE_T size, SIZE_T alignment) {
+ // XMemMapPhysicalPages. The guest page size sets the alignment and rounding of the region; the host's own pages stay
+ // 4 KiB (host large pages need SeLockMemoryPrivilege). A 2 MiB region the host places is reserved 2 MiB-aligned through
+ // VirtualAlloc2.
++void* xmem_virtual_alloc(void* address, SIZE_T size, DWORD allocation_type, ULONGLONG attributes, DWORD protect);
++
+ void* WINAPI XMemVirtualAlloc(void* address, SIZE_T size, DWORD allocation_type, ULONGLONG attributes, DWORD protect) {
+     note_attributes("XMemVirtualAlloc", attributes, size, _ReturnAddress());
++    void* result = xmem_virtual_alloc(address, size, allocation_type, attributes, protect);
++    // The title's memory (src/title_va_alias.h). Never forgotten: a released range is no longer committed, which
++    // the copy also checks.
++    if (result) leonida::title_va_aliases().add_title_memory(reinterpret_cast<uintptr_t>(result), size);
++    return result;
++}
++
++void* xmem_virtual_alloc(void* address, SIZE_T size, DWORD allocation_type, ULONGLONG attributes, DWORD protect) {
+     if (size == 0) {
+         SetLastError(ERROR_INVALID_PARAMETER);
+         return nullptr;
+@@ -702,7 +726,9 @@ constexpr DWORD kMemGraphics = 0x10000000;
+ constexpr DWORD kMemTitle = 0x40000000;
+ 
+ LPVOID WINAPI TitleVirtualAlloc(LPVOID address, SIZE_T size, DWORD allocation_type, DWORD protect) {
+-    return VirtualAlloc(address, size, allocation_type & ~(kMemGraphics | kMemTitle), host_protect(protect));
++    LPVOID result = VirtualAlloc(address, size, allocation_type & ~(kMemGraphics | kMemTitle), host_protect(protect));
++    if (result) leonida::title_va_aliases().add_title_memory(reinterpret_cast<uintptr_t>(result), size);
++    return result;
+ }
+ 
+ }  // namespace
+diff --git a/runtime/src/title_va_alias.h b/runtime/src/title_va_alias.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..829c1d874047ef608bf8f09e687c1f9c218d30b4
+--- /dev/null
++++ b/runtime/src/title_va_alias.h
+@@ -0,0 +1,250 @@
++#pragma once
++// Buffer addresses in the title's own memory and the console VA a translated shader reaches them by
++// (docs/d3d12_vulkan.md section 3.3, "Title-chosen addresses").
++//
++// A translated shader computes heap_base + console_va, with heap_base the GPU address arena's device address. The
++// layer chooses every console VA it hands out, so they all land in the arena. The title does not always use them:
++//   - device slot 133 places a buffer at the CPU address of the title's own pages (a user-mode Windows address, far above 4 GiB);
++//   - the title points V#s and root views at its own memory (a per-frame constant ring, #8862 section 3.5).
++// Both are far past the arena, so heap_base + VA reads nothing the layer made. An address inside such a range is
++// therefore replaced, wherever the layer can see it, by the console VA of a GPU copy of that range: its arena offset
++// when the copy is an arena range (a slot-133 shadow, or a window of the title's pages copied before every
++// submission), or its device address minus heap_base (mod 2^64) when it has its own memory (an imported slot-133
++// buffer). Addresses that are not in the title's memory are passed through unchanged.
++//
++// The table is process-wide, like the title's address space. The device behind it registers two hooks: a resolver
++// that makes a GPU copy for an address in the title's memory that has none yet, and a scanner that rewrites the
++// buffer V#s of a bound descriptor table before a submission. Without hooks the table only translates what was
++// added to it, so it is tested without a GPU (title_va_alias_test).
++#include <array>
++#include <atomic>
++#include <cstddef>
++#include <cstdint>
++#include <iterator>
++#include <map>
++#include <mutex>
++#include <shared_mutex>
++
++namespace leonida {
++
++class TitleVaAliases {
++public:
++    // Where the layer saw the address, for the counters.
++    enum Kind : unsigned { root_view, created_view, table_view, vertex_view, index_view, kind_count };
++    static constexpr const char* kKindNames[kind_count] = {"root view", "created view", "table V#", "vertex view",
++                                                           "index view"};
++
++    // An address in the title's memory: true, with `shader_va` what a shader must be given (the address itself when
++    // no copy could be made). False: not the title's memory (an arena VA, a buffer of the layer's).
++    using Resolver = bool (*)(void* context, std::uint64_t va, std::uint64_t bytes, std::uint64_t& shader_va);
++    using TableScanner = void (*)(void* context, std::uint64_t table_va, std::uint32_t descriptors);
++
++    // [title_va, title_va + bytes) is reached as [shader_va, shader_va + bytes). A range that overlaps a live one
++    // replaces it (the title has placed a new buffer over pages it released). False for an empty or wrapping range.
++    bool add(std::uint64_t title_va, std::uint64_t bytes, std::uint64_t shader_va) {
++        if (!bytes || title_va > UINT64_MAX - bytes) return false;
++        std::unique_lock lock(mutex_);
++        erase_overlapping(title_va, title_va + bytes);
++        ranges_[title_va] = {title_va + bytes, shader_va};
++        count_.store(ranges_.size(), std::memory_order_release);
++        return true;
++    }
++
++    // Forgets the range that starts at title_va, if it still maps to shader_va (a newer range at the same VA keeps
++    // its own entry).
++    void remove(std::uint64_t title_va, std::uint64_t shader_va) {
++        std::unique_lock lock(mutex_);
++        const auto it = ranges_.find(title_va);
++        if (it != ranges_.end() && it->second.shader_va == shader_va) ranges_.erase(it);
++        count_.store(ranges_.size(), std::memory_order_release);
++    }
++
++    // The address a shader must be given for `va` from the ranges added so far: translated inside one, unchanged
++    // elsewhere. No copy is made here.
++    std::uint64_t shader_va(std::uint64_t va) const {
++        if (!count_.load(std::memory_order_acquire)) return va;  // the common case: no title range at all
++        std::shared_lock lock(mutex_);
++        auto it = ranges_.upper_bound(va);
++        if (it == ranges_.begin()) return va;
++        --it;
++        if (va >= it->second.end) return va;
++        return it->second.shader_va + (va - it->first);
++    }
++
++    // The free span around `va` (not in any range): [lo, hi). A copy made for `va` must stay inside it, so it never
++    // replaces a range another buffer still uses.
++    void gap(std::uint64_t va, std::uint64_t& lo, std::uint64_t& hi) const {
++        std::shared_lock lock(mutex_);
++        lo = 0;
++        hi = UINT64_MAX;
++        auto it = ranges_.upper_bound(va);
++        if (it != ranges_.end()) hi = it->first;
++        if (it != ranges_.begin()) lo = std::prev(it)->second.end;
++    }
++
++    // shader_va, and when `va` is in the title's memory with no copy yet, a copy made by the device's resolver.
++    // Counted by kind: translated, or in the title's memory and left as it was.
++    std::uint64_t resolve(std::uint64_t va, std::uint64_t bytes, Kind kind) {
++        if (!va) return va;
++        std::uint64_t to = shader_va(va);
++        if (to != va) {
++            translated_[kind].fetch_add(1, std::memory_order_relaxed);
++            return to;
++        }
++        Resolver resolver;
++        void* context;
++        {
++            std::lock_guard lock(hook_mutex_);
++            resolver = resolver_;
++            context = hook_context_;
++        }
++        if (!resolver || !resolver(context, va, bytes, to)) return va;
++        (to != va ? translated_ : untranslated_)[kind].fetch_add(1, std::memory_order_relaxed);
++        return to;
++    }
++
++    // Counts an address that the layer resolves through its buffer index instead (vertex and index views): only
++    // whether it is in a title range.
++    void note(std::uint64_t va, Kind kind) {
++        if (va && shader_va(va) != va) untranslated_[kind].fetch_add(1, std::memory_order_relaxed);
++    }
++
++    // Before a submission: the device rewrites the buffer V#s of the `descriptors` slots the root signature declares
++    // for the table at `table_va` (a console VA in one of its shader-visible CBV/SRV/UAV heaps).
++    void scan_table(std::uint64_t table_va, std::uint32_t descriptors) {
++        TableScanner scanner;
++        void* context;
++        {
++            std::lock_guard lock(hook_mutex_);
++            scanner = scanner_;
++            context = hook_context_;
++        }
++        if (scanner) scanner(context, table_va, descriptors);
++    }
++
++    // The scan's cost, per ExecuteCommandLists that had tables to scan.
++    void note_scan(std::uint64_t nanoseconds) {
++        scans_.fetch_add(1, std::memory_order_relaxed);
++        scan_ns_.fetch_add(nanoseconds, std::memory_order_relaxed);
++        std::uint64_t seen = scan_max_ns_.load(std::memory_order_relaxed);
++        while (nanoseconds > seen && !scan_max_ns_.compare_exchange_weak(seen, nanoseconds)) {
++        }
++    }
++    std::uint64_t scans() const { return scans_.load(std::memory_order_relaxed); }
++    std::uint64_t scan_ns() const { return scan_ns_.load(std::memory_order_relaxed); }
++    std::uint64_t scan_max_ns() const { return scan_max_ns_.load(std::memory_order_relaxed); }
++
++    // The title's own memory, as the xmem shims hand it out (XMemAlloc, XMemVirtualAlloc, the title's VirtualAlloc):
++    // only an address in one of these ranges gets a copy. A base anywhere else (the runtime's own heap, a host DLL)
++    // is left as it was and counted.
++    void add_title_memory(std::uint64_t base, std::uint64_t bytes) {
++        if (!base || !bytes || base > UINT64_MAX - bytes) return;
++        std::uint64_t begin = base, end = base + bytes;
++        std::unique_lock lock(memory_mutex_);
++        // A commit inside a reserved range, or two that overlap, are one range.
++        auto it = memory_.upper_bound(begin);
++        if (it != memory_.begin() && std::prev(it)->second > begin) --it;
++        while (it != memory_.end() && it->first < end) {
++            begin = std::min(begin, it->first);
++            end = std::max(end, it->second);
++            it = memory_.erase(it);
++        }
++        memory_[begin] = end;
++    }
++    void remove_title_memory(std::uint64_t base) {
++        std::unique_lock lock(memory_mutex_);
++        memory_.erase(base);
++    }
++    // The title range that holds `va`: [lo, hi). False when none does.
++    bool title_memory(std::uint64_t va, std::uint64_t& lo, std::uint64_t& hi) const {
++        std::shared_lock lock(memory_mutex_);
++        auto it = memory_.upper_bound(va);
++        if (it == memory_.begin()) return false;
++        --it;
++        if (va >= it->second) return false;
++        lo = it->first;
++        hi = it->second;
++        return true;
++    }
++
++    // A title that gives a descriptor heap its own backing memory (__XMemAllocationHooks__) writes descriptors there
++    // itself, while shaders read the layer's heap. The layer that keeps that mapping registers a source: before a
++    // bound table is scanned, it copies the slots the title wrote in its own memory over the layer's copy
++    // ([real, real + bytes) is the layer heap's CPU memory). Returns how many slots it copied.
++    using DescriptorSource = std::uint64_t (*)(void* context, std::uint8_t* real, std::size_t bytes);
++    void set_descriptor_source(void* context, DescriptorSource source) {
++        std::lock_guard lock(hook_mutex_);
++        source_context_ = context;
++        source_ = source;
++    }
++    void pull_descriptors(std::uint8_t* real, std::size_t bytes) {
++        DescriptorSource source;
++        void* context;
++        {
++            std::lock_guard lock(hook_mutex_);
++            source = source_;
++            context = source_context_;
++        }
++        if (source) pulled_.fetch_add(source(context, real, bytes), std::memory_order_relaxed);
++    }
++    std::uint64_t pulled() const { return pulled_.load(std::memory_order_relaxed); }
++
++    // The first device to register keeps the hooks until it clears them.
++    void set_hooks(void* context, Resolver resolver, TableScanner scanner) {
++        std::lock_guard lock(hook_mutex_);
++        if (hook_context_) return;
++        hook_context_ = context;
++        resolver_ = resolver;
++        scanner_ = scanner;
++    }
++    void clear_hooks(void* context) {
++        std::lock_guard lock(hook_mutex_);
++        if (hook_context_ != context) return;
++        hook_context_ = nullptr;
++        resolver_ = nullptr;
++        scanner_ = nullptr;
++    }
++
++    std::size_t size() const { return count_.load(std::memory_order_acquire); }
++    std::uint64_t translated(Kind kind) const { return translated_[kind].load(std::memory_order_relaxed); }
++    std::uint64_t untranslated(Kind kind) const { return untranslated_[kind].load(std::memory_order_relaxed); }
++
++private:
++    struct Range {
++        std::uint64_t end;        // exclusive
++        std::uint64_t shader_va;  // what the range's first byte becomes
++    };
++
++    void erase_overlapping(std::uint64_t begin, std::uint64_t end) {
++        auto it = ranges_.lower_bound(begin);
++        if (it != ranges_.begin()) {
++            auto previous = std::prev(it);
++            if (previous->second.end > begin) it = previous;
++        }
++        while (it != ranges_.end() && it->first < end) it = ranges_.erase(it);
++    }
++
++    mutable std::shared_mutex mutex_;
++    std::map<std::uint64_t, Range> ranges_;  // by title VA
++    std::atomic<std::size_t> count_{0};
++    std::mutex hook_mutex_;
++    void* hook_context_ = nullptr;
++    Resolver resolver_ = nullptr;
++    TableScanner scanner_ = nullptr;
++    void* source_context_ = nullptr;
++    DescriptorSource source_ = nullptr;
++    std::atomic<std::uint64_t> pulled_{0};
++    std::array<std::atomic<std::uint64_t>, kind_count> translated_{};
++    std::array<std::atomic<std::uint64_t>, kind_count> untranslated_{};
++    std::atomic<std::uint64_t> scans_{0}, scan_ns_{0}, scan_max_ns_{0};
++    mutable std::shared_mutex memory_mutex_;
++    std::map<std::uint64_t, std::uint64_t> memory_;  // the title's memory: base -> end
++};
++
++// The process's table: the device's title ranges and hooks, read by the command lists and descriptor writers.
++inline TitleVaAliases& title_va_aliases() {
++    static TitleVaAliases aliases;
++    return aliases;
++}
++
++}  // namespace leonida
+diff --git a/runtime/src/vulkan_backend.h b/runtime/src/vulkan_backend.h
+index 5977ebe8da7e9258ccd45f98e1afa09f0e842543..2ec8b134685ce9a2659915f6dff876ed16244817 100644
+--- a/runtime/src/vulkan_backend.h
++++ b/runtime/src/vulkan_backend.h
+@@ -1124,6 +1124,12 @@ public:
+         std::unique_lock lock(resource_mutex_);
+         set_resource_locked(id, binding);
+     }
++    // Whether `va` is in a buffer this context knows by VA (the index buffer_at searches).
++    bool knows_buffer_va(std::uint64_t va) {
++        std::shared_lock lock(resource_mutex_);
++        BufferVaIndex<ResourceId>::Hit hit{};
++        return buffer_vas_.find(va, hit);
++    }
+     void add_resource(ResourceId id, const ResourceBinding& binding, VkImageLayout current_layout) {
+         std::unique_lock rlock(resource_mutex_);
+         set_resource_locked(id, binding);
+@@ -1379,6 +1385,11 @@ public:
+     // and records what the set needs first. When it fails, nothing of that call is executed.
+     void set_transfer_only_family(std::uint32_t family) { transfer_only_family_ = family; }
+ 
++    // `before` is called at the start of every submission of command lists (a held batch: when it is released),
++    // before any lock here is taken: the device re-copies its slot-133 shadow buffers from the title's pages there.
++    // Set once, before the first queue exists.
++    void set_before_execute(std::function<void()> before) { before_execute_ = std::move(before); }
++
+     void set_bindless_prepare(std::function<bool(VkCommandBuffer)> prepare) {
+         std::unique_lock lock(resource_mutex_);
+         bindless_prepare_ = std::move(prepare);
+@@ -1683,6 +1694,7 @@ private:
+     std::map<std::tuple<VkFormat, std::uint32_t, VkImageLayout, VkImageLayout, VkResolveModeFlagBits>, VkRenderPass>
+         resolve_passes_;
+     std::map<std::tuple<VkImage, VkImage, VkImageView, VkImageView, VkRenderPass>, VkFramebuffer> resolve_framebuffers_;
++    std::function<void()> before_execute_;
+     std::function<bool(VkCommandBuffer)> bindless_prepare_;
+     std::function<VkDescriptorSet()> bindless_current_;
+     bool bindless_upload_pending_ = false;  // tracker_mutex_
+@@ -2171,6 +2183,7 @@ private:
+ 
+     ReplayResult execute_now(std::span<const CommandList* const> lists) {
+         if (context_.is_device_lost() || !wait_for_room()) return ReplayResult::unsupported;
++        if (context_.before_execute_) context_.before_execute_();
+         if (kind_ != QueueKind::direct)
+             for (const auto* list : lists)
+                 for (const auto& command : list->commands())
+diff --git a/runtime/test/d3d12_existing_heap_test.cpp b/runtime/test/d3d12_existing_heap_test.cpp
+index 110bedd8519b689b06ef1792292594c382f17427..c62c356d78f355ed2b81258bc272b1377ac65c3b 100644
+--- a/runtime/test/d3d12_existing_heap_test.cpp
++++ b/runtime/test/d3d12_existing_heap_test.cpp
+@@ -235,15 +235,89 @@ int check_title_placed(ID3D12Device* device, const char* kind, void* pages, UINT
+     Ref<ID3D12Resource> placed_texture;
+     EXPECT_HR(rt::d3d12::create_buffer_at_host_address(device, pages, texture, 0x6u, IID_PPV_ARGS(&placed_texture.p)), S_OK);
+     EXPECT(placed_texture.p != nullptr && placed_texture->GetDesc().Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE2D);
+-    // An address off the buffer alignment can't be bound inside the import: the ordinary-buffer fallback answers.
++    // An address off the buffer alignment can't be bound inside the import: a shadow buffer answers, at the same VA
++    // (a driver whose buffer alignment is 1 imports it; the VA is the address either way).
+     Ref<ID3D12Resource> fallback;
++    desc.Width = size - 1;
+     EXPECT_HR(rt::d3d12::create_buffer_at_host_address(device, bytes + 1, desc, 0xFFFFFFFFu, IID_PPV_ARGS(&fallback.p)), S_OK);
+-    EXPECT(fallback->GetGPUVirtualAddress() != reinterpret_cast<D3D12_GPU_VIRTUAL_ADDRESS>(bytes + 1));
++    EXPECT(fallback->GetGPUVirtualAddress() == reinterpret_cast<D3D12_GPU_VIRTUAL_ADDRESS>(bytes + 1));
+     std::printf("%s: %s, %llu bytes: GPU VA is the address, a GPU copy reads the CPU's writes\n", who, kind,
+                 static_cast<unsigned long long>(size));
+     return 0;
+ }
+ 
++std::uint8_t pattern_byte(UINT64 i, unsigned seed) {
++    return static_cast<std::uint8_t>(i * 131u + (i >> 8) * 7u + seed);
++}
++
++// The shadow fallback of slot 133: pages the driver does not import (write-combined, uncached, not all committed)
++// still give a buffer whose GPU VA is the address. It is a copy of the pages, made again before every submission:
++// a pattern written to the first `committed` bytes after the buffer exists is what a GPU copy in the next
++// ExecuteCommandLists reads, and so is a second pattern in the submission after. Bytes past `committed` are not
++// committed: they are never read, and the GPU sees zeros there. The same holds where the range was imported after
++// all (a Wine that drops the cache modifier), so the caller need not know which path answered.
++int check_title_placed_shadow(ID3D12Device* device, const char* kind, void* pages, UINT64 committed, UINT64 size) {
++    const char* who = "vulkan slot-133 shadow";
++    D3D12_RESOURCE_DESC desc{};
++    desc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
++    desc.Width = size;
++    desc.Height = desc.DepthOrArraySize = desc.MipLevels = 1;
++    desc.SampleDesc.Count = 1;
++    desc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
++    Ref<ID3D12Resource> buffer;
++    EXPECT_HR(rt::d3d12::create_buffer_at_host_address(device, pages, desc, 0xFFFFFFFFu, IID_PPV_ARGS(&buffer.p)), S_OK);
++    EXPECT(buffer->GetGPUVirtualAddress() == reinterpret_cast<D3D12_GPU_VIRTUAL_ADDRESS>(pages));
++    D3D12_HEAP_PROPERTIES readback_heap{D3D12_HEAP_TYPE_READBACK};
++    Ref<ID3D12Resource> readback;
++    EXPECT(SUCCEEDED(device->CreateCommittedResource(&readback_heap, D3D12_HEAP_FLAG_NONE, &desc,
++                                                     D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
++                                                     IID_PPV_ARGS(&readback.p))));
++    D3D12_COMMAND_QUEUE_DESC queue_desc{D3D12_COMMAND_LIST_TYPE_DIRECT};
++    Ref<ID3D12CommandQueue> queue;
++    Ref<ID3D12CommandAllocator> allocator;
++    Ref<ID3D12GraphicsCommandList> list;
++    Ref<ID3D12Fence> fence;
++    EXPECT(SUCCEEDED(device->CreateCommandQueue(&queue_desc, IID_PPV_ARGS(&queue.p))));
++    EXPECT(SUCCEEDED(device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&allocator.p))));
++    EXPECT(SUCCEEDED(device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, allocator.p, nullptr,
++                                               IID_PPV_ARGS(&list.p))));
++    EXPECT(SUCCEEDED(list->Close()));
++    EXPECT(SUCCEEDED(device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&fence.p))));
++    HANDLE done = CreateEventW(nullptr, FALSE, FALSE, nullptr);
++    EXPECT(done != nullptr);
++    auto* bytes = static_cast<std::uint8_t*>(pages);
++    UINT64 fence_value = 0;
++    for (const unsigned seed : {7u, 93u}) {
++        // Written after the buffer exists (and, the second time, after a submission read the first pattern).
++        for (UINT64 i = 0; i < committed; ++i) bytes[i] = pattern_byte(i, seed);
++        EXPECT(SUCCEEDED(allocator->Reset()));
++        EXPECT(SUCCEEDED(list->Reset(allocator.p, nullptr)));
++        list->CopyBufferRegion(readback.p, 0, buffer.p, 0, size);
++        EXPECT(SUCCEEDED(list->Close()));
++        ID3D12CommandList* lists[] = {list.p};
++        queue->ExecuteCommandLists(1, lists);
++        EXPECT(SUCCEEDED(queue->Signal(fence.p, ++fence_value)));
++        EXPECT(SUCCEEDED(fence->SetEventOnCompletion(fence_value, done)));
++        EXPECT(WaitForSingleObject(done, 30000) == WAIT_OBJECT_0);
++        void* mapped = nullptr;
++        EXPECT(SUCCEEDED(readback->Map(0, nullptr, &mapped)));
++        const auto* got = static_cast<const std::uint8_t*>(mapped);
++        UINT64 wrong = size;
++        for (UINT64 i = 0; i < size && wrong == size; ++i)
++            if (got[i] != (i < committed ? pattern_byte(i, seed) : 0)) wrong = i;
++        readback->Unmap(0, nullptr);
++        if (wrong != size)
++            std::fprintf(stderr, "%s: %s: pattern %u: first wrong byte at %llu\n", who, kind, seed,
++                         static_cast<unsigned long long>(wrong));
++        EXPECT(wrong == size);
++    }
++    CloseHandle(done);
++    std::printf("%s: %s, %llu bytes (%llu committed): GPU VA is the address, each submission reads the pages' "
++                "latest bytes\n",
++                who, kind, static_cast<unsigned long long>(size), static_cast<unsigned long long>(committed));
++    return 0;
++}
++
+ int check_title_placed_all(ID3D12Device* device) {
+     constexpr SIZE_T size = 4 * 0x10000;
+     int failures = 0;
+@@ -261,47 +335,43 @@ int check_title_placed_all(ID3D12Device* device) {
+     UnmapViewOfFile(view);
+     CloseHandle(section);
+ 
+-    // Cache-modified ranges are not imported (WC imports read wrong bytes on an RTX 5090 in review). Some Wine
+-    // versions report a requested WC allocation as plain read-write memory; check the protection actually supplied.
+-    // PAGE_NOCACHE also exercises the fallback on those hosts, rather than dropping the cache-protection check.
++    // Cache-modified ranges are not imported (WC imports read wrong bytes on an RTX 5090 in review): a shadow buffer
++    // answers at the same VA. Some Wine versions report a requested WC allocation as plain read-write memory; check
++    // the protection actually supplied. PAGE_NOCACHE also exercises the fallback on those hosts, rather than
++    // dropping the cache-protection check.
+     const char* who = "vulkan slot-133 buffer";
+-    D3D12_RESOURCE_DESC desc{};
+-    desc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+-    desc.Width = size;
+-    desc.Height = desc.DepthOrArraySize = desc.MipLevels = 1;
+-    desc.SampleDesc.Count = 1;
+-    desc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+     for (DWORD modifier : {DWORD(PAGE_WRITECOMBINE), DWORD(PAGE_NOCACHE)}) {
+         void* pages = VirtualAlloc(nullptr, size, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE | modifier);
+         EXPECT(pages != nullptr);
+         MEMORY_BASIC_INFORMATION region{};
+         EXPECT(VirtualQuery(pages, &region, sizeof(region)) == sizeof(region));
+         const bool cache_modified = (region.Protect & (PAGE_WRITECOMBINE | PAGE_NOCACHE)) != 0;
+-        {
+-            Ref<ID3D12Resource> buffer;
+-            EXPECT_HR(rt::d3d12::create_buffer_at_host_address(device, pages, desc, 0xFFFFFFFFu, IID_PPV_ARGS(&buffer.p)), S_OK);
+-            if (cache_modified) {
+-                EXPECT(buffer->GetGPUVirtualAddress() != reinterpret_cast<D3D12_GPU_VIRTUAL_ADDRESS>(pages));
+-            } else {
+-                EXPECT(region.Protect == PAGE_READWRITE);
+-                EXPECT(buffer->GetGPUVirtualAddress() == reinterpret_cast<D3D12_GPU_VIRTUAL_ADDRESS>(pages));
+-            }
+-        }
++        if (!cache_modified) EXPECT(region.Protect == PAGE_READWRITE);
++        const int failed = check_title_placed_shadow(device, modifier == PAGE_WRITECOMBINE ? "write-combined range"
++                                                                                           : "uncached range",
++                                                     pages, size, size);
+         std::printf("%s: cache modifier 0x%lx, reported protection 0x%lx: %s\n", who, modifier, region.Protect,
+-                    cache_modified ? "ordinary-buffer fallback verified"
+-                                   : "modifier not reported; read-write import verified");
++                    failed ? "FAILED"
++                           : cache_modified ? "shadow buffer verified"
++                                            : "modifier not reported; read-write import verified");
++        failures += failed;
+         VirtualFree(pages, 0, MEM_RELEASE);
+     }
+-    char* partial = static_cast<char*>(VirtualAlloc(nullptr, size, MEM_RESERVE, PAGE_READWRITE));
+-    EXPECT(partial != nullptr && VirtualAlloc(partial, size / 2, MEM_COMMIT, PAGE_READWRITE) == partial);
+     {
+-        // Pages not committed yet (xmem commits on first touch) are not imported either: the fallback answers.
+-        Ref<ID3D12Resource> fallback;
+-        EXPECT_HR(rt::d3d12::create_buffer_at_host_address(device, partial, desc, 0xFFFFFFFFu, IID_PPV_ARGS(&fallback.p)), S_OK);
+-        EXPECT(fallback->GetGPUVirtualAddress() != reinterpret_cast<D3D12_GPU_VIRTUAL_ADDRESS>(partial));
++        // A larger write-combined range, so the per-submission copy the layer logs is measured on more than a few
++        // pages (retail places 182 MiB, 74 MiB of it write-combined).
++        constexpr SIZE_T large = 64u << 20;
++        void* pages = VirtualAlloc(nullptr, large, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE | PAGE_WRITECOMBINE);
++        EXPECT(pages != nullptr);
++        failures += check_title_placed_shadow(device, "64 MiB write-combined range", pages, large, large);
++        VirtualFree(pages, 0, MEM_RELEASE);
+     }
++    char* partial = static_cast<char*>(VirtualAlloc(nullptr, size, MEM_RESERVE, PAGE_READWRITE));
++    EXPECT(partial != nullptr && VirtualAlloc(partial, size / 2, MEM_COMMIT, PAGE_READWRITE) == partial);
++    // Pages not committed yet (xmem commits on first touch) are not imported either: the shadow copies the committed
++    // half and never reads the other, which a GPU copy sees as zeros.
++    failures += check_title_placed_shadow(device, "half-committed range", partial, size / 2, size);
+     VirtualFree(partial, 0, MEM_RELEASE);
+-    std::printf("%s: a partly committed range falls back to an ordinary buffer\n", who);
+     return failures;
+ }
+ 
+diff --git a/runtime/test/d3d12_title_va_test.cpp b/runtime/test/d3d12_title_va_test.cpp
+new file mode 100644
+index 0000000000000000000000000000000000000000..b6f738d696f28af9e36830bb1b35d3adf27e7d50
+--- /dev/null
++++ b/runtime/test/d3d12_title_va_test.cpp
+@@ -0,0 +1,580 @@
++// A buffer the title places at its own VA (Xbox device slot 133, rt::d3d12::create_buffer_at_host_address) is read
++// by a shader written to the translator's address contract (heap_base + console VA, docs/d3d12_vulkan.md section
++// 3.3), through the two kinds of address the layer writes for it:
++//   - a root view (SetComputeRootUnorderedAccessView with the title's VA): read 256 bytes past its base and written
++//     at its base, then copied to a READBACK buffer;
++//   - a buffer V# (CreateShaderResourceView of the title's buffer), the way translated vertex shaders fetch their
++//     vertices: read and written to an arena buffer.
++// The title's VA is a VirtualAlloc address, far past the 4 GiB arena. Both page kinds are covered: read-write pages
++// (imported with VK_EXT_external_memory_host where the driver takes them) and write-combined pages (refused by the
++// import, so a shadow copy in the arena, the retail case on an RTX 5070 Ti). The data is written after the buffer
++// exists, so the shadow's copy before the submission is what the GPU reads.
++// Then the title's own memory outside any slot-133 buffer (a constant ring, #8862 section 3.5): a V# the CPU writes
++// into a bound table itself, a created CBV and a root view.
++// Negative controls: a second title buffer with other data must not be what the first one's V# reads; an arena
++// buffer's V# keeps its VA; the title's range is forgotten when the buffer is released; a raw arena V# and a
++// T#-shaped slot in a scanned table keep their bytes; a reserved, uncommitted address is left alone. The shader is test/glsl/cs_user_data.comp. No game data. LEONIDA_VK_VALIDATION=1 for the
++// Khronos validation layer.
++#include "shader_fixture_path.h"
++#include "test_temp_dir.h"
++#include "vk_test_device.h"
++#include "../shims/d3d12_com.h"
++#include "../shims/d3d12_xs_device.h"
++#include "../src/gfx10_descriptors.h"
++#include "../src/shader_library.h"
++#include "../src/title_va_alias.h"
++
++#include <cstdint>
++#include <cstdio>
++#include <cstring>
++#include <fstream>
++#include <vector>
++
++#ifndef LEONIDA_TEST_CS_SPV
++#error "LEONIDA_TEST_CS_SPV must name the compiled test shader"
++#endif
++
++#define EXPECT(condition) do { \
++    if (!(condition)) { std::fprintf(stderr, "line %d: %s\n", __LINE__, #condition); return 1; } \
++} while (0)
++
++namespace {
++
++using XboxHeapHandleFn = std::uint64_t(WINAPI*)(void* heap);  // heap slots 9/10: handle in RAX
++using XboxComputePipelineFn = HRESULT(WINAPI*)(void* device, const D3D12_COMPUTE_PIPELINE_STATE_DESC*, std::uint64_t,
++                                               std::uint64_t, const IID*, void**);
++using SerializeFn = HRESULT(WINAPI*)(const D3D12_VERSIONED_ROOT_SIGNATURE_DESC*, ID3DBlob**, ID3DBlob**);
++
++template<class T>
++struct Ref {
++    T* p = nullptr;
++    ~Ref() { reset(); }
++    void reset() {
++        if (p) p->Release();
++        p = nullptr;
++    }
++    T* operator->() const { return p; }
++};
++
++void* slot(void* object, unsigned index) { return (*reinterpret_cast<void***>(object))[index]; }
++
++void put32(std::vector<std::uint8_t>& out, std::uint32_t v) {
++    for (int i = 0; i < 4; ++i) out.push_back(std::uint8_t(v >> (8 * i)));
++}
++
++std::vector<std::uint8_t> zlib_stored(const std::vector<std::uint8_t>& data) {
++    std::vector<std::uint8_t> out = {0x78, 0x01, 0x01};
++    const auto length = std::uint16_t(data.size());
++    out.insert(out.end(), {std::uint8_t(length), std::uint8_t(length >> 8), std::uint8_t(~length),
++                           std::uint8_t(~length >> 8)});
++    out.insert(out.end(), data.begin(), data.end());
++    std::uint32_t a = 1, b = 0;
++    for (const std::uint8_t x : data) {
++        a = (a + x) % 65521;
++        b = (b + a) % 65521;
++    }
++    const std::uint32_t adler = (b << 16) | a;
++    out.insert(out.end(), {std::uint8_t(adler >> 24), std::uint8_t(adler >> 16), std::uint8_t(adler >> 8),
++                           std::uint8_t(adler)});
++    return out;
++}
++
++// The game's shader container shape (DXBC > DXIL > XDAT 0x0D > XBCH > zlib > FSSM), as d3d12_compute_test builds it.
++std::vector<std::uint8_t> shader_container(const std::vector<std::uint8_t>& fssm) {
++    const auto stream = zlib_stored(fssm);
++    std::vector<std::uint8_t> xbch = {'X', 'B', 'C', 'H'};
++    for (const std::uint32_t v : {1u, std::uint32_t(stream.size()), 0u, std::uint32_t(fssm.size()), 0u}) put32(xbch, v);
++    xbch.insert(xbch.end(), stream.begin(), stream.end());
++    std::vector<std::uint8_t> dxil(16, 0);
++    dxil.insert(dxil.end(), {'X', 'D', 'A', 'T'});
++    put32(dxil, 1);
++    put32(dxil, 12);
++    put32(dxil, 0x0d);
++    put32(dxil, 16 + 12 + 12);
++    put32(dxil, std::uint32_t(xbch.size()));
++    dxil.insert(dxil.end(), xbch.begin(), xbch.end());
++    std::vector<std::uint8_t> out = {'D', 'X', 'B', 'C'};
++    out.resize(28, 0);
++    put32(out, 1);
++    put32(out, 36);
++    out.insert(out.end(), {'D', 'X', 'I', 'L'});
++    put32(out, std::uint32_t(dxil.size()));
++    out.insert(out.end(), dxil.begin(), dxil.end());
++    return out;
++}
++
++std::vector<std::uint8_t> serialize(const D3D12_VERSIONED_ROOT_SIGNATURE_DESC& desc) {
++    const HMODULE d3d12 = LoadLibraryExA("d3d12.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
++    const auto fn = d3d12 ? reinterpret_cast<SerializeFn>(
++                                reinterpret_cast<void*>(GetProcAddress(d3d12, "D3D12SerializeVersionedRootSignature")))
++                          : nullptr;
++    std::vector<std::uint8_t> out;
++    ID3DBlob* blob = nullptr;
++    if (fn && SUCCEEDED(fn(&desc, &blob, nullptr)) && blob) {
++        const auto* p = static_cast<const std::uint8_t*>(blob->GetBufferPointer());
++        out.assign(p, p + blob->GetBufferSize());
++        blob->Release();
++    }
++    return out;
++}
++
++D3D12_RESOURCE_DESC buffer_desc(UINT64 bytes, D3D12_RESOURCE_FLAGS flags = D3D12_RESOURCE_FLAG_NONE) {
++    D3D12_RESOURCE_DESC desc{};
++    desc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
++    desc.Width = bytes;
++    desc.Height = 1;
++    desc.DepthOrArraySize = 1;
++    desc.MipLevels = 1;
++    desc.SampleDesc.Count = 1;
++    desc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
++    desc.Flags = flags;
++    return desc;
++}
++
++// The 48-bit base address of the 16-byte GFX10 buffer V# at `cpu` (dword 0, and dword 1 bits 0-15).
++std::uint64_t vsharp_base(std::uint64_t cpu) {
++    std::uint32_t w[2];
++    std::memcpy(w, reinterpret_cast<const void*>(cpu), sizeof(w));
++    return std::uint64_t(w[0]) | (std::uint64_t(w[1] & 0xFFFFu) << 32);
++}
++
++D3D12_SHADER_RESOURCE_VIEW_DESC raw_srv(UINT first_word, UINT words) {
++    D3D12_SHADER_RESOURCE_VIEW_DESC desc{};
++    desc.Format = DXGI_FORMAT_R32_TYPELESS;
++    desc.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
++    desc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
++    desc.Buffer.FirstElement = first_word;
++    desc.Buffer.NumElements = words;
++    desc.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_RAW;
++    return desc;
++}
++
++constexpr UINT kElements = 64, kBytes = kElements * 4;
++constexpr UINT64 kPages = 64 * 1024;
++constexpr UINT kSrvWord = 256;   // the V# reads title words 256..319
++constexpr UINT kRootAdd = 7;     // root view mode: title word i = title word 64 + i + 7
++
++struct Context {
++    ID3D12Device* inner = nullptr;  // the Vulkan device (slot 133's backend takes it)
++    ID3D12Device* device = nullptr;  // the Xbox-ABI proxy over it
++    ID3D12RootSignature* root = nullptr;
++    ID3D12PipelineState* pso = nullptr;
++    ID3D12CommandQueue* queue = nullptr;
++    ID3D12Fence* fence = nullptr;
++    UINT64 fence_value = 0;
++    std::uint64_t arena = 0;
++};
++
++// One kind of title pages: `protect` is PAGE_READWRITE, or with PAGE_WRITECOMBINE.
++int check_kind(Context& c, const char* kind, DWORD protect, int& checks) {
++    void* pages = VirtualAlloc(nullptr, kPages, MEM_RESERVE | MEM_COMMIT, protect);
++    void* other_pages = VirtualAlloc(nullptr, kPages, MEM_RESERVE | MEM_COMMIT, protect);
++    EXPECT(pages && other_pages);
++    const auto title_va = reinterpret_cast<std::uint64_t>(pages);
++    EXPECT(title_va >= c.arena);  // outside the arena: heap_base + title_va names nothing of the layer's
++    const D3D12_RESOURCE_DESC desc = buffer_desc(kPages);
++    Ref<ID3D12Resource> title, other;
++    EXPECT(SUCCEEDED(rt::d3d12::create_buffer_at_host_address(c.inner, pages, desc, 0xFFFFFFFFu,
++                                                              IID_PPV_ARGS(&title.p))));
++    EXPECT(SUCCEEDED(rt::d3d12::create_buffer_at_host_address(c.inner, other_pages, desc, 0xFFFFFFFFu,
++                                                              IID_PPV_ARGS(&other.p))));
++    EXPECT(title->GetGPUVirtualAddress() == title_va);  // the title keeps its own VA
++    const std::uint64_t shader_va = leonida::title_va_aliases().shader_va(title_va);
++    EXPECT(shader_va != title_va);
++    const bool arena_copy = shader_va < c.arena;
++    const bool vsharp_fits = (shader_va >> 48) == 0;
++
++    // The data, written after the buffers exist.
++    auto* words = static_cast<std::uint32_t*>(pages);
++    auto* other_words = static_cast<std::uint32_t*>(other_pages);
++    for (UINT i = 0; i < kPages / 4; ++i) {
++        words[i] = 0xA0000000u + i * 3u;
++        other_words[i] = 0xB0000000u + i * 5u;
++    }
++
++    // Descriptors: the title buffer's V# (and the other buffer's), and the negative controls.
++    const D3D12_DESCRIPTOR_HEAP_DESC heap_desc{D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 8,
++                                               D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE, 0};
++    Ref<ID3D12DescriptorHeap> heap;
++    EXPECT(SUCCEEDED(c.device->CreateDescriptorHeap(&heap_desc, IID_PPV_ARGS(&heap.p))));
++    const std::uint64_t cpu = reinterpret_cast<XboxHeapHandleFn>(slot(heap.p, 9))(heap.p);
++    const std::uint64_t gpu = reinterpret_cast<XboxHeapHandleFn>(slot(heap.p, 10))(heap.p);
++    const UINT inc = c.device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
++    const D3D12_SHADER_RESOURCE_VIEW_DESC srv = raw_srv(kSrvWord, kElements);
++    c.device->CreateShaderResourceView(title.p, &srv, D3D12_CPU_DESCRIPTOR_HANDLE{cpu});
++    c.device->CreateShaderResourceView(other.p, &srv, D3D12_CPU_DESCRIPTOR_HANDLE{cpu + inc});
++    EXPECT(vsharp_base(cpu) == ((shader_va + kSrvWord * 4) & 0xFFFFFFFFFFFFull));
++
++    // An arena buffer for the V# read's result, a READBACK buffer for both results.
++    const D3D12_HEAP_PROPERTIES default_heap{D3D12_HEAP_TYPE_DEFAULT}, readback_heap{D3D12_HEAP_TYPE_READBACK};
++    Ref<ID3D12Resource> out, readback;
++    const auto uav = buffer_desc(kBytes, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
++    EXPECT(SUCCEEDED(c.device->CreateCommittedResource(&default_heap, D3D12_HEAP_FLAG_NONE, &uav,
++                                                       D3D12_RESOURCE_STATE_UNORDERED_ACCESS, nullptr,
++                                                       IID_PPV_ARGS(&out.p))));
++    const auto readback_desc = buffer_desc(3 * kBytes);
++    EXPECT(SUCCEEDED(c.device->CreateCommittedResource(&readback_heap, D3D12_HEAP_FLAG_NONE, &readback_desc,
++                                                       D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
++                                                       IID_PPV_ARGS(&readback.p))));
++    // An arena buffer's V# keeps its VA: identity outside title-placed buffers.
++    const D3D12_CONSTANT_BUFFER_VIEW_DESC arena_cbv{out->GetGPUVirtualAddress(), 256};
++    c.device->CreateConstantBufferView(&arena_cbv, D3D12_CPU_DESCRIPTOR_HANDLE{cpu + 3 * inc});
++    EXPECT(vsharp_base(cpu + 3 * inc) == out->GetGPUVirtualAddress());
++
++    Ref<ID3D12CommandAllocator> allocator;
++    Ref<ID3D12GraphicsCommandList> list;
++    EXPECT(SUCCEEDED(c.device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&allocator.p))));
++    EXPECT(SUCCEEDED(c.device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, allocator.p, c.pso,
++                                                 IID_PPV_ARGS(&list.p))));
++    ID3D12DescriptorHeap* heaps[] = {heap.p};
++    list->SetDescriptorHeaps(1, heaps);
++    list->SetComputeRootSignature(c.root);
++    // Through the V# (buffer SRV mode, s5 = 0xFFFFFFFF), into the arena buffer. Skipped when the buffer's copy is
++    // not within a V#'s 48 bits of heap_base (an import the driver put below the arena), which the layer logs.
++    if (vsharp_fits) {
++        list->SetComputeRoot32BitConstant(0, 0, 0);
++        list->SetComputeRoot32BitConstant(0, 0xFFFFFFFFu, 1);
++        list->SetComputeRootUnorderedAccessView(1, out->GetGPUVirtualAddress());
++        list->SetComputeRootDescriptorTable(2, D3D12_GPU_DESCRIPTOR_HANDLE{gpu});
++        list->Dispatch(1, 1, 1);
++    }
++    // Through the root view: the title's own VA, read at +256 bytes and written at +0.
++    list->SetComputeRoot32BitConstant(0, kRootAdd, 0);
++    list->SetComputeRoot32BitConstant(0, 0xFFFFFFFEu, 1);
++    list->SetComputeRootUnorderedAccessView(1, title_va);
++    list->Dispatch(1, 1, 1);
++    D3D12_RESOURCE_BARRIER barrier{};
++    barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_UAV;
++    list->ResourceBarrier(1, &barrier);
++    D3D12_RESOURCE_BARRIER to_copy{};
++    to_copy.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
++    to_copy.Transition.pResource = out.p;
++    to_copy.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
++    to_copy.Transition.StateBefore = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
++    to_copy.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_SOURCE;
++    list->ResourceBarrier(1, &to_copy);
++    list->CopyBufferRegion(readback.p, 0, out.p, 0, kBytes);
++    list->CopyBufferRegion(readback.p, kBytes, title.p, 0, kBytes);
++    EXPECT(list->Close() == S_OK);
++    ID3D12CommandList* lists[] = {list.p};
++    c.queue->ExecuteCommandLists(1, lists);
++    EXPECT(rt::d3d12::last_execute_result(c.queue) == leonida::ReplayResult::success);
++    EXPECT(SUCCEEDED(c.queue->Signal(c.fence, ++c.fence_value)));
++    EXPECT(SUCCEEDED(c.fence->SetEventOnCompletion(c.fence_value, nullptr)));
++
++    void* mapped = nullptr;
++    EXPECT(SUCCEEDED(readback->Map(0, nullptr, &mapped)));
++    const auto* got = static_cast<const std::uint32_t*>(mapped);
++    UINT srv_ok = 0, srv_other = 0, root_ok = 0;
++    for (UINT i = 0; i < kElements; ++i) {
++        if (got[i] == words[kSrvWord + i]) ++srv_ok;
++        if (got[i] == other_words[kSrvWord + i]) ++srv_other;
++        if (got[kElements + i] == words[64 + i] + kRootAdd) ++root_ok;
++    }
++    readback->Unmap(0, nullptr);
++    std::printf("%s pages: GPU copy %s (shader VA %s); V# read %s, %u/%u words matched, %u/%u read the other "
++                "buffer's (negative control); root view read+write %u/%u matched\n",
++                kind, arena_copy ? "in the arena" : "with its own device address",
++                arena_copy ? "an arena offset" : "device address - heap_base",
++                vsharp_fits ? "run" : "skipped (out of a V#'s 48 bits)", vsharp_fits ? srv_ok : 0, kElements,
++                vsharp_fits ? srv_other : 0, kElements, root_ok, kElements);
++    if (vsharp_fits) {
++        EXPECT(srv_ok == kElements);
++        EXPECT(srv_other == 0);
++    }
++    EXPECT(root_ok == kElements);
++
++    // After release, the buffer's range is gone from the table: its old copy is not named any more.
++    title.reset();
++    EXPECT(leonida::title_va_aliases().shader_va(title_va) == title_va);
++    checks += 2;
++    other.reset();
++    heap.reset();
++    VirtualFree(pages, 0, MEM_RELEASE);
++    VirtualFree(other_pages, 0, MEM_RELEASE);
++    return 0;
++}
++
++// The title's own memory outside any slot-133 buffer: a VirtualAlloc range standing for its per-frame constant ring
++// (#8862 section 3.5). Three ways a shader is given an address in it, each read back through an arena buffer:
++//   - a buffer V# the CPU writes into a shader-visible heap itself, as the title does (rewritten before the submission);
++//   - a V# made by CreateConstantBufferView (translated when written);
++//   - a root view (translated when set).
++// Negative controls: a raw V# whose base is an arena buffer and a T#-shaped slot whose base is the ring keep their
++// bytes; committed memory that is not the title's, and a title range with no committed page, are left alone.
++int check_title_memory(Context& c, int& checks) {
++    constexpr UINT64 ring_bytes = 256 * 1024;
++    auto* ring = static_cast<std::uint32_t*>(VirtualAlloc(nullptr, ring_bytes, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE));
++    EXPECT(ring);
++    const auto ring_va = reinterpret_cast<std::uint64_t>(ring);
++    EXPECT(ring_va >= c.arena);
++    auto& aliases = leonida::title_va_aliases();
++    aliases.add_title_memory(ring_va, ring_bytes);  // as the xmem shims record what they hand the title
++    const std::uint64_t table_before = aliases.translated(leonida::TitleVaAliases::table_view);
++    const std::uint64_t created_before = aliases.translated(leonida::TitleVaAliases::created_view);
++    const std::uint64_t root_before = aliases.translated(leonida::TitleVaAliases::root_view);
++
++    const D3D12_HEAP_PROPERTIES default_heap{D3D12_HEAP_TYPE_DEFAULT}, readback_heap{D3D12_HEAP_TYPE_READBACK};
++    const auto uav = buffer_desc(kBytes, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
++    Ref<ID3D12Resource> out[3], readback;
++    for (auto& o : out)
++        EXPECT(SUCCEEDED(c.device->CreateCommittedResource(&default_heap, D3D12_HEAP_FLAG_NONE, &uav,
++                                                           D3D12_RESOURCE_STATE_UNORDERED_ACCESS, nullptr,
++                                                           IID_PPV_ARGS(&o.p))));
++    const auto readback_desc = buffer_desc(3 * kBytes);
++    EXPECT(SUCCEEDED(c.device->CreateCommittedResource(&readback_heap, D3D12_HEAP_FLAG_NONE, &readback_desc,
++                                                       D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
++                                                       IID_PPV_ARGS(&readback.p))));
++
++    const D3D12_DESCRIPTOR_HEAP_DESC heap_desc{D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 8,
++                                               D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE, 0};
++    Ref<ID3D12DescriptorHeap> heap;
++    EXPECT(SUCCEEDED(c.device->CreateDescriptorHeap(&heap_desc, IID_PPV_ARGS(&heap.p))));
++    const std::uint64_t cpu = reinterpret_cast<XboxHeapHandleFn>(slot(heap.p, 9))(heap.p);
++    const std::uint64_t gpu = reinterpret_cast<XboxHeapHandleFn>(slot(heap.p, 10))(heap.p);
++    const UINT inc = c.device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
++    const auto raw_vsharp = [](std::uint64_t address) {
++        leonida::gfx10::Buffer b{};
++        b.address = address;
++        b.num_records = kBytes;
++        b.format = leonida::gfx10::format_from_vulkan(VK_FORMAT_R32_UINT);
++        b.oob_select = leonida::gfx10::OobSelect::raw;
++        return leonida::gfx10::encode(b);
++    };
++    // Slot 0: a V# the CPU writes itself, its base in the ring. Slot 1: CreateConstantBufferView of the ring.
++    // Slot 2: a raw 64-bit VA (out[2]) for the root-view mode. Slots 3 and 4: the negative controls.
++    const auto v0 = raw_vsharp(ring_va + 0x1000);
++    std::memcpy(reinterpret_cast<void*>(cpu), v0.data(), sizeof(v0));
++    const D3D12_CONSTANT_BUFFER_VIEW_DESC cbv{ring_va + 0x2000, 256};
++    c.device->CreateConstantBufferView(&cbv, D3D12_CPU_DESCRIPTOR_HANDLE{cpu + inc});
++    EXPECT(vsharp_base(cpu + inc) < c.arena);  // translated when written
++    const std::uint64_t out2 = out[2]->GetGPUVirtualAddress();
++    std::memcpy(reinterpret_cast<void*>(cpu + 2 * inc), &out2, sizeof(out2));
++    const auto arena_vsharp = raw_vsharp(out[0]->GetGPUVirtualAddress());
++    std::memcpy(reinterpret_cast<void*>(cpu + 3 * inc), arena_vsharp.data(), sizeof(arena_vsharp));
++    auto image_like = raw_vsharp(ring_va + 0x4000);
++    image_like[3] |= 0x8u << 28;  // TYPE: an image
++    std::memcpy(reinterpret_cast<void*>(cpu + 4 * inc), image_like.data(), sizeof(image_like));
++    std::uint8_t before3[32], before4[32];
++    std::memcpy(before3, reinterpret_cast<const void*>(cpu + 3 * inc), 32);
++    std::memcpy(before4, reinterpret_cast<const void*>(cpu + 4 * inc), 32);
++
++    // The ring's data, written before the submission (after the descriptors, as a title fills its ring per frame).
++    for (UINT i = 0; i < ring_bytes / 4; ++i) ring[i] = 0xC0000000u + i * 7u;
++
++    Ref<ID3D12CommandAllocator> allocator;
++    Ref<ID3D12GraphicsCommandList> list;
++    EXPECT(SUCCEEDED(c.device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&allocator.p))));
++    EXPECT(SUCCEEDED(c.device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, allocator.p, c.pso,
++                                                 IID_PPV_ARGS(&list.p))));
++    ID3D12DescriptorHeap* heaps[] = {heap.p};
++    list->SetDescriptorHeaps(1, heaps);
++    list->SetComputeRootSignature(c.root);
++    // The CPU-written V# (buffer SRV mode).
++    list->SetComputeRoot32BitConstant(0, 0, 0);
++    list->SetComputeRoot32BitConstant(0, 0xFFFFFFFFu, 1);
++    list->SetComputeRootUnorderedAccessView(1, out[0]->GetGPUVirtualAddress());
++    list->SetComputeRootDescriptorTable(2, D3D12_GPU_DESCRIPTOR_HANDLE{gpu});
++    list->Dispatch(1, 1, 1);
++    // The created CBV (CBV mode).
++    list->SetComputeRoot32BitConstant(0, 0, 1);
++    list->SetComputeRootUnorderedAccessView(1, out[1]->GetGPUVirtualAddress());
++    list->SetComputeRootDescriptorTable(2, D3D12_GPU_DESCRIPTOR_HANDLE{gpu + inc});
++    list->Dispatch(1, 1, 1);
++    // A root view into the ring, read 256 bytes past its base, written through slot 2's raw VA.
++    list->SetComputeRoot32BitConstant(0, kRootAdd, 0);
++    list->SetComputeRoot32BitConstant(0, 0xFFFFFFFDu, 1);
++    list->SetComputeRootUnorderedAccessView(1, ring_va + 0x3000);
++    list->SetComputeRootDescriptorTable(2, D3D12_GPU_DESCRIPTOR_HANDLE{gpu + 2 * inc});
++    list->Dispatch(1, 1, 1);
++    // The negative-control slots are bound too, so the scan reads them.
++    list->SetComputeRootDescriptorTable(2, D3D12_GPU_DESCRIPTOR_HANDLE{gpu + 3 * inc});
++    list->SetComputeRootDescriptorTable(2, D3D12_GPU_DESCRIPTOR_HANDLE{gpu + 4 * inc});
++    D3D12_RESOURCE_BARRIER barrier{};
++    barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_UAV;
++    list->ResourceBarrier(1, &barrier);
++    for (UINT k = 0; k < 3; ++k) {
++        D3D12_RESOURCE_BARRIER to_copy{};
++        to_copy.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
++        to_copy.Transition.pResource = out[k].p;
++        to_copy.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
++        to_copy.Transition.StateBefore = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
++        to_copy.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_SOURCE;
++        list->ResourceBarrier(1, &to_copy);
++        list->CopyBufferRegion(readback.p, k * kBytes, out[k].p, 0, kBytes);
++    }
++    EXPECT(list->Close() == S_OK);
++    ID3D12CommandList* lists[] = {list.p};
++    c.queue->ExecuteCommandLists(1, lists);
++    EXPECT(rt::d3d12::last_execute_result(c.queue) == leonida::ReplayResult::success);
++    EXPECT(SUCCEEDED(c.queue->Signal(c.fence, ++c.fence_value)));
++    EXPECT(SUCCEEDED(c.fence->SetEventOnCompletion(c.fence_value, nullptr)));
++
++    void* mapped = nullptr;
++    EXPECT(SUCCEEDED(readback->Map(0, nullptr, &mapped)));
++    const auto* got = static_cast<const std::uint32_t*>(mapped);
++    UINT raw_ok = 0, cbv_ok = 0, root_ok = 0;
++    for (UINT i = 0; i < kElements; ++i) {
++        if (got[i] == ring[0x1000 / 4 + i]) ++raw_ok;
++        if (got[kElements + i] == ring[0x2000 / 4 + i]) ++cbv_ok;
++        if (got[2 * kElements + i] == ring[0x3000 / 4 + 64 + i] + kRootAdd) ++root_ok;
++    }
++    readback->Unmap(0, nullptr);
++    const bool rewritten = vsharp_base(cpu) < c.arena;
++    const bool arena_kept = !std::memcmp(before3, reinterpret_cast<const void*>(cpu + 3 * inc), 32);
++    const bool image_kept = !std::memcmp(before4, reinterpret_cast<const void*>(cpu + 4 * inc), 32);
++    std::printf("title memory (a constant ring): CPU-written table V# %u/%u (rewritten before the submission: %s), "
++                "created CBV %u/%u, root view %u/%u; negative controls: arena V# kept %s, T#-shaped slot kept %s; "
++                "translated: %llu table V#, %llu created, %llu root\n",
++                raw_ok, kElements, rewritten ? "yes" : "no", cbv_ok, kElements, root_ok, kElements,
++                arena_kept ? "yes" : "no", image_kept ? "yes" : "no",
++                static_cast<unsigned long long>(aliases.translated(leonida::TitleVaAliases::table_view) - table_before),
++                static_cast<unsigned long long>(aliases.translated(leonida::TitleVaAliases::created_view) -
++                                                created_before),
++                static_cast<unsigned long long>(aliases.translated(leonida::TitleVaAliases::root_view) - root_before));
++    EXPECT(raw_ok == kElements && cbv_ok == kElements && root_ok == kElements);
++    EXPECT(rewritten && arena_kept && image_kept);
++    // Left alone and counted: committed memory that is not the title's (the runtime's own, say), and a title range
++    // with no committed page.
++    const std::uint64_t untranslated_before = aliases.untranslated(leonida::TitleVaAliases::created_view);
++    void* host = VirtualAlloc(nullptr, 65536, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
++    void* gone = VirtualAlloc(nullptr, 65536, MEM_RESERVE, PAGE_READWRITE);
++    const auto host_va = reinterpret_cast<std::uint64_t>(host), gone_va = reinterpret_cast<std::uint64_t>(gone);
++    aliases.add_title_memory(gone_va, 65536);
++    const D3D12_CONSTANT_BUFFER_VIEW_DESC not_title{host_va, 256}, reserved_only{gone_va, 256};
++    c.device->CreateConstantBufferView(&not_title, D3D12_CPU_DESCRIPTOR_HANDLE{cpu + 5 * inc});
++    c.device->CreateConstantBufferView(&reserved_only, D3D12_CPU_DESCRIPTOR_HANDLE{cpu + 6 * inc});
++    EXPECT(vsharp_base(cpu + 5 * inc) == (host_va & 0xFFFFFFFFFFFFull));
++    EXPECT(vsharp_base(cpu + 6 * inc) == (gone_va & 0xFFFFFFFFFFFFull));
++    EXPECT(aliases.untranslated(leonida::TitleVaAliases::created_view) - untranslated_before == 2);
++    // Xbox slot 70 can describe a typed view in an allocation without a slot-133 resource.
++    // The regular device provider encodes it using the device-owned window.
++    using CreateRawSrv = void (WINAPI*)(void*, const void*, const void*, std::uint64_t);
++    const auto make_srv = reinterpret_cast<CreateRawSrv>(slot(c.device, 70));
++    struct TaggedView {
++        D3D12_SHADER_RESOURCE_VIEW_DESC srv;
++        D3D12_GPU_VIRTUAL_ADDRESS va;
++    } view{};
++    auto view_resource = buffer_desc(768, D3D12_RESOURCE_FLAG_NONE);
++    view.srv.Format = DXGI_FORMAT_R16_UINT;
++    view.srv.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
++    view.srv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
++    view.va = ring_va + 0x20200;
++    const auto dest = cpu + 5 * inc;
++    make_srv(c.device, &view_resource, &view, dest);
++    leonida::gfx10::BufferWords encoded{};
++    std::memcpy(encoded.data(), reinterpret_cast<const void*>(dest), sizeof(encoded));
++    leonida::gfx10::Buffer decoded{};
++    EXPECT(leonida::gfx10::decode(encoded, decoded));
++    EXPECT(decoded.address && decoded.address < c.arena && decoded.address == aliases.shader_va(view.va));
++    EXPECT(decoded.stride == 2 && decoded.num_records == 384 &&
++           decoded.format == leonida::gfx10::format_from_vulkan(VK_FORMAT_R16_UINT));
++    view.va = host_va;
++    make_srv(c.device, &view_resource, &view, dest);
++    EXPECT(vsharp_base(dest) == 0);
++    std::puts("slot 70: typed R16_UINT view of 384 elements used a registered title window; unowned address refused");
++    aliases.remove_title_memory(gone_va);
++    aliases.remove_title_memory(ring_va);
++    VirtualFree(host, 0, MEM_RELEASE);
++    VirtualFree(gone, 0, MEM_RELEASE);
++    checks += 4;
++    return 0;
++}
++
++}  // namespace
++
++int main() {
++    vktest::Device d;
++    const auto device_status = d.initialize();
++    if (device_status == vktest::DeviceStatus::unavailable) {
++        std::fprintf(stderr, "SKIP: no usable Vulkan 1.3 device\n");
++        return 77;
++    }
++    EXPECT(device_status == vktest::DeviceStatus::ready);
++
++    std::vector<std::uint8_t> fssm = {'F', 'S', 'S', 'M'};
++    put32(fssm, 6000);
++    for (std::uint32_t i = 0; i < 14; ++i) put32(fssm, 0xbf810000u + i);
++    const auto container = shader_container(fssm);
++    const testfiles::ScratchDir scratch("leonida_title_va_test");
++    const auto& library = scratch.path();
++    EXPECT(testfiles::copy_file(vktest::shader_fixture_path(LEONIDA_TEST_CS_SPV), library / "cs_user_data.spv"));
++    {
++        std::ofstream index(library / "index.json", std::ios::binary);
++        index << "{\"cs_user_data\": {\"stage\": \"cs\", \"fssm_sha256\": \"" << leonida::sha256_hex(fssm)
++              << "\", \"bindings\": [], \"push_constant_bytes\": 144, \"local_size\": [64, 1, 1], "
++                 "\"uses_code_base\": true, \"wave64\": false}}";
++    }
++
++    int checks = 0;
++    {
++        rt::d3d12::VulkanDeviceInfo info{};
++        info.get_instance_proc = d.instance_proc;
++        info.instance = d.instance;
++        info.physical = d.physical;
++        info.device = d.device;
++        info.queue = d.queue;
++        info.queue_family = d.family;
++        info.buffer_device_address = true;
++        info.subgroup = d.subgroup;
++        info.shader_dir = library.string();
++        ID3D12Device* inner = nullptr;  // owned by the proxy, as in d3d12_compute_test
++        EXPECT(SUCCEEDED(rt::d3d12::create_vulkan_device(info, IID_PPV_ARGS(&inner))));
++        Ref<ID3D12Device> device;
++        EXPECT(SUCCEEDED(rt::d3d12_xs::create_device_proxy(inner, __uuidof(ID3D12Device),
++                                                           reinterpret_cast<void**>(&device.p))));
++        rt::d3d12::set_device_outer(inner, device.p);
++
++        // [0] two constants (s4, s5), [1] a root UAV (s6:s7), [2] a one-descriptor table (s8): the console compute
++        // layout cs_user_data.comp reads.
++        D3D12_DESCRIPTOR_RANGE range{D3D12_DESCRIPTOR_RANGE_TYPE_CBV, 1, 1, 0, 0};
++        D3D12_ROOT_PARAMETER params[3] = {};
++        params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
++        params[0].Constants = {0, 0, 2};
++        params[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_UAV;
++        params[1].Descriptor = {0, 0};
++        params[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
++        params[2].DescriptorTable = {1, &range};
++        D3D12_VERSIONED_ROOT_SIGNATURE_DESC root_desc{};
++        root_desc.Version = D3D_ROOT_SIGNATURE_VERSION_1_0;
++        root_desc.Desc_1_0 = {3, params, 0, nullptr, D3D12_ROOT_SIGNATURE_FLAG_NONE};
++        const auto root_blob = serialize(root_desc);
++        EXPECT(!root_blob.empty());
++        Ref<ID3D12RootSignature> root;
++        EXPECT(SUCCEEDED(device->CreateRootSignature(0, root_blob.data(), root_blob.size(), IID_PPV_ARGS(&root.p))));
++        D3D12_COMPUTE_PIPELINE_STATE_DESC pso_desc{};
++        pso_desc.pRootSignature = root.p;
++        pso_desc.CS = {container.data(), container.size()};
++        const IID pso_iid = __uuidof(ID3D12PipelineState);
++        Ref<ID3D12PipelineState> pso;
++        EXPECT(SUCCEEDED(reinterpret_cast<XboxComputePipelineFn>(slot(device.p, 62))(
++            device.p, &pso_desc, 0, 0, &pso_iid, reinterpret_cast<void**>(&pso.p))));
++
++        const D3D12_COMMAND_QUEUE_DESC queue_desc{};
++        Ref<ID3D12CommandQueue> queue;
++        Ref<ID3D12Fence> fence;
++        EXPECT(SUCCEEDED(device->CreateCommandQueue(&queue_desc, IID_PPV_ARGS(&queue.p))));
++        EXPECT(SUCCEEDED(device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&fence.p))));
++
++        Context c;
++        c.inner = inner;
++        c.device = device.p;
++        c.root = root.p;
++        c.pso = pso.p;
++        c.queue = queue.p;
++        c.fence = fence.p;
++        c.arena = rt::d3d12::device_arena_size(device.p);
++        EXPECT(c.arena > 0);
++        if (check_kind(c, "read-write", PAGE_READWRITE, checks)) return 1;
++        if (check_kind(c, "write-combined", PAGE_READWRITE | PAGE_WRITECOMBINE, checks)) return 1;
++        if (check_title_memory(c, checks)) return 1;
++    }
++    if (d.validation_errors()) {
++        std::fprintf(stderr, "%u validation errors\n", d.validation_errors());
++        return 1;
++    }
++    std::printf("title-placed buffers: a translated shader reached both page kinds through a root view and a buffer "
++                "V#; %d descriptor-level negative controls held\n",
++                checks);
++    return 0;
++}
+diff --git a/runtime/test/glsl/cs_user_data.comp b/runtime/test/glsl/cs_user_data.comp
+index b285c0f3f91efc0d1351e9be1d1d2db60d1dec99..07b4b7e4d4974d06169a77c0721e96773f44b554 100644
+--- a/runtime/test/glsl/cs_user_data.comp
++++ b/runtime/test/glsl/cs_user_data.comp
+@@ -37,8 +37,21 @@ Words at(uvec2 va) {
+ 
+ void main() {
+     const uint i = gl_GlobalInvocationID.x;
+-    Words table = at(uvec2(pc.s[8], 0u));
+     Words result = at(uvec2(pc.s[6], pc.s[7]));
++    if (pc.s[5] == 0xFFFFFFFEu) {
++        // Root view read mode (d3d12_title_va_test): read through the root UAV itself, 256 bytes past its base, and
++        // write at the base, so the root view's address is both read and written.
++        result.w[i] = result.w[64u + i] + pc.s[4];
++        return;
++    }
++    Words table = at(uvec2(pc.s[8], 0u));
++    if (pc.s[5] == 0xFFFFFFFDu) {
++        // Root view read to a table pointer (d3d12_title_va_test): read through the root view, 256 bytes past its
++        // base, and write where the table entry's raw 64-bit VA points.
++        Words target = at(uvec2(table.w[0], table.w[1]));
++        target.w[i] = result.w[64u + i] + pc.s[4];
++        return;
++    }
+     if (pc.s[5] == 0u) {
+         // CBV V# mode: table holds a 16-byte GFX10 raw buffer descriptor written by CreateConstantBufferView.
+         const uint num_records = table.w[2];
+diff --git a/runtime/test/title_va_alias_test.cpp b/runtime/test/title_va_alias_test.cpp
+new file mode 100644
+index 0000000000000000000000000000000000000000..133f7f2e5450f140247d21c4b2aaaada318587b2
+--- /dev/null
++++ b/runtime/test/title_va_alias_test.cpp
+@@ -0,0 +1,68 @@
++// leonida::TitleVaAliases (src/title_va_alias.h): where an address inside a title-placed buffer (Xbox device slot
++// 133) is translated to, and that everything else is left alone. No GPU.
++#include "../src/title_va_alias.h"
++
++#include <cstdint>
++#include <cstdio>
++
++#define EXPECT(condition) do { \
++    if (!(condition)) { std::fprintf(stderr, "line %d: %s\n", __LINE__, #condition); return 1; } \
++} while (0)
++
++int main() {
++    leonida::TitleVaAliases a;
++    constexpr std::uint64_t title = 0x20000000000ull;  // a synthetic user-mode VA far above 4 GiB
++    constexpr std::uint64_t size = 0x10000;
++    constexpr std::uint64_t arena = 0x2340000;
++    // Empty: identity everywhere.
++    EXPECT(a.size() == 0 && a.shader_va(title) == title && a.shader_va(0) == 0);
++    EXPECT(!a.add(title, 0, arena));                  // empty range
++    EXPECT(!a.add(UINT64_MAX - 4, 16, arena));        // wraps
++    EXPECT(a.add(title, size, arena) && a.size() == 1);
++    // Inside: the same offset in the copy, first and last byte included.
++    EXPECT(a.shader_va(title) == arena);
++    EXPECT(a.shader_va(title + 0x123) == arena + 0x123);
++    EXPECT(a.shader_va(title + size - 1) == arena + size - 1);
++    // Negative controls: one byte before, the end itself, and an arena VA are untouched.
++    EXPECT(a.shader_va(title - 1) == title - 1);
++    EXPECT(a.shader_va(title + size) == title + size);
++    EXPECT(a.shader_va(arena) == arena);
++    // The free span around an address: between the ranges, so a window made for it never covers one.
++    std::uint64_t lo = 1, hi = 1;
++    a.gap(title + size + 5, lo, hi);
++    EXPECT(lo == title + size && hi == UINT64_MAX);
++    a.gap(title - 5, lo, hi);
++    EXPECT(lo == 0 && hi == title);
++    // Without a device's resolver, resolve only translates what was added, and counts it.
++    EXPECT(a.resolve(title + 4, 4, leonida::TitleVaAliases::root_view) == arena + 4);
++    EXPECT(a.resolve(title - 4, 4, leonida::TitleVaAliases::root_view) == title - 4);
++    EXPECT(a.translated(leonida::TitleVaAliases::root_view) == 1);
++    a.note(title + 8, leonida::TitleVaAliases::vertex_view);
++    a.note(title - 8, leonida::TitleVaAliases::vertex_view);
++    EXPECT(a.untranslated(leonida::TitleVaAliases::vertex_view) == 1);
++    // The title's memory: a commit inside a reservation is one range; outside every range is not the title's.
++    std::uint64_t mlo = 0, mhi = 0;
++    a.add_title_memory(0x40000000, 0x100000);
++    a.add_title_memory(0x40010000, 0x1000);
++    EXPECT(a.title_memory(0x40080000, mlo, mhi) && mlo == 0x40000000 && mhi == 0x40100000);
++    EXPECT(!a.title_memory(0x40100000, mlo, mhi) && !a.title_memory(0x3FFFFFFF, mlo, mhi));
++    a.remove_title_memory(0x40000000);
++    EXPECT(!a.title_memory(0x40080000, mlo, mhi));
++    // A wrapping target (an import below heap_base) is kept as is: modular arithmetic.
++    constexpr std::uint64_t below = 0xFFFFFFFFFFF00000ull;
++    EXPECT(a.add(title + 0x100000, size, below) && a.shader_va(title + 0x100010) == below + 0x10);
++    // A new buffer over part of a live range replaces it; the old range's removal does not touch the new one.
++    EXPECT(a.add(title + 0x8000, size, 0x5000000));
++    EXPECT(a.shader_va(title) == title);  // the replaced range is gone entirely
++    EXPECT(a.shader_va(title + 0x8000) == 0x5000000);
++    a.remove(title, arena);  // stale: nothing starts there any more
++    EXPECT(a.shader_va(title + 0x8000) == 0x5000000);
++    a.remove(title + 0x8000, 0x1234);  // another target: kept
++    EXPECT(a.shader_va(title + 0x8000) == 0x5000000);
++    a.remove(title + 0x8000, 0x5000000);
++    EXPECT(a.shader_va(title + 0x8000) == title + 0x8000);
++    a.remove(title + 0x100000, below);
++    EXPECT(a.size() == 0 && a.shader_va(title + 0x100010) == title + 0x100010);
++    std::printf("title_va_alias: translation inside a title-placed range, identity outside it and after release\n");
++    return 0;
++}

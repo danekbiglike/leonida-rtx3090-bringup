@@ -183,3 +183,21 @@ In the subsequent title run, all four sampled imports succeeded. The main 174 Mi
 `tools/fspx_lookup_check.cpp` runs the runtime's program parser and catalogue lookup on local `.code` and `.state` pairs. It opens the selected SPIR-V module using the same reader as the runtime. The optional third argument writes the matched keys locally. With `LEONIDA_FRAME_PROBE=1`, the runtime also logs both keys for a missing compute program. Compile from a Visual Studio developer shell with `/std:c++20 /EHsc /O2` and add Leonida's `runtime/src` directory to the include path.
 
 The offline checker found exact code-and-state matches and readable modules for 1,538 of 2,684 extracted pairs. The live run requested 2,680 distinct pairs across 2,689 calls. The separately validated catalogue covered 1,538 distinct requested pairs, or 1,543 calls. It was kept offline for this measurement.
+
+### Shader-visible copies of title memory on RTX 3090
+
+Apply `patches/frame-title-memory-windows.patch` after the typed-views patch. It incorporates [PR 8225](https://github.com/ItsNotRexed/Leonida/pull/8225) and [PR 9137](https://github.com/ItsNotRexed/Leonida/pull/9137). Two changes are specific to this integration:
+
+- `LEONIDA_SHADOW_LOW_IMPORTS=1` requests a refreshed GPU-side copy when a successful host import has an address outside the descriptor's 48-bit range. The title retains its own address. Copies are refreshed from CPU memory before submissions. GPU-to-CPU coherence for general writable resources is still an open limitation.
+- Xbox device slot 70 can encode a typed or structured SRV for a registered title allocation with no placed resource. It checks that the complete view fits a translated arena range before encoding it. The device retains the underlying storage.
+
+On the RTX 3090, `d3d12_title_va_test` read all 64 expected values through a manually written buffer descriptor, a created constant-buffer view and a root view. The standalone slot-70 fixture encoded a 384-element R16_UINT view and rejected an address outside the registered allocation. The existing-heap, compute, proxy, address-range and 198-check memory suites passed.
+
+In the title, slot 70 created a 3,072-element R16_UINT view and a structured view. The 174 MiB buffer went through the arena-copy path. Its first timed refresh took 19.96 ms. The last of 44 black GPU readbacks was present 508. The run stopped on a write in VCRUNTIME140 at 114.46 seconds. The refresh cost is paid on every submission. This run did not display a menu.
+
+```powershell
+cmake --build build --target d3d12_title_va_test title_va_alias_test gta6rt
+$env:LEONIDA_SHADOW_LOW_IMPORTS = '1'
+.\build\d3d12_title_va_test.exe
+.\build\title_va_alias_test.exe
+```
