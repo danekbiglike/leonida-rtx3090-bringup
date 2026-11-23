@@ -1,0 +1,524 @@
+diff --git a/runtime/CMakeLists.txt b/runtime/CMakeLists.txt
+index 77bba4a0d25cf0b9303a53e72207386badf0ecd5..a0cda31dad3a0dbbc18b40dcd3a033c3bfd58120 100644
+--- a/runtime/CMakeLists.txt
++++ b/runtime/CMakeLists.txt
+@@ -1549,6 +1549,12 @@ if(TARGET Vulkan::Headers)
+     add_test(NAME vk_fence_dispatcher_sync COMMAND vk_fence_dispatcher_sync_test)
+     set_tests_properties(vk_fence_dispatcher_sync PROPERTIES SKIP_RETURN_CODE 77)
+   endif()
++  # CPU-only: one VkShaderModule per distinct SPIR-V, shared by the pipeline states built from it (A42).
++  add_executable(shader_module_cache_test test/shader_module_cache_test.cpp)
++  target_link_libraries(shader_module_cache_test PRIVATE Vulkan::Headers)
++  if(BUILD_TESTING)
++    add_test(NAME shader_module_cache COMMAND shader_module_cache_test)
++  endif()
+   # CPU-only: the bindless set's array sizes from synthetic device limits.
+   add_executable(bindless_sizing_test test/bindless_sizing_test.cpp)
+   target_link_libraries(bindless_sizing_test PRIVATE Vulkan::Headers)
+diff --git a/runtime/shims/d3d12_vulkan_device.cpp b/runtime/shims/d3d12_vulkan_device.cpp
+index 51b32f48722643d8debe401ec337f4150235af85..7981fff1deeb3215455684b9591b264923e1d6d0 100644
+--- a/runtime/shims/d3d12_vulkan_device.cpp
++++ b/runtime/shims/d3d12_vulkan_device.cpp
+@@ -17,6 +17,7 @@
+ #include "d3d12_xs_native_pso.h"
+ #include "dxgi_com.h"
+ #include "../src/arena_size.h"
++#include "../src/shader_module_cache.h"
+ #include "../src/gfx10_descriptors.h"
+ #include "../src/depth24_fragment.h"
+ #include "../src/uav_clear.h"
+@@ -1355,6 +1356,29 @@ struct DeviceState {
+         std::uint64_t address;
+     };
+     std::unique_ptr<leonida::BindlessSet> bindless;
++    // A42: every PipelineState takes its VkShaderModules from here, one per distinct SPIR-V (src/shader_module_cache.h).
++    const bool defer_graphics = [] {
++        wchar_t value[2]{};
++        return GetEnvironmentVariableW(L"LEONIDA_DEFER_GRAPHICS", value, 2) == 1 && value[0] == L'1';
++    }();
++    std::once_flag shader_modules_once;
++    std::unique_ptr<leonida::ShaderModuleCache> shader_modules_cache;
++    leonida::ShaderModuleCache& shader_modules() {
++        std::call_once(shader_modules_once, [this] {
++            shader_modules_cache = std::make_unique<leonida::ShaderModuleCache>(
++                [this](const std::vector<std::uint32_t>& words) {
++                    VkShaderModuleCreateInfo create{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
++                    create.codeSize = words.size() * 4;
++                    create.pCode = words.data();
++                    VkShaderModule module = VK_NULL_HANDLE;
++                    if (context->vk.vkCreateShaderModule(info.device, &create, nullptr, &module) != VK_SUCCESS)
++                        return VkShaderModule(VK_NULL_HANDLE);
++                    return module;
++                },
++                [this](VkShaderModule module) { context->vk.vkDestroyShaderModule(info.device, module, nullptr); });
++        });
++        return *shader_modules_cache;
++    }
+     std::mutex descriptor_mutex;  // the set and the containers below
+     // vkDeviceWaitIdle calls made for the bindless set (none, unless LEONIDA_BINDLESS_IDLE_WAIT restores the old wait).
+     std::atomic<std::uint64_t> bindless_idle_waits{0};
+@@ -3705,11 +3729,11 @@ public:
+         if (registered_) device_.context->remove_pipeline(id());
+         if (pipeline_.pipeline) vk.vkDestroyPipeline(dev, pipeline_.pipeline, nullptr);
+         if (pipeline_.layout) vk.vkDestroyPipelineLayout(dev, pipeline_.layout, nullptr);
+-        if (module_) vk.vkDestroyShaderModule(dev, module_, nullptr);
++        if (module_) device_.shader_modules().release(module_);
+         if (graphics_.pipeline) vk.vkDestroyPipeline(dev, graphics_.pipeline, nullptr);
+         for (const auto& [unbound, built] : variants_) vk.vkDestroyPipeline(dev, built, nullptr);
+         if (graphics_.layout) vk.vkDestroyPipelineLayout(dev, graphics_.layout, nullptr);
+-        for (VkShaderModule module : modules_) vk.vkDestroyShaderModule(dev, module, nullptr);
++        for (VkShaderModule module : modules_) device_.shader_modules().release(module);
+         if (code_bytes_) device_.arena_release(code_base_, code_bytes_, DeviceState::arena_shader);
+     }
+ 
+@@ -3996,6 +4020,7 @@ public:
+                          pixel ? "fragmentStoresAndAtomics" : "vertexPipelineStoresAndAtomics");
+             return E_NOTIMPL;
+         }
++        graphics_.deferred = device_.defer_graphics;
+         for (Stage& stage : stages) {
+             if (!stage.entry) continue;
+             // After the f16 link above, which can also edit the pixel shader's words.
+@@ -4011,31 +4036,18 @@ public:
+                     stage.words = std::move(patched);
+                 }
+             }
+-            VkShaderModuleCreateInfo module_info{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
+-            module_info.codeSize = stage.words.size() * 4;
+-            module_info.pCode = stage.words.data();
+-            VkShaderModule module = VK_NULL_HANDLE;
+-            if (vk.vkCreateShaderModule(dev, &module_info, nullptr, &module) != VK_SUCCESS) return E_FAIL;
+-            modules_.push_back(module);
+             VkPipelineShaderStageCreateInfo info{VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO};
+             info.stage = stage.bit;
+-            info.module = module;
++            if (!prepare_graphics_module(stage.words, info)) return E_FAIL;
+             info.pName = "main";
+             subgroup_size_for(*stage.entry, required_sizes[stage_infos.size()], info);
+             stage_infos.push_back(info);
+         }
+         if (depth24_fragment && !ps_stage.entry) {  // no pixel shader: a built-in one writes the depth
+-            const std::vector<std::uint32_t> words = leonida::depth24_depth_only_fragment(depth24_bias, xbox_depth16);
+-            VkShaderModuleCreateInfo module_info{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
+-            module_info.codeSize = words.size() * 4;
+-            module_info.pCode = words.data();
+-            VkShaderModule module = VK_NULL_HANDLE;
+-            if (words.empty() || vk.vkCreateShaderModule(dev, &module_info, nullptr, &module) != VK_SUCCESS)
+-                return E_FAIL;
+-            modules_.push_back(module);
++            auto words = leonida::depth24_depth_only_fragment(depth24_bias, xbox_depth16);
+             VkPipelineShaderStageCreateInfo info{VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO};
+             info.stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+-            info.module = module;
++            if (!prepare_graphics_module(words, info)) return E_FAIL;
+             info.pName = "main";
+             stage_infos.push_back(info);
+         }
+@@ -4336,8 +4348,10 @@ public:
+         recipe_.depth = depth;
+         recipe_.blends = std::move(blends);
+         recipe_.blend = blend;
+-        graphics_.pipeline = build(0);
+-        if (!graphics_.pipeline) return E_FAIL;
++        if (!graphics_.deferred) {
++            graphics_.pipeline = build(0);
++            if (!graphics_.pipeline) return E_FAIL;
++        }
+         graphics_.variant = [this](std::uint32_t unbound) { return variant(unbound); };
+ 
+         if (code_stage) {
+@@ -4438,10 +4452,8 @@ public:
+             return E_FAIL;
+         }
+ 
+-        VkShaderModuleCreateInfo module_info{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
+-        module_info.codeSize = words.size() * 4;
+-        module_info.pCode = words.data();
+-        if (vk.vkCreateShaderModule(dev, &module_info, nullptr, &module_) != VK_SUCCESS) return E_FAIL;
++        module_ = device_.shader_modules().acquire(words);
++        if (module_ == VK_NULL_HANDLE) return E_FAIL;
+         const VkPushConstantRange push{VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(leonida::ShaderUserData)};
+         VkPipelineLayoutCreateInfo layout_info{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
+         layout_info.pushConstantRangeCount = 1;
+@@ -4500,8 +4512,29 @@ private:
+         VkPipelineColorBlendStateCreateInfo blend{};
+     };
+ 
++    bool prepare_graphics_module(std::vector<std::uint32_t>& words, VkPipelineShaderStageCreateInfo& info) {
++        if (words.empty()) return false;
++        if (graphics_.deferred) {
++            pending_words_.push_back(device_.shader_modules().retain_words(std::move(words)));
++            return true;
++        }
++        info.module = device_.shader_modules().acquire(words);
++        if (!info.module) return false;
++        modules_.push_back(info.module);
++        return true;
++    }
++
+     // The graphics pipeline with the formats of the `unbound` slots (leonida::GraphicsPipeline::variant) undefined.
+-    VkPipeline build(std::uint32_t unbound) const {
++    VkPipeline build(std::uint32_t unbound) {
++        // Eager builds run under construction. For deferred recipes variant() holds variants_mutex_.
++        for (std::size_t i = 0; i < pending_words_.size(); ++i) {
++            auto& stage = recipe_.stages[i];
++            if (stage.module) continue;
++            stage.module = device_.shader_modules().acquire(*pending_words_[i]);
++            if (!stage.module) return VK_NULL_HANDLE;
++            modules_.push_back(stage.module);
++        }
++        pending_words_.clear();
+         // The stride state is last: a pipeline without vertex bindings (a full-screen pass that builds its vertices
+         // from SV_VertexID) leaves it out, since no vkCmdBindVertexBuffers2 would ever set it
+         // (VUID-vkCmdDraw-pStrides-04913).
+@@ -4594,6 +4627,9 @@ private:
+             log_once("a pipeline variant for unbound attachment slots could not be built; slots", int(unbound));
+             return VK_NULL_HANDLE;
+         }
++        if (graphics_.deferred && GetEnvironmentVariableW(L"LEONIDA_FRAME_GRAPH", nullptr, 0))
++            std::fprintf(stderr, "[frame-graph] compiled-draw-pso=%llx attachments=%x\n",
++                         static_cast<unsigned long long>(id()), unbound);
+         variants_.emplace(unbound, pipeline);
+         return pipeline;
+     }
+@@ -4606,6 +4642,7 @@ private:
+     std::map<std::uint32_t, VkPipeline> variants_;
+     VkShaderModule module_ = VK_NULL_HANDLE;
+     std::vector<VkShaderModule> modules_;
++    std::vector<leonida::ShaderModuleCache::Words> pending_words_;
+     VkDeviceSize code_base_ = 0;
+     VkDeviceSize code_bytes_ = 0;
+     bool registered_ = false;
+diff --git a/runtime/src/shader_module_cache.h b/runtime/src/shader_module_cache.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..d38029d9a4388cef7af6307ec60b77197e379002
+--- /dev/null
++++ b/runtime/src/shader_module_cache.h
+@@ -0,0 +1,140 @@
++#pragma once
++
++// One VkShaderModule per distinct SPIR-V, shared by every pipeline state built from it.
++//
++// A title creates tens of thousands of graphics pipeline states up front, most of them from a few thousand vertex and
++// pixel shaders (measured on the retail boot under Wine: 50,468 graphics PSOs in the first tenth of the run, about
++// 12.7 GB resident, #8851 A37/A42). A PipelineState keeps its modules for the variants it builds at draw time, so
++// one module per PSO and stage kept a copy of the same shader per PSO. Here a module is created on the first acquire
++// of its words and destroyed with the last release; a module that holds per-PSO edits (the depth24 patch, the f16
++// link) has other words and gets its own module, so sharing never changes what a pipeline runs.
++//
++// Thread-safe: PSOs are created and released from any thread.
++
++#include <vulkan/vulkan.h>
++
++#include <cstddef>
++#include <cstdint>
++#include <functional>
++#include <memory>
++#include <mutex>
++#include <unordered_map>
++#include <vector>
++
++namespace leonida {
++
++class ShaderModuleCache {
++public:
++    // `create` returns VK_NULL_HANDLE when vkCreateShaderModule fails; `destroy` is vkDestroyShaderModule.
++    using Create = std::function<VkShaderModule(const std::vector<std::uint32_t>& words)>;
++    using Destroy = std::function<void(VkShaderModule)>;
++
++    ShaderModuleCache(Create create, Destroy destroy) : create_(std::move(create)), destroy_(std::move(destroy)) {}
++    ShaderModuleCache(const ShaderModuleCache&) = delete;
++    ShaderModuleCache& operator=(const ShaderModuleCache&) = delete;
++
++    // Releases nothing a caller still holds: every PipelineState releases its modules before the device goes.
++    // Modules left over (a leaked PSO) are destroyed here, with the device still alive.
++    ~ShaderModuleCache() {
++        for (auto& [hash, bucket] : by_hash_)
++            for (Entry& entry : bucket) destroy_(entry.module);
++    }
++
++    using Words = std::shared_ptr<const std::vector<std::uint32_t>>;
++
++    // Pending graphics recipes keep the translated program on the CPU until replay needs it.
++    // This table retains only weak references. A hash collision still requires equal words.
++    Words retain_words(std::vector<std::uint32_t> words) {
++        const auto hash = hash_words(words);
++        std::lock_guard lock(mutex_);
++        auto& bucket = pending_[hash];
++        for (auto it = bucket.begin(); it != bucket.end();) {
++            if (auto live = it->lock()) {
++                if (*live == words) return live;
++                ++it;
++            } else {
++                it = bucket.erase(it);
++            }
++        }
++        auto program = std::make_shared<const std::vector<std::uint32_t>>(std::move(words));
++        bucket.push_back(program);
++        return program;
++    }
++
++    // The module for these words, created on first use. VK_NULL_HANDLE when creation fails (nothing is cached).
++    VkShaderModule acquire(const std::vector<std::uint32_t>& words) {
++        const std::uint64_t hash = hash_words(words);
++        std::lock_guard lock(mutex_);
++        std::vector<Entry>& bucket = by_hash_[hash];
++        for (Entry& entry : bucket) {
++            if (entry.words == words) {
++                ++entry.references;
++                ++shared_;
++                return entry.module;
++            }
++        }
++        const VkShaderModule module = create_(words);
++        if (module == VK_NULL_HANDLE) {
++            if (bucket.empty()) by_hash_.erase(hash);
++            return VK_NULL_HANDLE;
++        }
++        bucket.push_back(Entry{words, module, 1});
++        owner_[module] = hash;
++        return module;
++    }
++
++    // One release per acquire that returned `module`; the last one destroys it. Unknown modules are ignored.
++    void release(VkShaderModule module) {
++        if (module == VK_NULL_HANDLE) return;
++        std::lock_guard lock(mutex_);
++        const auto owner = owner_.find(module);
++        if (owner == owner_.end()) return;
++        const auto bucket = by_hash_.find(owner->second);
++        for (auto entry = bucket->second.begin(); entry != bucket->second.end(); ++entry) {
++            if (entry->module != module) continue;
++            if (--entry->references == 0) {
++                destroy_(module);
++                bucket->second.erase(entry);
++                if (bucket->second.empty()) by_hash_.erase(bucket);
++                owner_.erase(owner);
++            }
++            return;
++        }
++    }
++
++    // Distinct modules alive, and acquires answered with an existing module (for the device's statistics line).
++    std::size_t live() const {
++        std::lock_guard lock(mutex_);
++        return owner_.size();
++    }
++    std::uint64_t shared() const {
++        std::lock_guard lock(mutex_);
++        return shared_;
++    }
++
++private:
++    struct Entry {
++        std::vector<std::uint32_t> words;
++        VkShaderModule module;
++        std::uint32_t references;
++    };
++
++    static std::uint64_t hash_words(const std::vector<std::uint32_t>& words) {
++        std::uint64_t hash = 14695981039346656037ull;  // FNV-1a over the words
++        for (const std::uint32_t word : words) {
++            hash ^= word;
++            hash *= 1099511628211ull;
++        }
++        return hash ^ words.size();
++    }
++
++    std::unordered_map<std::uint64_t, std::vector<std::weak_ptr<const std::vector<std::uint32_t>>>> pending_;
++    Create create_;
++    Destroy destroy_;
++    mutable std::mutex mutex_;
++    std::unordered_map<std::uint64_t, std::vector<Entry>> by_hash_;
++    std::unordered_map<VkShaderModule, std::uint64_t> owner_;
++    std::uint64_t shared_ = 0;
++};
++
++}  // namespace leonida
+diff --git a/runtime/src/vulkan_replay.h b/runtime/src/vulkan_replay.h
+index 1124d2d84a5c37a85616d03710c043726183745f..4dee128f8437a9bdfd85dc33fa11355db07e61fb 100644
+--- a/runtime/src/vulkan_replay.h
++++ b/runtime/src/vulkan_replay.h
+@@ -781,6 +781,7 @@ struct GraphicsPipeline {
+     static constexpr std::uint32_t unbound_depth = 1u << 8;
+     std::function<VkPipeline(std::uint32_t unbound)> variant;
+     std::uint32_t samples = 1;  // rasterizationSamples; every bound attachment must have this count
++    bool deferred = false;  // variant() builds the actual attachment configuration on first use
+ };
+ 
+ // The 144-byte push-constant block every translated shader declares: s0..s31, heap base, code base.
+@@ -2096,7 +2097,7 @@ ReplayResult prepare_draw(const Draw& draw, Resolve&& resolve, const ReplayFunct
+         !vk.draw_indexed || !vk.bind_pipeline || !vk.push_constants)
+         return ReplayResult::unsupported;
+     const GraphicsPipeline* pipeline = vk.graphics_pipeline(draw.pipeline);
+-    if (!pipeline || !pipeline->pipeline) return ReplayResult::unresolved_resource;
++    if (!pipeline || (!pipeline->pipeline && !pipeline->deferred)) return ReplayResult::unresolved_resource;
+     if (pipeline->mesh != draw.mesh) return ReplayResult::invalid_draw;
+     if (draw.mesh && !vk.draw_mesh_tasks) return ReplayResult::unsupported;
+     if (pipeline->bindless_set && !vk.bind_descriptor_sets) return ReplayResult::unsupported;
+@@ -2159,10 +2160,6 @@ ReplayResult prepare_draw(const Draw& draw, Resolve&& resolve, const ReplayFunct
+     for (std::size_t slot = 0; slot < p.colors.size(); ++slot)
+         if (pipeline->color_formats[slot] != VK_FORMAT_UNDEFINED && !p.colors[slot].id) unbound |= 1u << slot;
+     if (pipeline->depth_format != VK_FORMAT_UNDEFINED && !p.depth.id) unbound |= GraphicsPipeline::unbound_depth;
+-    if (unbound) {
+-        p.pipeline = pipeline->variant ? pipeline->variant(unbound) : VK_NULL_HANDLE;
+-        if (!p.pipeline) return ReplayResult::unsupported;
+-    }
+ 
+     // An unbound vertex-buffer slot reads zeros, as in D3D12: the zero page with stride 0. Per-instance slots with
+     // step rate 0 also take stride 0, so every instance reads element 0.
+@@ -2203,6 +2200,10 @@ ReplayResult prepare_draw(const Draw& draw, Resolve&& resolve, const ReplayFunct
+                 return ReplayResult::unresolved_resource;
+         }
+     }
++    if (unbound || pipeline->deferred) {
++        p.pipeline = pipeline->variant ? pipeline->variant(unbound) : VK_NULL_HANDLE;
++        if (!p.pipeline) return ReplayResult::unsupported;
++    }
+     return ReplayResult::success;
+ }
+ 
+diff --git a/runtime/test/shader_module_cache_test.cpp b/runtime/test/shader_module_cache_test.cpp
+new file mode 100644
+index 0000000000000000000000000000000000000000..cb6c93df1ac655290c99dfba1ef8120338d1ca3d
+--- /dev/null
++++ b/runtime/test/shader_module_cache_test.cpp
+@@ -0,0 +1,138 @@
++// leonida::ShaderModuleCache (src/shader_module_cache.h): one module per distinct SPIR-V, shared by the pipeline
++// states built from it and destroyed with the last of them. CPU only: the create and destroy callbacks hand out and
++// take back fake handles, so the test counts what a device would have created.
++#include "../src/shader_module_cache.h"
++
++#include <cstdint>
++#include <cstdio>
++#include <set>
++#include <thread>
++#include <vector>
++
++namespace {
++
++int failures = 0;
++
++#define CHECK(condition)                                                     \
++    do {                                                                     \
++        if (!(condition)) {                                                  \
++            std::fprintf(stderr, "FAIL %s:%d: %s\n", __FILE__, __LINE__, #condition); \
++            ++failures;                                                      \
++        }                                                                    \
++    } while (0)
++
++struct FakeDevice {
++    std::uintptr_t next = 1;
++    std::set<VkShaderModule> alive;
++    std::size_t created = 0;
++    bool fail = false;
++
++    leonida::ShaderModuleCache cache() {
++        return leonida::ShaderModuleCache(
++            [this](const std::vector<std::uint32_t>&) {
++                if (fail) return VkShaderModule(VK_NULL_HANDLE);
++                const auto module = reinterpret_cast<VkShaderModule>(next++);
++                alive.insert(module);
++                ++created;
++                return module;
++            },
++            [this](VkShaderModule module) { alive.erase(module); });
++    }
++};
++
++}  // namespace
++
++int main() {
++    const std::vector<std::uint32_t> vs = {0x07230203, 0x00010500, 0, 10, 0, 1, 2};
++    const std::vector<std::uint32_t> ps = {0x07230203, 0x00010500, 0, 10, 0, 3, 4};
++    {
++        FakeDevice device;
++        auto cache = device.cache();
++        auto first = cache.retain_words(vs);
++        auto again = cache.retain_words(vs);
++        auto different = cache.retain_words(ps);
++        CHECK(first == again && first != different && device.created == 0);
++        std::weak_ptr<const std::vector<std::uint32_t>> weak = first;
++        first.reset();
++        again.reset();
++        CHECK(weak.expired() && *cache.retain_words(vs) == vs && device.created == 0);
++    }
++
++
++    std::vector<std::uint32_t> ps_patched = ps;  // a per-PSO edit (the depth24 patch): other words, its own module
++    ps_patched.back() = 5;
++
++    // 1,000 pipeline states from one vertex and one pixel shader: two modules, not 2,000.
++    {
++        FakeDevice device;
++        auto cache = device.cache();
++        std::vector<VkShaderModule> held;
++        for (int i = 0; i < 1000; ++i) {
++            held.push_back(cache.acquire(vs));
++            held.push_back(cache.acquire(ps));
++        }
++        CHECK(device.created == 2);
++        CHECK(cache.live() == 2 && device.alive.size() == 2);
++        CHECK(cache.shared() == 1998);
++        CHECK(held[0] == held[2] && held[1] == held[3] && held[0] != held[1]);
++        // Different words never share, whatever their hash.
++        const VkShaderModule patched = cache.acquire(ps_patched);
++        CHECK(patched != held[1] && device.created == 3);
++        cache.release(patched);
++        CHECK(device.alive.size() == 2);
++        // Released one by one: alive until the last pipeline state goes.
++        for (std::size_t i = 0; i + 2 < held.size(); ++i) cache.release(held[i]);
++        CHECK(device.alive.size() == 2);
++        cache.release(held[held.size() - 2]);
++        CHECK(device.alive.size() == 1);
++        cache.release(held.back());
++        CHECK(device.alive.empty() && cache.live() == 0);
++        // A released module is gone: the same words create a new one.
++        cache.release(cache.acquire(vs));
++        CHECK(device.created == 4 && device.alive.empty());
++        // Unknown and null handles are ignored.
++        cache.release(VK_NULL_HANDLE);
++        cache.release(reinterpret_cast<VkShaderModule>(std::uintptr_t(0x9999)));
++        CHECK(device.alive.empty());
++    }
++
++    // A failed creation caches nothing; the next acquire tries again.
++    {
++        FakeDevice device;
++        auto cache = device.cache();
++        device.fail = true;
++        CHECK(cache.acquire(vs) == VK_NULL_HANDLE && cache.live() == 0);
++        device.fail = false;
++        const VkShaderModule module = cache.acquire(vs);
++        CHECK(module != VK_NULL_HANDLE && cache.live() == 1);
++        cache.release(module);
++    }
++
++    // The destructor destroys what a leaked pipeline state still held.
++    {
++        FakeDevice device;
++        {
++            auto cache = device.cache();
++            cache.acquire(vs);
++            cache.acquire(ps);
++        }
++        CHECK(device.alive.empty());
++    }
++
++    // Concurrent acquires and releases from several threads (PSOs are created on the title's job threads).
++    {
++        FakeDevice device;
++        auto cache = device.cache();
++        std::vector<std::thread> threads;
++        for (int t = 0; t < 8; ++t)
++            threads.emplace_back([&] {
++                for (int i = 0; i < 2000; ++i) cache.release(cache.acquire(i % 2 ? vs : ps));
++            });
++        for (auto& thread : threads) thread.join();
++        CHECK(cache.live() == 0 && device.alive.empty());
++    }
++
++    if (failures) return 1;
++    std::printf("shader_module_cache: ok\n");
++    return 0;
++}

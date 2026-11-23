@@ -1,6 +1,39 @@
 # GTA VI Xbox to PC on an RTX 3090 with Leonida
 
-The Xbox build opens its own window on a Windows RTX 3090. The loader creates Xbox command lists and 216 native graphics pipelines. In a 27-second run all 164 submitted draws went into one intermediate target. The two presentation surfaces received clears and none of those draws. An interactive menu remains unverified. See [the native pipeline experiment](#native-graphics-pipelines-and-the-missing-presentation-draw).
+The Xbox build opens its own window on a Windows RTX 3090. With on-demand graphics compilation it now submits two draws into an intermediate texture and a third into the surface it presents. The measured RGB output is still black. An interactive GTA VI menu has not been observed.
+
+## On-demand graphics and the first draw to the display
+
+On the same PC, the small catalogue used one GPU pipeline configuration for 159 submitted draws in a 22-second run. Every draw targeted the intermediate surface. The extended catalogue produced the following results.
+
+| RTX 3090, native Windows | Measurement |
+| --- | --- |
+| Local catalogue preparation | 6,047 additional vertex and pixel modules passed `spirv-val --target-env vulkan1.3`. Three failed validation and were excluded. The main index held 6,089 entries and the native map held 6,045 distinct digests. The separate embedded and BVH catalogues brought the indexed total to 6,151. |
+| Xbox device slot 57, 27-second run | The loader accepted 7,967 of 25,450 requests, up from 216 with the small catalogue. It refused 17,483 and used zero stubs. Acceptance in this mode retains a validated recipe on the CPU. Vulkan compiled three graphics configurations for the actual draws. |
+| Where the frame went | Of 532 submitted draws, 355 targeted the same intermediate surface and 177 targeted the two alternating display sources. All nine swapchain RGB samples through present 225 were black. The harness stopped the process on time. |
+| Independent 25-second repeat | 439 submitted draws, including 146 into the display sources. All eight swapchain samples were black. Six full-resolution 3,840 × 2,160 target reads, including one of each display source, contained zero nonblack RGB pixels. The harness stopped the process on time. |
+| Alpha and bindings in the repeat | In the intermediate target, all 8,294,400 pixels had nonzero alpha after the first sampled submission. Three subsequent reads had exactly 4,147,200 pixels with nonzero alpha. In both display source reads all alpha was zero. The later two pipelines each consumed three vertex attributes from bound slot 0, had full color-write masks and used one root table in argument word 8. |
+
+Each target read happens **after the entire submission**. Multiple draws in the same submission can affect the measurement. These observations reproduce the three-draw frame seen on Wine/RDNA2 and narrow the RGB loss to the intermediate surface or earlier. They leave open what the composition shader actually sampled. [Independent Wine/RDNA2 measurements](https://github.com/ProjectLeonida/Leonida/issues/8851#issuecomment-7115442902).
+
+### Reproduce on a 32-lane GPU
+
+Start with the ladder base, nine integration files and 15 patches through [the recorded-draw probe](#before-submission), using the order documented below. Apply the next two patches on top. Module sharing is adapted from [the integration shader-module cache](https://github.com/ASTROWwwW/Leonida/commit/0c08b73638d6eaddfeb43257b6008e61c85c7fdc). The new deferred path retains post-link shader words and builds modules and attachment-specific pipelines on the first compatible draw. Compute uses the original catalogue.
+
+```powershell
+git apply ../leonida-rtx3090-bringup/patches/frame-on-demand-graphics.patch
+git apply ../leonida-rtx3090-bringup/patches/frame-composition-inputs.patch
+cmake --build build --target gta6rt d3d12_draw_test d3d12_depth24_draw_test d3d12_compute_test shader_module_cache_test
+python ../leonida-rtx3090-bringup/tools/prepare_draw_catalog.py --leonida . --base $smallCatalog --translated $translatedGraphics --dxbc $dxbc --output $drawCatalog --validator spirv-val
+$env:LEONIDA_DEFER_GRAPHICS = '1'
+$env:LEONIDA_SHADERS = $drawCatalog
+$env:LEONIDA_FRAME_GRAPH = '1'
+$env:LEONIDA_FRAME_PROBE = '1'
+```
+
+Use the 42-entry base catalogue described below for `$smallCatalog`. Supply your own full translated directory with its wave metadata for `$translatedGraphics`, and the local DXBC directory for `$dxbc`. Set `$drawCatalog` to a new sibling directory on the same drive as the DXBC files. The loader needs read access to both. The [preparation tool](tools/prepare_draw_catalog.py) makes independent shader copies and adds only conventional vertex and pixel stages marked subgroup 32 or wave-emulation class A/B. Launch with the game and runner settings used for the earlier title-memory run, including `LEONIDA_D3D12=vulkan`, `LEONIDA_ARENA_MB=2048`, `LEONIDA_XBOX_D16S8=1` and `LEONIDA_SHADOW_LOW_IMPORTS=1`. Keep deferred compilation enabled for the expanded catalogue.
+
+The draw, depth, compute and module-cache tests passed with deferred compilation both on and off. The draw fixture matched all 4,096 expected pixels and built 37 configurations on demand. The Xbox D16+S8 fixture passed in deferred mode. A second preparation of the local catalogue matched all 6,159 output files byte for byte.
 
 ## Reproduce the first black frames
 

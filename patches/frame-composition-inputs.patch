@@ -1,0 +1,152 @@
+diff --git a/runtime/shims/d3d12_com.cpp b/runtime/shims/d3d12_com.cpp
+index 7a1d0050988a7594459af005d2b9a9b8e4846187..490a84936ab41a8d5a78b08058eebfae57063b1c 100644
+--- a/runtime/shims/d3d12_com.cpp
++++ b/runtime/shims/d3d12_com.cpp
+@@ -301,7 +301,7 @@ public:
+         set_pipeline(state);
+     }
+ 
+-    // Validates shader-visible descriptor heaps and tracks bound heap identities/bases (docs/d3d12_vulkan.md §3.2/§3.4).
++    // Validates shader-visible descriptor heaps and tracks bound heap identities/bases (docs/d3d12_vulkan.md В§3.2/В§3.4).
+     void STDMETHODCALLTYPE SetDescriptorHeaps(UINT num, ID3D12DescriptorHeap* const* heaps) override {
+         d3d12_trace::record("ID3D12GraphicsCommandList::SetDescriptorHeaps");
+         if (type_ == D3D12_COMMAND_LIST_TYPE_COPY) return check(false);
+@@ -1253,6 +1253,7 @@ private:
+     struct RootState {
+         const RootArgumentLayout* layout = nullptr;
+         std::array<std::uint32_t, rt::rootsig::kMaxUserSgprs> data{};
++        std::uint32_t written = 0;  // distinguishes an explicit zero from an unset root argument in the probe
+     };
+ 
+     // D3D12 leaves root arguments undefined after a root-signature change; they start at zero here. Setting the
+@@ -1268,6 +1269,7 @@ private:
+         hold(signature);  // state.layout points into it
+         state.layout = layout;
+         state.data = {};
++        state.written = 0;
+         if (signature && !state.layout) stub("ID3D12GraphicsCommandList::Set*RootSignature(foreign root signature)");
+         // CreateRootSignature accepted it for the other bind point only (its log line says why).
+         if (layout && !(is_compute(state) ? layout->compute_ok : layout->graphics_ok)) {
+@@ -1296,9 +1298,10 @@ private:
+ 
+     // Dwords beyond the 32 user registers are what the console spills to memory; that layout is still open.
+     void write(RootState& state, std::uint32_t dword, std::uint32_t value) {
+-        if (dword < rt::rootsig::kMaxUserSgprs)
++        if (dword < rt::rootsig::kMaxUserSgprs) {
+             state.data[dword] = value;
+-        else
++            state.written |= std::uint32_t{1} << dword;
++        } else
+             stub("root arguments beyond 32 user-data dwords (spill not modelled)");
+     }
+ 
+@@ -1547,6 +1550,29 @@ private:
+         return draw_views_;
+     }
+ 
++    // Report slots, never the contents of the title's root arguments or buffers.
++    void observe_graphics_inputs(std::uint64_t draw) const {
++        const auto* layout = graphics_.layout;
++        if (!layout) return;
++        std::uint32_t tables = 0, constants = 0, views = 0, vertices = 0;
++        for (const auto& p : layout->parameters) {
++            if (p.user_offset >= graphics_.data.size()) continue;
++            const unsigned count = p.type == rt::rootsig::ParamType::Table ? 1u :
++                                   p.type == rt::rootsig::ParamType::Constants ? p.constant_count : 2u;
++            auto& mask = p.type == rt::rootsig::ParamType::Table ? tables :
++                         p.type == rt::rootsig::ParamType::Constants ? constants : views;
++            for (unsigned i = 0; i < count && p.user_offset + i < graphics_.data.size(); ++i)
++                mask |= std::uint32_t{1} << (p.user_offset + i);
++        }
++        for (unsigned i = 0; i < vertex_buffers_.size(); ++i)
++            if (vertex_buffers_[i].va && vertex_buffers_[i].size) vertices |= std::uint32_t{1} << i;
++        std::fprintf(stderr, "[frame-graph] draw-input=%llu pipeline=%llx tables=%08x constants=%08x views=%08x "
++                     "written=%08x vertex-buffers=%08x resource-heap=%d sampler-heap=%d\n",
++                     static_cast<unsigned long long>(draw), static_cast<unsigned long long>(graphics_pipeline_),
++                     tables, constants, views, graphics_.written, vertices,
++                     cbv_srv_uav_heap_ != nullptr, sampler_heap_ != nullptr);
++    }
++
+     // A draw needs a graphics pipeline, a graphics root signature and a topology.
+     void record_draw(bool indexed, UINT count, UINT instances, UINT first, INT base_vertex, UINT first_instance) {
+         static const bool probe = GetEnvironmentVariableW(L"LEONIDA_FRAME_PROBE", nullptr, 0) != 0;
+@@ -1561,6 +1587,7 @@ private:
+                              render_target_count_, static_cast<unsigned long long>(render_targets_[0].resource),
+                              viewport_.width, viewport_.height, scissor_.left, scissor_.top,
+                              scissor_.right, scissor_.bottom);
++            if (graph && n <= 32) observe_graphics_inputs(n);
+         }
+         if (!graphics_pipeline_ || !graphics_.layout || !topology_) return check(false);
+         note_direct_heap_indexing(graphics_.layout);
+@@ -1755,11 +1782,12 @@ public:
+         if (d.Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE2D || view.mip >= d.MipLevels || view.mip >= 32 ||
+             view.first_layer >= d.DepthOrArraySize || d.SampleDesc.Count != 1 || !d.Width || !d.Height) return;
+         unsigned words = 1;
++        bool rgba8 = false;
+         std::uint32_t masks[4]{};
+         switch (d.Format) {
+         case DXGI_FORMAT_R8G8B8A8_TYPELESS: case DXGI_FORMAT_R8G8B8A8_UNORM: case DXGI_FORMAT_R8G8B8A8_UNORM_SRGB:
+         case DXGI_FORMAT_B8G8R8A8_TYPELESS: case DXGI_FORMAT_B8G8R8A8_UNORM: case DXGI_FORMAT_B8G8R8A8_UNORM_SRGB:
+-            masks[0] = 0x00ffffffu; break;
++            rgba8 = true; masks[0] = 0x00ffffffu; break;
+         case DXGI_FORMAT_R10G10B10A2_TYPELESS: case DXGI_FORMAT_R10G10B10A2_UNORM:
+             masks[0] = 0x3fffffffu; break;
+         case DXGI_FORMAT_R11G11B10_FLOAT:
+@@ -1780,19 +1808,25 @@ public:
+         std::vector<std::uint32_t> pixels(count * words);
+         const UINT layer = view.first_layer * d.MipLevels + view.mip;
+         const HRESULT hr = target->ReadFromSubresource(pixels.data(), UINT(w * words * 4), UINT(count * words * 4), layer, nullptr);
+-        std::size_t lit = 0;
++        std::size_t lit = 0, alpha = 0;
+         if (SUCCEEDED(hr)) {
+             for (std::size_t i = 0; i < pixels.size(); i += words) {
+                 std::uint32_t visible = 0;
+                 for (unsigned j = 0; j < words; ++j) visible |= pixels[i + j] & masks[j];
+                 if (visible) ++lit;
++                if (rgba8 && (pixels[i] >> 24)) ++alpha;
+             }
+         }
+         std::fprintf(stderr, "[frame-graph] after-draw=%llu target=%llx format=%u mip=%u layer=%u pixels=%zu nonblack=%zu hr=%08lx\n",
+                      static_cast<unsigned long long>(draw), static_cast<unsigned long long>(view.resource), unsigned(d.Format),
+                      view.mip, view.first_layer, count, lit, static_cast<unsigned long>(hr));
++        if (rgba8 && SUCCEEDED(hr))
++            std::fprintf(stderr, "[frame-graph] target-alpha draw=%llu nonzero=%zu pixels=%zu\n",
++                         static_cast<unsigned long long>(draw), alpha, count);
+     }
+ 
++    std::vector<leonida::ResourceId> sampled_targets_;  // accessed under the queue mutex
++
+     void observe_submission(const std::vector<const leonida::CommandList*>& recorded) {
+         static std::atomic_uint64_t batches{0}, draws{0};
+         const auto batch = ++batches;
+@@ -1820,7 +1854,10 @@ public:
+                     std::fprintf(stderr, "[frame-graph] draw-arguments draw=%llu nonzero-mask=%08x\n",
+                                  static_cast<unsigned long long>(n), populated);
+                 }
+-                if (n <= 2 || n == 8 || n == 32) sample_submitted_target(target, n);
++                const bool fresh = sampled_targets_.size() < 4 &&
++                    std::find(sampled_targets_.begin(), sampled_targets_.end(), target.resource) == sampled_targets_.end();
++                if (fresh) sampled_targets_.push_back(target.resource);
++                if (fresh || n <= 2 || n == 8 || n == 32) sample_submitted_target(target, n);
+             } else if (const auto* copy = std::get_if<leonida::CopyResource>(&command)) {
+                 std::fprintf(stderr, "[frame-graph] copy-resource %llx %llx\n",
+                              static_cast<unsigned long long>(copy->src), static_cast<unsigned long long>(copy->dst));
+diff --git a/runtime/shims/d3d12_vulkan_device.cpp b/runtime/shims/d3d12_vulkan_device.cpp
+index 7981fff1deeb3215455684b9591b264923e1d6d0..465aefa1be2a06d1eba51646886f6da6084452b3 100644
+--- a/runtime/shims/d3d12_vulkan_device.cpp
++++ b/runtime/shims/d3d12_vulkan_device.cpp
+@@ -4628,8 +4628,12 @@ private:
+             return VK_NULL_HANDLE;
+         }
+         if (graphics_.deferred && GetEnvironmentVariableW(L"LEONIDA_FRAME_GRAPH", nullptr, 0))
+-            std::fprintf(stderr, "[frame-graph] compiled-draw-pso=%llx attachments=%x\n",
+-                         static_cast<unsigned long long>(id()), unbound);
++            std::fprintf(stderr, "[frame-graph] compiled-draw-pso=%llx attachments=%x vertex-slots=%08x "
++                         "attributes=%zu color0-mask=%x blend=%d cull=%x sample-mask=%08x\n",
++                         static_cast<unsigned long long>(id()), unbound, graphics_.vertex_slots, recipe_.attributes.size(),
++                         recipe_.blends.empty() ? 0u : unsigned(recipe_.blends[0].colorWriteMask),
++                         !recipe_.blends.empty() && recipe_.blends[0].blendEnable, unsigned(recipe_.raster.cullMode),
++                         recipe_.sample_mask);
+         variants_.emplace(unbound, pipeline);
+         return pipeline;
+     }
