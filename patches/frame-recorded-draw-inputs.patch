@@ -1,0 +1,28 @@
+diff --git a/runtime/shims/d3d12_com.cpp b/runtime/shims/d3d12_com.cpp
+index fe5e14452cebbba17edf0f4b6cb43ef4d8bca49e..7a1d0050988a7594459af005d2b9a9b8e4846187 100644
+--- a/runtime/shims/d3d12_com.cpp
++++ b/runtime/shims/d3d12_com.cpp
+@@ -1553,7 +1553,8 @@ private:
+         if (probe) {
+             static std::atomic_uint64_t draws{0};
+             const auto n = draws.fetch_add(1) + 1;
+-            if (n <= 4 || (n & (n - 1)) == 0)
++            static const bool graph = GetEnvironmentVariableW(L"LEONIDA_FRAME_GRAPH", nullptr, 0) != 0;
++            if (n <= (graph ? 4096u : 4u) || (n & (n - 1)) == 0)
+                 std::fprintf(stderr, "[frame-probe] draw %llu verts %u instances %u topology %u pipeline %d "
+                              "layout %d RTVs %u first RTV %llx viewport %.0fx%.0f scissor %d,%d,%d,%d\n",
+                              n, count, instances, topology_, graphics_pipeline_ != 0, graphics_.layout != 0,
+@@ -1812,6 +1813,13 @@ public:
+                              static_cast<unsigned long long>(batch), static_cast<unsigned long long>(n),
+                              static_cast<unsigned long long>(target.resource),
+                              static_cast<unsigned long long>(draw->pipeline));
++                if (n <= 4096) {
++                    std::uint32_t populated = 0;
++                    for (unsigned i = 0; i < draw->user_data.size(); ++i)
++                        if (draw->user_data[i]) populated |= std::uint32_t{1} << i;
++                    std::fprintf(stderr, "[frame-graph] draw-arguments draw=%llu nonzero-mask=%08x\n",
++                                 static_cast<unsigned long long>(n), populated);
++                }
+                 if (n <= 2 || n == 8 || n == 32) sample_submitted_target(target, n);
+             } else if (const auto* copy = std::get_if<leonida::CopyResource>(&command)) {
+                 std::fprintf(stderr, "[frame-graph] copy-resource %llx %llx\n",

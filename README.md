@@ -289,3 +289,11 @@ python ../leonida-rtx3090-bringup/tools/extend_native_graphics_catalog.py --leon
 A contributor using a full catalogue on Wine/RDNA2 measured two intermediate draws followed by a draw into the surface passed to PresentX. On this ladder run, the observed command stream lacked that final draw. The target and pipeline probes let another implementation compare the composition draw and its input surface. [Full-catalogue draw trace](https://github.com/ProjectLeonida/Leonida/issues/8851#issuecomment-7115442902).
 
 The native decoder, native proxy, stream, existing Xbox proxy and Windows device proxy tests passed. The four native-map Python tests passed. The instrumented draw fixture matched all 4,096 pixels. All fourteen patches and nine pinned files replayed successfully against the original ladder base.
+
+### Before submission
+
+Apply [the draw-input probe](patches/frame-recorded-draw-inputs.patch) after the routing patch. With both probes enabled it records the first 4,096 draw attempts before validation and a mask of populated shader argument words for submitted draws.
+
+In another 27-second run, all 229 observed draw attempts selected the same intermediate surface as their only color target. All had a graphics pipeline, root layout and triangle-list topology. Neither presentation source appeared as a target at the recording boundary. The 160 submitted draws used the same stage pair as before. Only argument word 8 was nonzero. Eleven swapchain samples through present 225 and all four intermediate readbacks were black. These counters cannot establish why the title did not issue the other passes on this stack.
+
+Matching Microsoft's public symbols for the locally loaded Windows runtime identified the longer run's faulting routine as `memset`. It attempted a write near null. Five earlier saved traces had the same routine and the same first two title call sites. This identifies the operation and leaves the origin of the invalid destination open.
