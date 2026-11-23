@@ -33,6 +33,16 @@ $stage = Read-Host "Assembly directory printed by select_trace_shaders"
 python tools/rdna2spirv.py "$stage" --out "$work/shaders/trace-catalog" --no-asm --max-shared-memory 32768 --wave64-emulate --fssm-dir "$work/shaders/dxbc/fssm"
 ```
 
+## DirectStorage and the next depth attachment
+
+Apply `patches/frame-zlib-srgb.patch` on top of the combined frame patch. It incorporates CPU inflation from [DirectStorage PR 7180](https://github.com/ItsNotRexed/Leonida/pull/7180), the typed sRGB texture handling from [PR 4493](https://github.com/ItsNotRexed/Leonida/pull/4493), storage completion counters, and timed swapchain sampling. The two patches were application-checked in sequence against the pinned base.
+
+With the small shader catalogue held constant, the earlier runtime refused compressed requests. After adding the inflater, request 8,192 completed with 525,316,348 destination bytes delivered across the run and zero failures at that observation. The DirectStorage suite passed 329 checks and the inflater suite passed. The next resource-size failure was a 2D sRGB texture with RTV and UAV flags. With the sRGB change, that allocation passed and the subsequent failure was the Xbox D16_UNORM_S8_UINT depth/stencil format. The focused sRGB/depth comparison matched the host D3D12 runtime. The broader device suite returned a nonzero exit code.
+
+The RTX 3090 reported zero optimal-tiling features for Vulkan D16_UNORM_S8_UINT. D24_UNORM_S8_UINT and D32_SFLOAT_S8_UINT both reported depth/stencil attachment support. A small-catalogue run reached over 65,000 successful presents. All timed pixel samples remained black through that run. Microsoft's DirectXTex identifies the Xbox format in its [texdiag format table](https://github.com/microsoft/DirectXTex/blob/main/Texdiag/texdiag.cpp).
+
+In a separate experiment, 1,061 local shaders translated and passed spirv-val. With the expanded catalogue the NVIDIA driver compiler terminated during startup. A software Vulkan trial also terminated inside the driver. Neither run established a menu.
+
 ## Reproduce the Windows package-read fix
 
 The test machine hit Windows sharing violation 32 when DirectStorage opened an archive for reading. The successful sharing modes pointed to an existing writable host handle. A synthetic test reproduced the conflict. Repeating the open with read sharing alone reproduced the stop. Allowing the existing writer on the retry let the process initialize its graphics resources.
