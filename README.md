@@ -1,6 +1,37 @@
 # GTA VI Xbox to PC on an RTX 3090 with Leonida
 
-This repository contains two small, independently tested changes for contributors investigating local, offline startup on Windows. The latest RTX 3090 runs passed BVH pipeline creation and reached graphics command submission. A rendered frame and an interactive main menu are still unverified.
+Local, offline startup reached the Vulkan swapchain on a Windows RTX 3090. The driver showed at least 4,096 frames. Four full-resolution readbacks contained only black pixels. The interactive main menu remains unverified.
+
+## Reproduce the first black frames
+
+Start with a clean checkout of [ladder-frame at b487b6d](https://github.com/ASTROWwwW/Leonida/tree/b487b6d8ccf1d15d723367752a71439c3db077e5). The combined patch contains the source changes used for the run, including the Windows package-read and cache-checker fixes. Apply it once to this exact base.
+
+```powershell
+git apply --check ../leonida-rtx3090-bringup/patches/ladder-frame-rtx3090.patch
+git apply ../leonida-rtx3090-bringup/patches/ladder-frame-rtx3090.patch
+cmake --build build --target gta6rt frame_pacer_test xbox_present_test device_proxy_test
+```
+
+Use your usual local package, shader catalogue and matched driver cache. Set `LEONIDA_D3D12=vulkan` and `LEONIDA_FRAME_PROBE=1` in the runner's environment. The probe records attempts, HRESULTs and the number of presented frames. It writes the swapchain pixels for attempts 1, 2, 16 and 128 under the runner's temporary directory when readback succeeds. Each filename gives the width, height and Vulkan format. Format 44 is tightly packed B8G8R8A8_UNORM.
+
+| RTX 3090 observation | Measured result |
+| --- | --- |
+| Before fixing list CPU handles and sharing frame tokens | First invalid recording call was ClearRenderTargetView. PresentX returned E_INVALIDARG with one plane and the presentation counter stayed at zero through attempt 8,192. |
+| After both changes | 10,236 successful list closes, zero failed closes, 9,613 submissions and 4,806 DrawInstanced calls. PresentX passed through attempt 4,096. |
+| Full swapchain readback | Each sampled frame was 1,904 × 714. All 1,359,456 pixels in each sample had RGB 0,0,0. |
+| Remaining failures in that trial | 49,434 pipeline creation failures accompanied messages for missing vertex and pixel programs. A guest null read terminated this run. Its link to shader availability is unproven. |
+
+The combined patch integrates the driver cache checker [#7474](https://github.com/ItsNotRexed/Leonida/pull/7474), packed texture views [#7604](https://github.com/ItsNotRexed/Leonida/pull/7604), packed stores [#7878](https://github.com/ItsNotRexed/Leonida/pull/7878), command-list CPU descriptors [#7880](https://github.com/ItsNotRexed/Leonida/pull/7880), and the shared frame token source [#7685](https://github.com/ItsNotRexed/Leonida/pull/7685). The integration wires the queue's presenter to the device token source and adapts ExecuteCommandListsX to host command lists. The frame-pacer, Xbox presentation and device proxy tests all passed locally.
+
+### Translate the shaders requested by a trace
+
+With Python 3.11 or later, the helper matches the runtime's missing-program messages to the FSSM files and disassembly in your own working directory. More than one trace can be supplied. The helper prints coverage and the path of a fresh assembly directory. Embedded executable and pipeline-library programs have separate catalogues.
+
+```powershell
+python ../leonida-rtx3090-bringup/tools/select_trace_shaders.py "$work/shaders/dxbc" "$trace"
+$stage = Read-Host "Assembly directory printed by select_trace_shaders"
+python tools/rdna2spirv.py "$stage" --out "$work/shaders/trace-catalog" --no-asm --max-shared-memory 32768 --wave64-emulate --fssm-dir "$work/shaders/dxbc/fssm"
+```
 
 ## Reproduce the Windows package-read fix
 
