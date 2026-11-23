@@ -1,0 +1,237 @@
+diff --git a/runtime/shims/d3d12_com.cpp b/runtime/shims/d3d12_com.cpp
+index 21dc079132c2e8cde25540c586ed5a8ffcb9b83e..50597c58782fe2a61c6d2d619a4664dd39699400 100644
+--- a/runtime/shims/d3d12_com.cpp
++++ b/runtime/shims/d3d12_com.cpp
+@@ -1614,6 +1614,14 @@ private:
+         leonida::Draw draw{graphics_pipeline_, data, draw_views(), depth_, index_, topology_, viewport_,
+                            scissor_, blend_factor_, front_stencil_ref_, back_stencil_ref_, indexed, count, instances,
+                            first, base_vertex, first_instance};
++        if (probe) {
++            for (const auto& p : graphics_.layout->parameters) {
++                if (p.user_offset >= draw.user_data.size()) continue;
++                const auto bit = std::uint32_t{1} << p.user_offset;
++                if (p.table_descriptors) draw.probe_tables |= bit;
++                if (p.type == rt::rootsig::ParamType::Descriptor) draw.probe_views |= bit;
++            }
++        }
+         check(list_.draw(std::move(draw)));
+     }
+ };
+diff --git a/runtime/shims/d3d12_vulkan_device.cpp b/runtime/shims/d3d12_vulkan_device.cpp
+index 2f6ab811576a5f7f1224036aee3ff35089db71b5..5116826017c3988bd562c75f225928e9649be1e4 100644
+--- a/runtime/shims/d3d12_vulkan_device.cpp
++++ b/runtime/shims/d3d12_vulkan_device.cpp
+@@ -886,6 +886,113 @@ struct DeviceState {
+         return true;
+     }
+ 
++    // Called during queue preparation with the resource registry pinned, after the CPU shadows have been refreshed.
++    // Read only registered CPU-written bindings or the title-owned source of a live shadow. Never treat a guest VA
++    // as a host pointer. The probe emits channel masks and range availability, not raw vertex or constant data.
++    bool probe_input_bytes(const leonida::ReplayFunctions& replay, std::uint64_t va, std::uint8_t* out,
++                           std::size_t bytes) {
++        if (!va || !bytes || va > UINT64_MAX - bytes) return false;
++        const std::uint8_t* host = nullptr;
++        if (replay.host_at && replay.host_at(va, bytes, host) == leonida::HostReadStatus::ok && host)
++            return copy_guarded(out, host, bytes, false);
++        if (!arena.mapped || va >= arena.size || bytes > arena.size - va) return false;
++        const auto start = reinterpret_cast<std::uintptr_t>(arena.mapped + va);
++        std::lock_guard lock(shadow_mutex);
++        for (const auto& shadow : shadows) {
++            const auto base = reinterpret_cast<std::uintptr_t>(shadow.mapped);
++            if (start >= base && start - base <= shadow.size && bytes <= shadow.size - (start - base))
++                return copy_guarded(out, shadow.pages + (start - base), bytes, false);
++        }
++        return false;
++    }
++
++    static unsigned probe_float_mask(const std::uint32_t words[4], std::uint32_t value) {
++        unsigned mask = 0;
++        for (unsigned c = 0; c < 4; ++c) {
++            const bool match = value ? words[c] == value : (words[c] & 0x7fffffff) != 0;
++            if (match) mask |= 1u << c;
++        }
++        return mask;
++    }
++
++    void probe_constant_prefix(const leonida::ReplayFunctions& replay, std::uint64_t draw, unsigned word,
++                               const char* kind, std::uint64_t va, std::uint64_t limit) {
++        unsigned readable = 0, nonzero = 0, ones = 0;
++        for (unsigned i = 0; va && i < 4 && (i + 1) * 16 <= limit; ++i) {
++            std::uint32_t words[4]{};
++            if (va > UINT64_MAX - i * 16 || !probe_input_bytes(replay, va + i * 16,
++                                                               reinterpret_cast<std::uint8_t*>(words), sizeof(words)))
++                continue;
++            readable |= 1u << i;
++            nonzero |= probe_float_mask(words, 0) << (4 * i);
++            ones |= probe_float_mask(words, 0x3f800000) << (4 * i);
++        }
++        std::fprintf(stderr, "[frame-graph] constant-prefix draw=%llu word=%u kind=%s readable=%x nonzero=%04x ones=%04x\n",
++                     static_cast<unsigned long long>(draw), word, kind, readable, nonzero, ones);
++    }
++
++    void probe_draw_inputs(const leonida::Draw& draw, const leonida::GraphicsPipeline& pipeline,
++                           const leonida::ReplayFunctions& replay) {
++        static std::atomic_uint64_t draws{0};
++        const auto n = ++draws;
++        if (n > 32) return;
++        std::fprintf(stderr, "[frame-graph] input-snapshot=%llu pipeline=%llx\n",
++                     static_cast<unsigned long long>(n), static_cast<unsigned long long>(draw.pipeline));
++        for (unsigned reg = 0; reg < draw.user_data.size(); ++reg) {
++            const auto bit = std::uint32_t{1} << reg;
++            const std::uint64_t lo = draw.user_data[reg];
++            if ((draw.probe_views & bit) && reg + 1 < draw.user_data.size())
++                probe_constant_prefix(replay, n, reg, "root", lo | (std::uint64_t(draw.user_data[reg+1]) << 32), 64);
++            if (!(draw.probe_tables & bit) || !lo) continue;
++            leonida::gfx10::BufferWords words{};
++            {
++                std::lock_guard lock(cbv_heap_mutex);
++                const auto next = cbv_heaps.upper_bound(lo);
++                if (next == cbv_heaps.begin() || lo + sizeof(words) > std::prev(next)->second) continue;
++                std::memcpy(words.data(), arena.mapped + lo, sizeof(words));
++            }
++            leonida::gfx10::Buffer view{};
++            if (!leonida::gfx10::decode(words, view) || !view.address || !view.num_records) {
++                std::fprintf(stderr, "[frame-graph] first-buffer draw=%llu valid=0\n", static_cast<unsigned long long>(n));
++                continue;
++            }
++            const auto bytes = std::uint64_t(view.num_records) * (view.stride ? view.stride : 1);
++            probe_constant_prefix(replay, n, reg, "table0", view.address, bytes);
++        }
++        const auto& attr = pipeline.probe_vertex_color;
++        if (!draw.views || draw.indexed || draw.mesh || attr.binding >= draw.views->vertex_buffers.size()) return;
++        const auto& vb = draw.views->vertex_buffers[attr.binding];
++        unsigned bytes = 0;
++        switch (attr.format) {
++        case VK_FORMAT_R8G8B8A8_UNORM: case VK_FORMAT_B8G8R8A8_UNORM: bytes = 4; break;
++        case VK_FORMAT_R32G32B32A32_SFLOAT: bytes = 16; break;
++        default: break;
++        }
++        unsigned readable = 0, nonzero = 0, ones = 0;
++        for (unsigned i = 0; bytes && i < std::min(draw.count, 3u); ++i) {
++            const auto row = std::uint64_t(draw.first) + i;
++            if (vb.stride && row > (UINT64_MAX - attr.offset) / vb.stride) continue;
++            const auto at = row * vb.stride + attr.offset;
++            std::uint32_t words[4]{};
++            if (at > vb.size || bytes > vb.size - at || vb.va > UINT64_MAX - at ||
++                !probe_input_bytes(replay, vb.va + at, reinterpret_cast<std::uint8_t*>(words), bytes)) continue;
++            readable |= 1u << i;
++            if (bytes == 16) {
++                nonzero |= probe_float_mask(words, 0) << (4*i);
++                ones |= probe_float_mask(words, 0x3f800000) << (4*i);
++            } else {
++                for (unsigned c = 0; c < 4; ++c) {
++                    const unsigned channel = attr.format == VK_FORMAT_B8G8R8A8_UNORM && c < 3 ? 2 - c : c;
++                    const auto v = (words[0] >> (8 * channel)) & 0xffu;
++                    if (v) nonzero |= 1u << (4*i+c);
++                    if (v == 255) ones |= 1u << (4*i+c);
++                }
++            }
++        }
++        std::fprintf(stderr, "[frame-graph] vertex-color draw=%llu format=%d readable=%x nonzero=%03x ones=%03x\n",
++                     static_cast<unsigned long long>(n), int(attr.format), readable, nonzero, ones);
++    }
++
+     // The shader-visible CBV/SRV/UAV heaps (arena offset -> end), for the scan of bound tables before a submission.
+     std::mutex cbv_heap_mutex;
+     std::map<VkDeviceSize, VkDeviceSize> cbv_heaps;
+@@ -4128,6 +4235,8 @@ public:
+             if (!input) continue;  // the shader does not read this element
+             attributes.push_back({input->register_index, element.InputSlot, format, offset});
+             const bool instance = element.InputSlotClass == D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA;
++            if (!instance && !element.SemanticIndex && equal_semantic(input->semantic, "COLOR"))
++                graphics_.probe_vertex_color = attributes.back();
+             // Step rate 0: every instance reads element 0, which a stride of 0 gives (set at each draw).
+             if (instance && element.InstanceDataStepRate == 0) graphics_.zero_step_slots |= 1u << element.InputSlot;
+             if (instance && element.InstanceDataStepRate > 1) {
+@@ -5614,6 +5723,10 @@ public:
+                                                                   info.xdxr_acceleration_structures &&
+                                                                       info.buffer_device_address);
+         state_.context->set_before_execute([this] { state_.refresh_shadows(); });
++        if (GetEnvironmentVariableW(L"LEONIDA_FRAME_GRAPH", nullptr, 0))
++            state_.context->set_draw_input_observer([this](const auto& draw, const auto& pipeline, const auto& replay) {
++                state_.probe_draw_inputs(draw, pipeline, replay);
++            });
+         {
+             char text[16] = {};
+             size_t length = 0;
+diff --git a/runtime/src/command_list.h b/runtime/src/command_list.h
+index bce7ef6584e3d6fbc8748275b29df003963fb27c..a80d1b758fe8c527dc8e433560d771c1d9f576de 100644
+--- a/runtime/src/command_list.h
++++ b/runtime/src/command_list.h
+@@ -440,6 +440,7 @@ struct Draw {
+     std::int32_t base_vertex = 0;
+     std::uint32_t first_instance = 0;
+     bool mesh = false;
++    std::uint32_t probe_tables = 0, probe_views = 0;  // root argument classes captured by the frame probe
+ };
+ 
+ // D3D12_TEXTURE_DATA_PITCH_ALIGNMENT and D3D12_TEXTURE_DATA_PLACEMENT_ALIGNMENT.
+diff --git a/runtime/src/vulkan_backend.h b/runtime/src/vulkan_backend.h
+index 14d105a48f2e6798aeab36b2fde7c600699c5712..282e63b86a8ffed0d311a8daa8f858aaf4570915 100644
+--- a/runtime/src/vulkan_backend.h
++++ b/runtime/src/vulkan_backend.h
+@@ -1394,6 +1394,9 @@ public:
+     // `before` is called at the start of every submission of command lists (a held batch: when it is released),
+     // before any lock here is taken: the device re-copies its slot-133 shadow buffers from the title's pages there.
+     // Set once, before the first queue exists.
++    void set_draw_input_observer(decltype(ReplayFunctions::observe_draw_inputs) observer) {
++        replay_.observe_draw_inputs = std::move(observer);
++    }
+     void set_before_execute(std::function<void()> before) { before_execute_ = std::move(before); }
+ 
+     void set_bindless_prepare(std::function<bool(VkCommandBuffer)> prepare) {
+diff --git a/runtime/src/vulkan_replay.h b/runtime/src/vulkan_replay.h
+index 4dee128f8437a9bdfd85dc33fa11355db07e61fb..045a54abf5e99ed03e973f6223e8e2ebf7ffb5b5 100644
+--- a/runtime/src/vulkan_replay.h
++++ b/runtime/src/vulkan_replay.h
+@@ -782,6 +782,7 @@ struct GraphicsPipeline {
+     std::function<VkPipeline(std::uint32_t unbound)> variant;
+     std::uint32_t samples = 1;  // rasterizationSamples; every bound attachment must have this count
+     bool deferred = false;  // variant() builds the actual attachment configuration on first use
++    VkVertexInputAttributeDescription probe_vertex_color{0, 32, VK_FORMAT_UNDEFINED, 0};  // per-vertex COLOR0 only
+ };
+ 
+ // The 144-byte push-constant block every translated shader declares: s0..s31, heap base, code base.
+@@ -872,6 +873,7 @@ struct ReplayFunctions {
+     // Host bytes for a whole console VA range; `not_cpu_written` when it names GPU-writable memory. For small
+     // CPU-written inputs, such as the pointer list of an ARRAY_OF_POINTERS TLAS build.
+     std::function<HostReadStatus(std::uint64_t va, std::uint64_t bytes, const std::uint8_t*&)> host_at;
++    std::function<void(const Draw&, const GraphicsPipeline&, const ReplayFunctions&)> observe_draw_inputs;
+     // Zeroed memory that unbound vertex-buffer slots and an unbound index buffer read (D3D12 reads zeros there).
+     VkBuffer zero_buffer = VK_NULL_HANDLE;
+     VkDeviceSize zero_offset = 0;
+@@ -2204,6 +2206,7 @@ ReplayResult prepare_draw(const Draw& draw, Resolve&& resolve, const ReplayFunct
+         p.pipeline = pipeline->variant ? pipeline->variant(unbound) : VK_NULL_HANDLE;
+         if (!p.pipeline) return ReplayResult::unsupported;
+     }
++    if (vk.observe_draw_inputs) vk.observe_draw_inputs(draw, *pipeline, vk);
+     return ReplayResult::success;
+ }
+ 
+diff --git a/runtime/test/d3d12_draw_test.cpp b/runtime/test/d3d12_draw_test.cpp
+index b979ea42b98963ae937928323e9838c6aa50d19c..5ced7be6904a8d08add3ed20368c7b6ca6b8d6b2 100644
+--- a/runtime/test/d3d12_draw_test.cpp
++++ b/runtime/test/d3d12_draw_test.cpp
+@@ -57,7 +57,9 @@ static_assert(offsetof(Vertex, wrong_color) == 16);
+ 
+ }  // namespace
+ 
+-int main() {
++int main(int argc, char** argv) {
++    const bool upload_vertices = argc == 2 && std::strcmp(argv[1], "--upload-vertices") == 0;
++    if (argc != 1 && !upload_vertices) return 2;
+     vktest::Device d;
+     const auto device_status = d.initialize();
+     if (device_status == vktest::DeviceStatus::unavailable) {
+@@ -381,7 +383,9 @@ int main() {
+         // State for the draws; the pipeline came with CreateCommandList.
+         list->SetGraphicsRootSignature(root.p);
+         list->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+-        const D3D12_VERTEX_BUFFER_VIEW vbv{vertex_buffer->GetGPUVirtualAddress(), sizeof(vertices), sizeof(Vertex)};
++        // The identical upload copy gives the frame probe a CPU-readable COLOR0 positive control.
++        auto* vertex_source = upload_vertices ? upload.p : vertex_buffer.p;
++        const D3D12_VERTEX_BUFFER_VIEW vbv{vertex_source->GetGPUVirtualAddress(), sizeof(vertices), sizeof(Vertex)};
+         list->IASetVertexBuffers(0, 1, &vbv);
+         const D3D12_INDEX_BUFFER_VIEW ibv{upload_va + 256, sizeof(indices), DXGI_FORMAT_R16_UINT};
+         list->IASetIndexBuffer(&ibv);

@@ -1,0 +1,62 @@
+diff --git a/runtime/shims/d3d12_com.cpp b/runtime/shims/d3d12_com.cpp
+index 50597c58782fe2a61c6d2d619a4664dd39699400..d79e7233fb1e5956bf6e7b1e399546825fa2dd2b 100644
+--- a/runtime/shims/d3d12_com.cpp
++++ b/runtime/shims/d3d12_com.cpp
+@@ -1360,6 +1360,7 @@ private:
+     RootState compute_;
+     RootState graphics_;
+     std::uintptr_t compute_pipeline_ = 0;
++    bool probe_pipeline_set_ = false, probe_pipeline_supplied_ = false;
+     std::uintptr_t graphics_pipeline_ = 0;
+     const GraphicsTableSpans* graphics_table_spans_ = nullptr;  // held PSO owns these until Reset
+     ID3D12DescriptorHeap* cbv_srv_uav_heap_ = nullptr;
+@@ -1427,6 +1428,8 @@ private:
+     }
+ 
+     void set_pipeline(ID3D12PipelineState* state) {
++        probe_pipeline_set_ = true;
++        probe_pipeline_supplied_ = state != nullptr;
+         hold(state);
+         compute_pipeline_ = compute_pipeline_id(state);
+         graphics_pipeline_ = graphics_pipeline_id(state, &graphics_table_spans_);
+@@ -1514,6 +1517,7 @@ private:
+         depth_ = {};
+         blend_factor_ = {1, 1, 1, 1};
+         set_pipeline(state);
++        probe_pipeline_set_ = false;
+     }
+ 
+     void set_vertex_buffers(UINT start, UINT count, const D3D12_VERTEX_BUFFER_VIEW* views) {
+@@ -1533,6 +1537,14 @@ private:
+     }
+ 
+     void record_dispatch(UINT x, UINT y, UINT z) {
++        static const bool observe = GetEnvironmentVariableW(L"LEONIDA_FRAME_GRAPH", nullptr, 0) != 0;
++        static std::atomic_uint64_t dispatches{0};
++        if (observe && ++dispatches <= 4096)
++            std::fprintf(stderr, "[frame-graph] dispatch-input list=%p layout=%p pipeline=%llu graphics=%d "
++                         "last-set=%d supplied=%d groups=%u,%u,%u\n",
++                         static_cast<void*>(this), static_cast<const void*>(compute_.layout),
++                         static_cast<unsigned long long>(compute_pipeline_), graphics_pipeline_ != 0,
++                         probe_pipeline_set_, probe_pipeline_supplied_, x, y, z);
+         if (!compute_pipeline_ || !compute_.layout) return check(false);
+         note_direct_heap_indexing(compute_.layout);
+         check(list_.dispatch({compute_pipeline_, compute_user_data(), x, y, z}));
+diff --git a/runtime/shims/d3d12_vulkan_device.cpp b/runtime/shims/d3d12_vulkan_device.cpp
+index 5116826017c3988bd562c75f225928e9649be1e4..81a36a49248df07efd7df2918fb548719664ac6c 100644
+--- a/runtime/shims/d3d12_vulkan_device.cpp
++++ b/runtime/shims/d3d12_vulkan_device.cpp
+@@ -4562,6 +4562,13 @@ public:
+         bool ambiguous = false;
+         const leonida::ShaderEntry* entry = pick_entry(library->program_candidates("cs", program, &ambiguous),
+                                                        [](const leonida::ShaderEntry&) { return true; });
++        static const bool observe = GetEnvironmentVariableW(L"LEONIDA_FRAME_GRAPH", nullptr, 0) != 0;
++        static std::atomic_uint64_t requests{0};
++        if (observe && ++requests <= 16384)
++            std::fprintf(stderr, "[frame-graph] compute-request layout=%p entry=%d code=%s state=%s\n",
++                         static_cast<const void*>(root_signature_layout(desc.pRootSignature)), entry != nullptr,
++                         leonida::sha256_hex(program.bytes).c_str(),
++                         program.state.empty() ? "-" : leonida::sha256_hex(program.state).c_str());
+         if (!entry) {
+             const bool fspx = program.kind == leonida::ComputeProgram::Kind::fspx;
+             if (fspx && !program.state.empty() && GetEnvironmentVariableW(L"LEONIDA_FRAME_PROBE", nullptr, 0))

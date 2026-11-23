@@ -2,6 +2,31 @@
 
 The Xbox build opens its own window on a Windows RTX 3090. With on-demand graphics compilation it now submits two draws into an intermediate texture and a third into the surface it presents. The final pass now has a verified view of the intermediate texture. Both surfaces are still black in the sampled frames. An interactive GTA VI menu has not been observed.
 
+## Where black enters the frame
+
+On an RTX 3090, bounded samples of the game's first two intermediate draws already predict black RGB. In four inspected first-pass draws the three vertices formed a nondegenerate triangle. All three vertex colors were opaque black, and the pixel stage forwarded that color. In ten inspected second-pass draws the vertices were white, but the pixel stage multiplied them by a zero uniform. These are measurements of CPU-authored inputs at submission time. Fragment coverage and the reason the game selected those inputs remain open.
+
+The generic input probe reports readability, nonzero values and exact ones for up to three vertex colors and the first four float4 constants. The controlled upload-buffer draw and its default-buffer variant both matched all 4,096 expected GPU pixels. The upload path reported the three expected red colors. The probe marked the default-buffer vertex data unreadable. A separate local analysis decoded the first pass's own buffer format. That game-specific decoder and the original inputs are outside this repository.
+
+In another 26-second run, all 56 observed compute dispatches used 5 × 5 × 33 groups and the same root layout. The title supplied a null pipeline at command-list reset and never supplied one through SetPipelineState before those dispatches. The catalogue had missed 1,050 distinct compute programs requested against that layout. The layout and group count alone do not identify which program the title intended.
+
+The runtime also rejected the game's 3D unordered-access view. The volume patch implements a full-depth 3D view at a selected mip, including the default descriptor and the explicit all-remaining-slices form. A restricted W slice range remains unsupported and produces a null descriptor. In a fresh 26-second run, Vulkan registered the game's 33 × 33 × 33 RGBA16F storage view at mip zero. The game submitted 304 draws, 101 into the display sources. Four full intermediate reads, two full display-source reads and seven swapchain samples still contained zero nonblack RGB pixels.
+
+### Reproduce the input and volume checks
+
+Apply these after the [static table-span patch](patches/frame-shader-table-spans.patch), in this order. Use the settings for on-demand graphics below. The tests build their own fixtures.
+
+```powershell
+git apply ../leonida-rtx3090-bringup/patches/frame-authored-draw-inputs.patch
+git apply ../leonida-rtx3090-bringup/patches/frame-dispatch-inputs.patch
+git apply ../leonida-rtx3090-bringup/patches/frame-volume-uav.patch
+cmake --build build --target gta6rt d3d12_draw_test d3d12_compute_test d3d12_descriptor_test vk_bindless_test
+ctest --test-dir build --output-on-failure -R '^(d3d12_descriptor|d3d12_compute|vk_bindless_ps_imgatomic)$'
+.uild\d3d12_draw_test.exe --upload-vertices
+```
+
+The descriptor fixture checks both ways of naming the entire depth at mip one, the default view at mip zero and five rejected ranges. The Vulkan atomic fixture separately verified all 64 voxels of a 4 × 4 × 4 volume. All three CTest fixtures passed. Look for `volume-uav` with `registered=1` in a local run with `LEONIDA_FRAME_GRAPH=1`. The input probe uses `input-snapshot`, `vertex-color` and `constant-prefix`. The `dispatch-input` probe records pipeline and layout availability at the call. [Microsoft's definition of a 3D UAV](https://learn.microsoft.com/en-us/windows/win32/api/d3d12/ns-d3d12-d3d12_tex3d_uav).
+
 ## On-demand graphics and the first draw to the display
 
 On the same PC, the small catalogue used one GPU pipeline configuration for 159 submitted draws in a 22-second run. Every draw targeted the intermediate surface. The extended catalogue produced the following results.

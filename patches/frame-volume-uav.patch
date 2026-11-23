@@ -1,0 +1,90 @@
+diff --git a/runtime/shims/d3d12_vulkan_device.cpp b/runtime/shims/d3d12_vulkan_device.cpp
+index 81a36a49248df07efd7df2918fb548719664ac6c..9ae2294c6c444f92ae069189a5d0aa36b5d85f13 100644
+--- a/runtime/shims/d3d12_vulkan_device.cpp
++++ b/runtime/shims/d3d12_vulkan_device.cpp
+@@ -7376,7 +7376,10 @@ public:
+         view.mip_count = 1;
+         if (!desc) {
+             const bool array = r->desc().DepthOrArraySize > 1;
+-            if (r->desc().Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE1D && !array) {
++            if (r->desc().Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE3D) {
++                view.type = leonida::gfx10::ImageType::image_3d;
++                view.layer_count = 1;
++            } else if (r->desc().Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE1D && !array) {
+                 view.type = leonida::gfx10::ImageType::image_1d;
+                 view.layer_count = 1;
+             } else if (array)
+@@ -7394,6 +7397,21 @@ public:
+                 view.layer_count = 1;
+                 view.plane = desc->Texture2D.PlaneSlice;
+                 break;
++            case D3D12_UAV_DIMENSION_TEXTURE3D: {
++                const auto& range = desc->Texture3D;
++                if (r->desc().Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE3D || range.MipSlice >= r->desc().MipLevels)
++                    return;
++                const UINT depth = std::max(1u, UINT(r->desc().DepthOrArraySize) >> range.MipSlice);
++                // A standard Vulkan 3D view covers every W slice at its selected mip.
++                if (range.FirstWSlice || (range.WSize != UINT_MAX && range.WSize != depth)) {
++                    log_once("partial or invalid volume UAV depth range; requested count", int(range.WSize));
++                    return;
++                }
++                view.type = leonida::gfx10::ImageType::image_3d;
++                view.first_mip = range.MipSlice;
++                view.layer_count = 1;
++                break;
++            }
+             case D3D12_UAV_DIMENSION_TEXTURE2DARRAY:
+                 view.type = leonida::gfx10::ImageType::image_2d_array;
+                 view.first_mip = desc->Texture2DArray.MipSlice;
+@@ -9159,6 +9177,13 @@ private:
+         const bool registered = state_.bind_image(words, image, resource.image(), resource.format(),
+                                                   resource.aspects(), storage, resource.has_view_format_list(),
+                                                   resource.uint_backed());
++        if (storage && image.type == leonida::gfx10::ImageType::image_3d) {
++            static const bool observe = GetEnvironmentVariableW(L"LEONIDA_FRAME_GRAPH", nullptr, 0) != 0;
++            static std::atomic_uint64_t volumes{0};
++            if (observe && ++volumes <= 64)
++                std::fprintf(stderr, "[frame-graph] volume-uav size=%u,%u,%u mip=%u format=%u registered=%d\n",
++                             image.width, image.height, image.depth, image.first_mip, UINT(resource.desc().Format), registered);
++        }
+         if (registered && resource.sparse_image()) state_.context->note_shader_image(resource.id());
+         if (leonida::gfx10::multisampled(image.type) && !registered) return;
+         std::memcpy(reinterpret_cast<void*>(destination.ptr), words.data(), sizeof(words));
+diff --git a/runtime/test/d3d12_descriptor_test.cpp b/runtime/test/d3d12_descriptor_test.cpp
+index aaa252035f08eb6e836195d29f948278d816ecbf..575ecf0d32f7f83e5ecb9261010e6ec6212e2319 100644
+--- a/runtime/test/d3d12_descriptor_test.cpp
++++ b/runtime/test/d3d12_descriptor_test.cpp
+@@ -1106,6 +1106,33 @@ int main() {
+         device->CreateShaderResourceView(volume.p, &volume_view, view_slot(volume_mip));
+         EXPECT(image_at(volume_mip, vol) && vol.type == g::ImageType::image_3d);
+         EXPECT(vol.first_mip == 1 && vol.mip_count == 1 && vol.depth == 4 && vol.resource_mips == 2);
++        {
++            auto desc = volume_desc;
++            desc.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
++            Ref<ID3D12Resource> writable_volume;
++            EXPECT(SUCCEEDED(device->CreateCommittedResource(&default_heap, D3D12_HEAP_FLAG_NONE, &desc,
++                                                             D3D12_RESOURCE_STATE_UNORDERED_ACCESS, nullptr,
++                                                             IID_PPV_ARGS(&writable_volume.p))));
++            device->CreateUnorderedAccessView(writable_volume.p, nullptr, nullptr, view_slot(null_slot));
++            EXPECT(image_at(null_slot, vol) && vol.type == g::ImageType::image_3d &&
++                   vol.depth == 4 && vol.first_mip == 0 && vol.mip_count == 1 && vol.layer_count == 1);
++            D3D12_UNORDERED_ACCESS_VIEW_DESC uav{};
++            uav.Format = desc.Format;
++            uav.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE3D;
++            for (UINT count : {2u, UINT_MAX}) {
++                uav.Texture3D = {1, 0, count};
++                device->CreateUnorderedAccessView(writable_volume.p, nullptr, &uav, view_slot(null_slot));
++                EXPECT(image_at(null_slot, vol) && vol.type == g::ImageType::image_3d &&
++                       vol.first_mip == 1 && vol.mip_count == 1 && vol.layer_count == 1);
++            }
++            for (D3D12_TEX3D_UAV range : {D3D12_TEX3D_UAV{1, 1, UINT_MAX}, {1, 0, 1}, {1, 0, 0},
++                                           {1, 0, 3}, {2, 0, UINT_MAX}}) {
++                uav.Texture3D = range;
++                std::memset(view_bytes(null_slot), 0x77, step);
++                device->CreateUnorderedAccessView(writable_volume.p, nullptr, &uav, view_slot(null_slot));
++                EXPECT(null_at(null_slot));
++            }
++        }
+         auto typeless_desc = volume_desc;
+         typeless_desc.Format = DXGI_FORMAT_R8G8B8A8_TYPELESS;
+         Ref<ID3D12Resource> typeless_volume;
