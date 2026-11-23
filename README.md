@@ -1,6 +1,6 @@
 # GTA VI Xbox to PC on an RTX 3090 with Leonida
 
-Local, offline startup reached the Vulkan swapchain on a Windows RTX 3090. The driver showed at least 4,096 frames. Four full-resolution readbacks contained only black pixels. The interactive main menu remains unverified.
+Local, offline startup reached the title's own window on a Windows RTX 3090. Ten swapchain samples in that run contained only black pixels. The latest tested frame path and its limits are documented below. The interactive main menu remains unverified.
 
 ## Reproduce the first black frames
 
@@ -50,6 +50,19 @@ In a separate experiment, 1,061 local shaders translated and passed spirv-val. W
 Build `d3d12_depth24_draw_test` with glslang available. On the RTX 3090, `d3d12_depth24_draw_test --xbox-d16s8` passed four 64 × 64 GPU comparisons. Two nearby float values in the same D16 code passed EQUAL at every pixel. Values in the next code failed at every pixel. This held with the generated depth-only fragment stage and an explicit fragment depth output. Each result was verified through stencil readback. The existing D24 draw suite also passed.
 
 With the small shader catalogue, the game passed the former depth allocation. It then exhausted the default 256 MiB GPU address arena while requesting a 90 MiB buffer. Running with `LEONIDA_ARENA_MB=2048` reached a B4G4R4A4_UNORM render-target allocation. The RTX 3090 exposes the corresponding 4-bit Vulkan formats for sampling with no color-attachment feature. The boot samples remained black.
+
+### Packed 4-bit targets and the title window
+
+Apply `patches/frame-b4444-title-window.patch` after the D16+S8 patch. This adds full-surface and rectangle clears for a B4G4R4A4 render target when the GPU can sample its packed format but cannot render directly to it. An R16_UINT backing holds the packed texels. The test reads back all 2,048 texels, including all four channels and a half-step rounding case in the rectangle. Drawing into the emulated format still requires a fragment-output conversion. Such a pipeline returns `E_NOTIMPL`.
+
+The presenter now uses the visible window owned by the title when it exists. The window finder and its fixture come from [NiiRoZz's PR 8591](https://github.com/ItsNotRexed/Leonida/pull/8591). To check the integration in an x64 Visual Studio developer shell, run:
+
+```powershell
+cmake --build build --target gta6rt title_window_test d3d12_b5g5r5a1_uav_test
+ctest --test-dir build -R "^(title_window|d3d12_b4g4r4a4_rt|d3d12_b5g5r5a1_uav)$" --output-on-failure
+```
+
+All three fixtures passed here. On the small catalogue, the title created the packed target, recorded full-screen triangle draws, and presented through its own window. Ten readbacks of 2,564 × 1,061 pixels through present 9,783 were black. The draw samples named one intermediate render target, while successive presents alternated between two other resources. This observation alone cannot establish whether a later copy or composition wrote to the displayed resources. In a repeat, device slot 108 returned an invalid allocation size for a six-slice R16_TYPELESS depth texture with unordered access.
 
 ## Reproduce the Windows package-read fix
 

@@ -1,0 +1,495 @@
+diff --git a/runtime/CMakeLists.txt b/runtime/CMakeLists.txt
+index 5e7da0cec97dcd792e9f13db2dd902065d91d06e..687aaf3e376dc17d4181928ecb9d18e348d97b35 100644
+--- a/runtime/CMakeLists.txt
++++ b/runtime/CMakeLists.txt
+@@ -497,6 +497,18 @@ if(BUILD_TESTING)
+   add_executable(xbox_present_readback_size_test test/xbox_present_readback_size_test.cpp)
+   add_test(NAME xbox_present_readback_size COMMAND xbox_present_readback_size_test)
+ 
++  # The title's own window, where PresentX shows its frames (shims/title_window.h): user32 only, no device.
++  if(WIN32)
++    add_executable(title_window_test test/title_window_test.cpp)
++    target_include_directories(title_window_test PRIVATE shims)
++    target_compile_definitions(title_window_test PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX UNICODE _UNICODE)
++    if(MSVC)
++      target_compile_options(title_window_test PRIVATE /W4 /permissive- /utf-8)
++    endif()
++    target_link_libraries(title_window_test PRIVATE user32)
++    add_test(NAME title_window COMMAND title_window_test)
++  endif()
++
+   add_executable(pipeline_cache_file_test test/pipeline_cache_file_test.cpp)
+   add_test(NAME pipeline_cache_file COMMAND pipeline_cache_file_test)
+ 
+@@ -1855,7 +1867,8 @@ if(TARGET Vulkan::Headers)
+     target_compile_definitions(d3d12_b5g5r5a1_uav_test PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
+     target_compile_options(d3d12_b5g5r5a1_uav_test PRIVATE /W4 /permissive- /utf-8)
+     add_test(NAME d3d12_b5g5r5a1_uav COMMAND d3d12_b5g5r5a1_uav_test)
+-    set_tests_properties(d3d12_b5g5r5a1_uav PROPERTIES SKIP_RETURN_CODE 77)
++    add_test(NAME d3d12_b4g4r4a4_rt COMMAND d3d12_b5g5r5a1_uav_test --rt4444)
++    set_tests_properties(d3d12_b5g5r5a1_uav d3d12_b4g4r4a4_rt PROPERTIES SKIP_RETURN_CODE 77)
+     add_executable(d3d12_r9g9b9e5_uav_test test/d3d12_r9g9b9e5_uav_test.cpp)
+     target_link_libraries(d3d12_r9g9b9e5_uav_test PRIVATE gta6rt_d3d12_com d3d12 dxgi)
+     target_compile_definitions(d3d12_r9g9b9e5_uav_test PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
+diff --git a/runtime/shims/d3d12_com.cpp b/runtime/shims/d3d12_com.cpp
+index d218e1b32ab0d0add76b1cdeb4af33bd23d6238f..ab774052615dac05345c297fe18ff7dc93fe90b6 100644
+--- a/runtime/shims/d3d12_com.cpp
++++ b/runtime/shims/d3d12_com.cpp
+@@ -1427,6 +1427,18 @@ private:
+ 
+     // A draw needs a graphics pipeline, a graphics root signature and a topology.
+     void record_draw(bool indexed, UINT count, UINT instances, UINT first, INT base_vertex, UINT first_instance) {
++        static const bool probe = GetEnvironmentVariableW(L"LEONIDA_FRAME_PROBE", nullptr, 0) != 0;
++        if (probe) {
++            static std::atomic_uint64_t draws{0};
++            const auto n = draws.fetch_add(1) + 1;
++            if (n <= 4 || (n & (n - 1)) == 0)
++                std::fprintf(stderr, "[frame-probe] draw %llu verts %u instances %u topology %u pipeline %d "
++                             "layout %d RTVs %u first RTV %llx viewport %.0fx%.0f scissor %d,%d,%d,%d\n",
++                             n, count, instances, topology_, graphics_pipeline_ != 0, graphics_.layout != 0,
++                             render_target_count_, static_cast<unsigned long long>(render_targets_[0].resource),
++                             viewport_.width, viewport_.height, scissor_.left, scissor_.top,
++                             scissor_.right, scissor_.bottom);
++        }
+         if (!graphics_pipeline_ || !graphics_.layout || !topology_) return check(false);
+         note_direct_heap_indexing(graphics_.layout);
+         // No viewport (never set, or unbound with RSSetViewports(0)) or an empty one: D3D12 rasterizes nothing,
+diff --git a/runtime/shims/d3d12_vulkan_device.cpp b/runtime/shims/d3d12_vulkan_device.cpp
+index 86fc53396e34ee0c8e91bfef5920319e53195a45..229649b2cd30c2b7b8fb3d73ee67cb2bdfdd0dc2 100644
+--- a/runtime/shims/d3d12_vulkan_device.cpp
++++ b/runtime/shims/d3d12_vulkan_device.cpp
+@@ -991,6 +991,18 @@ struct DeviceState {
+     // The format a texture description is created with, D24S8 and R9G9B9E5 UAV fallbacks included.
+     Format texture_format(const D3D12_RESOURCE_DESC& desc) const {
+         if (!xr_bias_compatible(desc)) return {};
++        if (desc.Format == DXGI_FORMAT_B4G4R4A4_UNORM &&
++            (desc.Flags & D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET) &&
++            !color_attachment_usable(VK_FORMAT_A4R4G4B4_UNORM_PACK16)) {
++            if (desc.Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE2D || desc.SampleDesc.Count != 1 ||
++                (desc.Flags & (D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS | D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL)) ||
++                !sampled_usable(VK_FORMAT_A4R4G4B4_UNORM_PACK16) || !color_attachment_usable(VK_FORMAT_R16_UINT))
++                return {};
++            log_once("B4G4R4A4 clear/copy target on mutable R16_UINT; format", desc.Format);
++            Format backing{VK_FORMAT_R16_UINT, VK_IMAGE_ASPECT_COLOR_BIT};
++            backing.uint_backed = VK_FORMAT_A4R4G4B4_UNORM_PACK16;
++            return backing;
++        }
+         if (desc.Format == xbox_d16s8 && (desc.Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE2D ||
+             desc.SampleDesc.Count != 1 || !(desc.Flags & D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL))) return {};
+         if (desc.Format == xbox_d16s8 && xbox_depth16_enabled())
+@@ -3276,6 +3288,13 @@ public:
+             return E_NOTIMPL;
+         }
+         if (desc.NumRenderTargets > D3D12_SIMULTANEOUS_RENDER_TARGET_COUNT) return E_INVALIDARG;
++        for (UINT i = 0; i < desc.NumRenderTargets; ++i) {
++            if (desc.RTVFormats[i] == DXGI_FORMAT_B4G4R4A4_UNORM &&
++                !device_.color_attachment_usable(VK_FORMAT_A4R4G4B4_UNORM_PACK16)) {
++                log_once("B4G4R4A4 fragment-output packing required for this draw; slot", i);
++                return E_NOTIMPL;
++            }
++        }
+         if (desc.HS.BytecodeLength || desc.DS.BytecodeLength || desc.StreamOutput.NumEntries) {
+             log_once("graphics pipeline stage not supported yet (hull/domain/stream output):", 0);
+             return E_NOTIMPL;
+diff --git a/runtime/shims/d3d12_xs_device.cpp b/runtime/shims/d3d12_xs_device.cpp
+index fa15082533a63229ca18114ece297c79d704ab3f..58359651427155436f7cf8a58932a1877f36876c 100644
+--- a/runtime/shims/d3d12_xs_device.cpp
++++ b/runtime/shims/d3d12_xs_device.cpp
+@@ -35,6 +35,7 @@
+ // PresentX wiring: the queue's console slots land on the Xbox presentation core, which needs the Vulkan layer's
+ // WindowPresenter. Other builds of this file (mock and COM tests) keep the refused-slot behaviour.
+ #include "xbox_present.h"
++#include "title_window.h"
+ #endif
+ 
+ #include <windows.h>
+@@ -1294,9 +1295,11 @@ LONG CALLBACK table_overrun_handler(EXCEPTION_POINTERS* info) {
+ 
+ struct PresentState {
+     ~PresentState() {
+-        if (window) DestroyWindow(window);  // the presentation and its window die with the device proxy
++        xbox.reset();
++        if (owns_window && window) DestroyWindow(window);
+     }
+     HWND window = nullptr;
++    bool owns_window = false;
+     std::unique_ptr<rt::d3d12::XboxPresentation> xbox;
+     rt::d3d12::WindowPresenter* capture = nullptr;  // owned by xbox
+     std::mutex sample_mutex;
+@@ -1323,17 +1326,18 @@ PresentState* present_state_for(DeviceProxy* device) {
+     if (!state) return nullptr;
+     device->present_state = state;
+     state->tried = true;
+-    WNDCLASSW window_class{};
+-    window_class.lpfnWndProc = present_window_proc;
+-    window_class.hInstance = GetModuleHandleW(nullptr);
+-    window_class.lpszClassName = L"LeonidaPresentX";
+-    if (!RegisterClassW(&window_class) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS) {
+-        std::fprintf(stderr, "[rt] d3d12_xs: PresentX window class failed (error %lu)\n", GetLastError());
+-        return state;
++    state->window = rt::d3d12::find_title_window(GetCurrentProcessId());
++    if (!state->window) {
++        WNDCLASSW window_class{};
++        window_class.lpfnWndProc = present_window_proc;
++        window_class.hInstance = GetModuleHandleW(nullptr);
++        window_class.lpszClassName = L"LeonidaPresentX";
++        if (!RegisterClassW(&window_class) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS) return state;
++        state->window = CreateWindowExW(0, window_class.lpszClassName, L"Leonida", WS_OVERLAPPEDWINDOW, CW_USEDEFAULT,
++                                        CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, nullptr, nullptr,
++                                        window_class.hInstance, nullptr);
++        state->owns_window = state->window != nullptr;
+     }
+-    state->window = CreateWindowExW(0, window_class.lpszClassName, L"Leonida", WS_OVERLAPPEDWINDOW, CW_USEDEFAULT,
+-                                  CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, nullptr, nullptr,
+-                                  window_class.hInstance, nullptr);
+     if (!state->window) {
+         std::fprintf(stderr, "[rt] d3d12_xs: PresentX window failed (error %lu)\n", GetLastError());
+         return state;
+@@ -1348,7 +1352,8 @@ PresentState* present_state_for(DeviceProxy* device) {
+         std::fprintf(stderr, "[frame-probe] swapchain capture %s\n", state->capture ? "enabled" : "unavailable");
+     }
+     state->xbox = std::make_unique<rt::d3d12::XboxPresentation>(std::move(presenter), nullptr, device->frame_tokens);
+-    std::fprintf(stderr, "[rt] d3d12_xs: PresentX ready (window %p)\n", static_cast<void*>(state->window));
++    std::fprintf(stderr, "[rt] d3d12_xs: PresentX ready (%s window %p)\n",
++                 state->owns_window ? "fallback" : "title", static_cast<void*>(state->window));
+     return state;
+ }
+ 
+@@ -1365,6 +1370,11 @@ std::uint64_t queue_present_x(ChildProxy* self, std::uint64_t plane_count, std::
+     if (sample.owns_lock()) {
+         const auto attempt = ++state->attempts;
+         const auto shown = state->capture ? state->capture->presented() : 0;
++        if (attempt <= 4 && SUCCEEDED(result) && plane_count == 1 && planes) {
++            const auto& plane = *reinterpret_cast<const rt::d3d12::XboxPresentPlaneParameters*>(planes);
++            if (plane.ResourceCount == 1 && plane.ppResources)
++                std::fprintf(stderr, "[frame-probe] display source %p\n", static_cast<void*>(plane.ppResources[0]));
++        }
+         if (attempt <= 4 || (attempt & (attempt - 1)) == 0)
+             std::fprintf(stderr, "[frame-probe] PresentX attempt %llu planes %llu hr %08lx presented %llu\n",
+                          attempt, plane_count, static_cast<unsigned long>(result), shown);
+@@ -3384,6 +3394,14 @@ std::uint64_t proxy_get_resource_allocation_info2(DeviceProxy* self, std::uint64
+         ID3D12Device*, D3D12_RESOURCE_ALLOCATION_INFO*, UINT, UINT, const D3D12_RESOURCE_DESC1*,
+         D3D12_RESOURCE_ALLOCATION_INFO1*);
+     reinterpret_cast<Fn>(proxy->real_vtable[68])(proxy->real, ret, visible_mask, count, descs_to_pass, info1);
++    if (ret->SizeInBytes > UINT32_MAX && !cleaned.empty() && GetEnvironmentVariableW(L"LEONIDA_FRAME_PROBE", nullptr, 0)) {
++        const auto& d = cleaned.front();
++        std::fprintf(stderr, "[frame-probe] allocation2 size %llu align %llu count %u dim %d format %d "
++                     "%llux%u slices %u mips %u samples %u quality %u flags 0x%x layout 0x%x requested-align %llu\n",
++                     ret->SizeInBytes, ret->Alignment, count, int(d.Dimension), int(d.Format), d.Width, d.Height,
++                     d.DepthOrArraySize, d.MipLevels, d.SampleDesc.Count, d.SampleDesc.Quality, unsigned(d.Flags),
++                     unsigned(d.Layout), d.Alignment);
++    }
+     return reinterpret_cast<std::uint64_t>(ret);
+ }
+ 
+diff --git a/runtime/shims/title_window.h b/runtime/shims/title_window.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..f2564f6563944737c5c05f4bf4b5379fc46e2b1b
+--- /dev/null
++++ b/runtime/shims/title_window.h
+@@ -0,0 +1,52 @@
++#pragma once
++
++// The window a GDKX title shows its frames in, for PresentX.
++//
++// On the console PresentX puts a frame on the display: it names no window. A GDKX title still makes its own top-level
++// Win32 window (CreateWindowExW with its own class, a message loop on its own thread) before it presents, so on the PC
++// that window is where the frames belong. Measured on a retail executable: by its first PresentX the title has one
++// visible, unowned top-level window on a thread of its own; the other windows of the process at that point are hidden
++// (the IME windows Windows adds, a driver's dummy window).
++//
++// The lookup sends no message to any window. The present thread is not the title's window thread, and that thread can
++// be busy (or waiting on the present thread) when the first PresentX comes: GetWindowTextW, or any call that sends a
++// message across threads, would block the present thread there. Measured: a lookup that read the window titles with
++// GetWindowTextW stopped the retail title at its first PresentX. EnumWindows, GetWindowThreadProcessId, IsWindowVisible,
++// GetWindow(GW_OWNER), GetWindowLongPtrW and GetClientRect read the window manager's own state and send nothing.
++
++#include <windows.h>
++
++namespace rt::d3d12 {
++
++// The visible, unowned, non-tool top-level window of `process_id` with the largest client area, `exclude` aside (the
++// runtime's own fallback window); null when the process has none. Ties keep the first one in Z order (the topmost).
++inline HWND find_title_window(DWORD process_id, HWND exclude = nullptr) {
++    struct Search {
++        DWORD process_id;
++        HWND exclude;
++        HWND best;
++        LONGLONG best_area;
++    } search{process_id, exclude, nullptr, -1};
++    EnumWindows(
++        [](HWND window, LPARAM context) -> BOOL {
++            auto& s = *reinterpret_cast<Search*>(context);
++            DWORD owner_process = 0;
++            if (window == s.exclude || !GetWindowThreadProcessId(window, &owner_process) ||
++                owner_process != s.process_id)
++                return TRUE;
++            if (!IsWindowVisible(window) || GetWindow(window, GW_OWNER)) return TRUE;
++            if (GetWindowLongPtrW(window, GWL_EXSTYLE) & WS_EX_TOOLWINDOW) return TRUE;
++            RECT client{};
++            const LONGLONG area =
++                GetClientRect(window, &client) ? LONGLONG(client.right - client.left) * (client.bottom - client.top) : 0;
++            if (area > s.best_area) {
++                s.best = window;
++                s.best_area = area;
++            }
++            return TRUE;
++        },
++        reinterpret_cast<LPARAM>(&search));
++    return search.best;
++}
++
++}  // namespace rt::d3d12
+diff --git a/runtime/src/vulkan_replay.h b/runtime/src/vulkan_replay.h
+index f4f8348c81939fdf59bdbab8e02d303bba9aa719..84b90c4e61cc29203a8fe15cfd6b06e11204075d 100644
+--- a/runtime/src/vulkan_replay.h
++++ b/runtime/src/vulkan_replay.h
+@@ -3536,7 +3536,14 @@ inline void emit(const PreparedList& prepared, VkCommandBuffer command_buffer, c
+             const VulkanAccess state = vulkan_access(d3d12_state::render_target, false);
+             auto pieces = detail::current(tracker, id, p.range, image_layout(p.binding, state.layout));
+             detail::initialize(vk, command_buffer, p.binding, id, pieces, image_layout(p.binding, state.layout), tracker);
+-            const VkClearColorValue color = detail::render_target_clear_color(p.clear_format, color_clear->color);
++            VkClearColorValue color = detail::render_target_clear_color(p.clear_format, color_clear->color);
++            if (p.binding.uint_backed == VK_FORMAT_A4R4G4B4_UNORM_PACK16 && p.clear_format == VK_FORMAT_R16_UINT) {
++                const auto nibble = [](float f) {
++                    return std::uint32_t(std::lround(detail::quantize_unorm(f, 15.0) * 15.0f));
++                };
++                const auto& c = color_clear->color;
++                color.uint32[0] = (nibble(c[3]) << 12) | (nibble(c[0]) << 8) | (nibble(c[1]) << 4) | nibble(c[2]);
++            }
+             if (p.rects.empty()) {
+                 detail::round_trip(vk, command_buffer, p.binding, pieces, image_layout(p.binding, transfer_dst.layout),
+                                    state, transfer_dst.access, transfer_dst.stages, [&] {
+diff --git a/runtime/test/d3d12_b5g5r5a1_uav_test.cpp b/runtime/test/d3d12_b5g5r5a1_uav_test.cpp
+index aea50acb5df6596d203ec81eede3c2cfb36dc6e3..624fde03b2714b2445153f5f4326b9a37b63f8ec 100644
+--- a/runtime/test/d3d12_b5g5r5a1_uav_test.cpp
++++ b/runtime/test/d3d12_b5g5r5a1_uav_test.cpp
+@@ -81,7 +81,10 @@ std::uint32_t tsharp_format(const void* descriptor) {
+ 
+ }  // namespace
+ 
+-int main() {
++int main(int argc, char** argv) {
++    const bool rt4444 = argc == 2 && std::strcmp(argv[1], "--rt4444") == 0;
++    const auto dxgi_format = rt4444 ? DXGI_FORMAT_B4G4R4A4_UNORM : DXGI_FORMAT_B5G5R5A1_UNORM;
++    const auto logical = rt4444 ? VK_FORMAT_A4R4G4B4_UNORM_PACK16 : VK_FORMAT_A1R5G5B5_UNORM_PACK16;
+     vktest::Device d;
+     const auto status = d.initialize();
+     if (status == vktest::DeviceStatus::unavailable) return 77;
+@@ -89,9 +92,10 @@ int main() {
+ 
+     VkFormatProperties props{};
+     d.instance_fn<PFN_vkGetPhysicalDeviceFormatProperties>("vkGetPhysicalDeviceFormatProperties")(
+-        d.physical, VK_FORMAT_A1R5G5B5_UNORM_PACK16, &props);
+-    if (props.optimalTilingFeatures & VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT) {
+-        std::printf("A1R5G5B5 has native storage on this GPU: nothing is emulated, skipping\n");
++        d.physical, logical, &props);
++    if (props.optimalTilingFeatures & (rt4444 ? VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT : VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT)) {
++        std::puts(rt4444 ? "Native A4R4G4B4 color attachment supported, skipping emulation test"
++                         : "Native A1R5G5B5 storage supported, skipping emulation test");
+         return 77;
+     }
+ 
+@@ -114,14 +118,17 @@ int main() {
+     const D3D12_HEAP_PROPERTIES def_heap{D3D12_HEAP_TYPE_DEFAULT};
+ 
+     // 1. The boot's shape: a size, and a resource.
+-    const auto big = tex_desc(2560, 1440, kTargetUav);
++    const auto flags = rt4444 ? D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET : kTargetUav;
++    auto big = tex_desc(2560, 1440, flags);
++    big.Format = dxgi_format;
+     VkFormatProperties r16{};
+     d.instance_fn<PFN_vkGetPhysicalDeviceFormatProperties>("vkGetPhysicalDeviceFormatProperties")(
+         d.physical, VK_FORMAT_R16_UINT, &r16);
+     constexpr VkFormatFeatureFlags kViewFeatures =
+         VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT | VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT;
+-    if (!(r16.optimalTilingFeatures & VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT) ||
+-        (props.optimalTilingFeatures & kViewFeatures) != kViewFeatures) {
++    const VkFormatFeatureFlags logical_features = rt4444 ? VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT : kViewFeatures;
++    if (!(r16.optimalTilingFeatures & (rt4444 ? VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT : VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT)) ||
++        (props.optimalTilingFeatures & logical_features) != logical_features) {
+         std::printf("R16_UINT storage or A1R5G5B5 sampling/attachment missing on this GPU, skipping\n");
+         return 77;
+     }
+@@ -130,7 +137,7 @@ int main() {
+     Ref<ID3D12Resource> big_tex;
+     EXPECT(SUCCEEDED(device->CreateCommittedResource(&def_heap, D3D12_HEAP_FLAG_NONE, &big, D3D12_RESOURCE_STATE_COMMON,
+                                                      nullptr, IID_PPV_ARGS(&big_tex.p))));
+-    EXPECT(big_tex->GetDesc().Format == DXGI_FORMAT_B5G5R5A1_UNORM && big_tex->GetDesc().Flags == kTargetUav);
++    EXPECT(big_tex->GetDesc().Format == dxgi_format && big_tex->GetDesc().Flags == flags);
+ 
+     // 4. A multisampled UAV texture is refused (no Vulkan storage for multisampled images here either).
+     const auto msaa = tex_desc(64, 32, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS, 4);
+@@ -138,7 +145,8 @@ int main() {
+ 
+     // 2. Clears through the render-target view, read back as packed texels.
+     constexpr UINT kW = 64, kH = 32, kPitch = 256;
+-    const auto target_desc = tex_desc(kW, kH, kTargetUav);
++    auto target_desc = tex_desc(kW, kH, flags);
++    target_desc.Format = dxgi_format;
+     Ref<ID3D12Resource> tex, readback;
+     EXPECT(SUCCEEDED(device->CreateCommittedResource(&def_heap, D3D12_HEAP_FLAG_NONE, &target_desc,
+                                                      D3D12_RESOURCE_STATE_RENDER_TARGET, nullptr,
+@@ -164,11 +172,11 @@ int main() {
+     D3D12_UNORDERED_ACCESS_VIEW_DESC uav{};
+     uav.Format = DXGI_FORMAT_B5G5R5A1_UNORM;
+     uav.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
+-    device->CreateUnorderedAccessView(tex.p, nullptr, &uav, uav_handle);
++    if (!rt4444) device->CreateUnorderedAccessView(tex.p, nullptr, &uav, uav_handle);
+     device->CreateShaderResourceView(tex.p, nullptr, srv_handle);
+-    const std::uint32_t expected_code = g::format_from_vulkan(VK_FORMAT_A1R5G5B5_UNORM_PACK16);
++    const std::uint32_t expected_code = g::format_from_vulkan(logical);
+     EXPECT(expected_code != 0 && expected_code != g::format_from_vulkan(VK_FORMAT_R16_UINT));
+-    EXPECT(tsharp_format(reinterpret_cast<const void*>(uav_handle.ptr)) == expected_code);
++    if (!rt4444) EXPECT(tsharp_format(reinterpret_cast<const void*>(uav_handle.ptr)) == expected_code);
+     EXPECT(tsharp_format(reinterpret_cast<const void*>(srv_handle.ptr)) == expected_code);
+ 
+     Ref<ID3D12CommandQueue> queue;
+@@ -184,13 +192,14 @@ int main() {
+ 
+     const FLOAT red[4] = {1, 0, 0, 1};      // R = 31, A = 1 -> 0xFC00
+     const FLOAT green[4] = {0, 1, 0, 0};    // G = 31, A = 0 -> 0x03E0
++    const FLOAT mixed[4] = {0.5f, 0.2f, 0.75f, 0.125f};
+     const D3D12_RECT rect{8, 4, 24, 12};
+     list->ClearRenderTargetView(rtv, red, 0, nullptr);
+-    list->ClearRenderTargetView(rtv, green, 1, &rect);
++    list->ClearRenderTargetView(rtv, rt4444 ? mixed : green, 1, &rect);
+     const auto to_src = transition(tex.p, D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_COPY_SOURCE);
+     list->ResourceBarrier(1, &to_src);
+     D3D12_TEXTURE_COPY_LOCATION dst{readback.p, D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT};
+-    dst.PlacedFootprint = {0, {DXGI_FORMAT_B5G5R5A1_UNORM, kW, kH, 1, kPitch}};
++    dst.PlacedFootprint = {0, {dxgi_format, kW, kH, 1, kPitch}};
+     D3D12_TEXTURE_COPY_LOCATION src{tex.p, D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX};
+     src.SubresourceIndex = 0;
+     list->CopyTextureRegion(&dst, 0, 0, 0, &src, nullptr);
+@@ -209,7 +218,7 @@ int main() {
+             std::memcpy(&texel, static_cast<const std::uint8_t*>(mapped) + y * kPitch + x * 2, sizeof(texel));
+             const bool inside = x >= UINT(rect.left) && x < UINT(rect.right) && y >= UINT(rect.top) &&
+                                 y < UINT(rect.bottom);
+-            const std::uint16_t want = inside ? 0x03E0 : 0xFC00;
++            const std::uint16_t want = rt4444 ? (inside ? 0x283B : 0xFF00) : (inside ? 0x03E0 : 0xFC00);
+             if (texel != want && wrong++ < 4)
+                 std::fprintf(stderr, "texel (%u, %u) = 0x%04x, want 0x%04x\n", x, y, texel, want);
+         }
+@@ -231,6 +240,11 @@ int main() {
+         std::fprintf(stderr, "%u Vulkan validation errors\n", d.validation_errors());
+         return 1;
+     }
++    if (rt4444) {
++        std::printf("B4G4R4A4: full and rectangular RTV clears match all %ux%u packed texels, SRV T# %u\n",
++                    kW, kH, unsigned(expected_code));
++        return 0;
++    }
+     std::printf("d3d12_b5g5r5a1_uav_test: OK (R16_UINT image, A1R5G5B5 render-target clears %ux%u matched, "
+                 "UAV/SRV T# format %u, 0 validation errors)\n", kW, kH, static_cast<unsigned>(expected_code));
+     return 0;
+diff --git a/runtime/test/title_window_test.cpp b/runtime/test/title_window_test.cpp
+new file mode 100644
+index 0000000000000000000000000000000000000000..b3ea9ac825b6b7f356ab2c0a0c024130be4c4de2
+--- /dev/null
++++ b/runtime/test/title_window_test.cpp
+@@ -0,0 +1,104 @@
++// find_title_window (shims/title_window.h): the window PresentX shows a GDKX title's frames in.
++//
++// The windows belong to a thread that never pumps its messages, as the title's window thread may be busy at the first
++// PresentX: the lookup must still answer at once. The negative control shows that thread really does not answer a
++// sent message (WM_GETTEXT, what GetWindowTextW sends across threads, times out), so a lookup that sent one would block.
++
++#include "title_window.h"
++
++#include <chrono>
++#include <cstdio>
++#include <thread>
++
++#define EXPECT(condition) do { \
++    if (!(condition)) { std::fprintf(stderr, "line %d: %s\n", __LINE__, #condition); return 1; } \
++} while (0)
++
++namespace {
++
++struct Windows {
++    HWND title = nullptr;    // visible, unowned, the largest client area: the title's window
++    HWND small = nullptr;    // visible, unowned, smaller
++    HWND hidden = nullptr;   // never shown (like the IME windows and a driver's dummy window)
++    HWND owned = nullptr;    // visible but owned by `title` (a dialog, not a top-level frame)
++    HWND tool = nullptr;     // visible tool window
++};
++
++HWND make(const wchar_t* name, DWORD ex_style, DWORD style, int width, int height, HWND owner) {
++    return CreateWindowExW(ex_style | WS_EX_NOACTIVATE, L"LeonidaTitleWindowTest", name, style, 0, 0, width, height,
++                           owner, nullptr, GetModuleHandleW(nullptr), nullptr);
++}
++
++}  // namespace
++
++int main() {
++    WNDCLASSW window_class{};
++    window_class.lpfnWndProc = DefWindowProcW;
++    window_class.hInstance = GetModuleHandleW(nullptr);
++    window_class.lpszClassName = L"LeonidaTitleWindowTest";
++    EXPECT(RegisterClassW(&window_class));
++
++    // A process with no window of its own has no title window.
++    EXPECT(rt::d3d12::find_title_window(GetCurrentProcessId()) == nullptr);
++
++    Windows windows;
++    HANDLE made = CreateEventW(nullptr, TRUE, FALSE, nullptr);
++    HANDLE release = CreateEventW(nullptr, TRUE, FALSE, nullptr);
++    EXPECT(made && release);
++    std::thread window_thread([&] {
++        windows.hidden = make(L"hidden", 0, WS_OVERLAPPEDWINDOW, 900, 700, nullptr);
++        windows.small = make(L"small", 0, WS_OVERLAPPEDWINDOW | WS_VISIBLE, 160, 120, nullptr);
++        windows.title = make(L"title", 0, WS_OVERLAPPEDWINDOW | WS_VISIBLE, 320, 240, nullptr);
++        windows.owned = make(L"owned", 0, WS_OVERLAPPEDWINDOW | WS_VISIBLE, 800, 600, windows.title);
++        windows.tool = make(L"tool", WS_EX_TOOLWINDOW, WS_OVERLAPPEDWINDOW | WS_VISIBLE, 800, 600, nullptr);
++        SetEvent(made);
++        WaitForSingleObject(release, INFINITE);  // no message loop: like a title window thread that is busy
++        DestroyWindow(windows.tool);
++        DestroyWindow(windows.owned);
++        DestroyWindow(windows.title);
++        DestroyWindow(windows.small);
++        DestroyWindow(windows.hidden);
++    });
++    WaitForSingleObject(made, INFINITE);
++    int result = 0;
++    [&] {
++        auto check = [&](bool ok, int line, const char* what) {
++            if (!ok && !result) {
++                std::fprintf(stderr, "line %d: %s\n", line, what);
++                result = 1;
++            }
++        };
++#define CHECK(condition) check((condition), __LINE__, #condition)
++        CHECK(windows.title && windows.small && windows.hidden && windows.owned && windows.tool);
++
++        // Negative control: the window thread does not answer a sent message.
++        wchar_t text[16]{};
++        DWORD_PTR copied = 0;
++        CHECK(!SendMessageTimeoutW(windows.title, WM_GETTEXT, 16, reinterpret_cast<LPARAM>(text), SMTO_BLOCK, 200,
++                                   &copied));
++
++        // The lookup answers at once anyway, and picks the visible unowned non-tool window with the largest client
++        // area: not the larger hidden, owned or tool windows.
++        const auto start = std::chrono::steady_clock::now();
++        const HWND found = rt::d3d12::find_title_window(GetCurrentProcessId());
++        const auto took = std::chrono::steady_clock::now() - start;
++        CHECK(found == windows.title);
++        CHECK(took < std::chrono::milliseconds(100));
++
++        // The runtime's own window, excluded, is never the answer.
++        CHECK(rt::d3d12::find_title_window(GetCurrentProcessId(), windows.title) == windows.small);
++        // Another process's windows are not this title's.
++        CHECK(rt::d3d12::find_title_window(GetCurrentProcessId() ^ 0x40000000u) == nullptr);
++#undef CHECK
++    }();
++    SetEvent(release);
++    window_thread.join();
++    CloseHandle(made);
++    CloseHandle(release);
++    if (result) return result;
++
++    // Gone with its windows.
++    EXPECT(rt::d3d12::find_title_window(GetCurrentProcessId()) == nullptr);
++    std::puts("title_window: ok");
++    return 0;
++}
