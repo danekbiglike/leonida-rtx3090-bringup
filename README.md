@@ -1,6 +1,6 @@
 # GTA VI Xbox to PC on an RTX 3090 with Leonida
 
-Local, offline startup reached the title's own window on a Windows RTX 3090. Ten swapchain samples in that run contained only black pixels. The latest tested frame path and its limits are documented below. The interactive main menu remains unverified.
+Local, offline startup reached the title's own window on a Windows RTX 3090. The latest run passed the Xbox command-list factory and the six-slice depth/UAV allocation, then stopped with a memory access error. All twelve swapchain samples were black, including present 12,527. An interactive main menu has yet to be demonstrated.
 
 ## Reproduce the first black frames
 
@@ -69,6 +69,21 @@ All three fixtures passed here. On the small catalogue, the title created the pa
 `patches/frame-depth-array-sizing.patch` applies after the packed-target patch. It brings the sizing route at Xbox device slot 108 and the creation routes at 127 and 133 into agreement with the existing depth-only fallback at slot 76. It keeps the existing PC flag mask of each route, including tight alignment where supported. The added WARP comparison covers the allocation size, alignment and per-resource record for a synthetic six-slice typeless depth array. The proxy mocks cover both creation routes. Both test executables passed.
 
 This fixes a size query. The following title call asks slot 133 to create the texture in an unordered-access layout. The depth-only backing cannot service shader writes and rejects that request. A separate test suite on this GPU matched WARP in all 46 copy comparisons, including bit-preserving depth-to-color and color-to-depth copies. Those transfers provide a tested building block for synchronizing a storage image with a depth attachment. They do not establish that the two images are synchronized in the game.
+
+### R16 depth and unordered access on Vulkan
+
+Apply `patches/frame-host-import-r16-depth-uav.patch` after the depth-array sizing patch. Its new fixture enters through Xbox device slot 133. For a single-mip, single-sample R16_TYPELESS 2D array created in the unordered-access layout, the Vulkan device now holds a D16 depth image and a separately writable 16-bit image. UAV descriptors and clears use the second image. Transitions into or out of unordered access copy the affected layers bit-for-bit, using the layer's existing depth/color copy path. Shader-resource and depth views use the depth image. The two images consume extra device memory. This path does not alias the texture directly onto the title's CPU address.
+
+```powershell
+cmake --build build --target d3d12_xbox_depth_uav_test d3d12_existing_heap_test d3d12_copy_xfmt_test
+ctest --test-dir build -R "^(d3d12_xbox_depth_uav|d3d12_existing_heap|d3d12_copy_xfmt)$" --output-on-failure
+```
+
+On the RTX 3090 the fixture created two layers, cleared them through separate integer UAVs, used a legacy transition to copy the written data into depth, changed one layer through a DSV, then used an enhanced barrier and a legacy barrier to bring it through storage and back. Four GPU readbacks contained all 2,048 expected 16-bit values. This tests UAV clears and the two transition paths. A compute-shader write and cross-queue ownership are outside the coverage of that fixture.
+
+The buffer-import and existing-heap code comes from [upstream PR 7218](https://github.com/ItsNotRexed/Leonida/pull/7218). This integration keeps the previous texture paths, bounds-checks import arithmetic and requires committed read/write pages for a direct buffer import. The largest observed buffer, 174 MiB, imported successfully. Three smaller imports used the upstream fallback. CPU writes to those original ranges cannot be assumed to reach the fallback buffers.
+
+The new retail run passed the former depth-layout stop. Twelve samples of 2,564 × 1,061 pixels contained zero nonblack RGB pixels. The final sample was present 12,527. The process exited at 28.25 s with a memory access error whose cause is undetermined. At the time of that run the small shader catalogue still lacked 472 distinct requested vertex programs and the runtime refused 2,689 pipeline-library requests. The counts do not establish the cause of the exit. The focused release build passed nine CTest targets plus the separate Xbox D16+S8 comparison.
 
 ## Reproduce the Windows package-read fix
 
