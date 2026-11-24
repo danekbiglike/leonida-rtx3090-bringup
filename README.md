@@ -1,6 +1,6 @@
 # GTA VI Xbox to PC on an RTX 3090 with Leonida
 
-The Xbox build opens its own window on a Windows RTX 3090. With on-demand graphics compilation it now submits two draws into an intermediate texture and a third into the surface it presents. The final pass now has a verified view of the intermediate texture. Both surfaces are still black in the sampled frames. Leonida still has no verified interactive menu on this machine. A separate VIctory run reached and responded to first-run settings, as recorded below.
+The Xbox build opens its own window on a Windows RTX 3090. With on-demand graphics compilation it now submits two draws into an intermediate texture and a third into the surface it presents. The final pass now has a verified view of the intermediate texture. Both surfaces are still black in the sampled frames. Leonida still has no verified interactive menu on this machine. On VIctory the same PC now reaches the game's full Settings screen and switches tabs with the keyboard. The tested route is below.
 
 ## Native Windows menus with VIctory
 
@@ -9,6 +9,15 @@ On the same RTX 3090, VIctory rendered the offline profile prompt, the animated 
 This was a separate D3D12/DXIL runtime built from [VIctory at 97c78d1](https://github.com/Marvisak/VIctory/tree/97c78d1087808bd6ce5eabb5d566083a38406a90). Our local run used its Series X mode, an offline AppContainer, a read-only package, external cache and profile directories, and store licence queries configured to report offline. The first profile selection in the measured run used VIctory's built-in diagnostic A-button input. Later settings changes were verified with real window input. At the same setup stage, a Series S comparison rendered black in the sampled frames on this machine.
 
 The [window input patch](patches/victory-window-pad-input.patch) captures mapped controller keys received by the game's own window, including brief taps between input polls. Releasing the key or losing focus clears held input. The optional `VICTORY_KEYBOARD_PAD=1` also maps keyboard buttons to the first attached pad. Native analog inputs stay intact. All eight GameInput tests passed on Windows. The [separate content-root patch](patches/victory-separate-content-root.patch) lets an executable staged outside its data folder mount the configured package on the virtual game drive.
+
+### Open the full Settings screen from a fresh profile
+
+Confirmed on native Windows with an RTX 3090 in Series X mode, using the game's Russian UI. The game rendered the **Control Scheme** tab, the Xbox controller illustration and its action labels. Pressing E switched to **Controller**, where the camera sensitivity settings were visible. Q returned to **Control Scheme**. The runtime reported about 30 fps here. A local 1920 × 1080 capture and the input trace confirmed the result. With a previously initialized profile, startup went from the profile prompt through the introduction and loading artwork. Playable 3D has not been verified on this PC.
+
+1. Use the [pinned upstream build instructions](https://github.com/Marvisak/VIctory/tree/97c78d1087808bd6ce5eabb5d566083a38406a90#readme) and a locally available game package. From the VIctory checkout, apply the two patches linked above and then the [keyboard-only patch](patches/victory-keyboard-only.patch). The last patch adds a per-process option to ignore physical controllers while using the normal keyboard-to-gamepad mapping.
+2. Build with `cargo build --locked --profile diag -p victory --features diagnostics`. Choose an empty writable directory for `VICTORY_DATA_DIR` to see first-run setup while preserving other profiles. Set `VICTORY_GAME_DIR` to the content root, `VICTORY_CACHE_DIR` to a writable cache and `VICTORY_KEYBOARD_ONLY=1` for this keyboard test. The measured run also applied the [offline store patch](patches/victory-offline-store.patch) before building. It reports package and game licence queries as unavailable in this offline configuration. Input was entirely manual in this run.
+3. Launch the title using the upstream `run <exe> --execute` entry point. At the PLAYER prompt use Enter (A). After the intro, use Enter to advance through navigation, text size, subtitles and brightness.
+4. On **Finish setup?**, press **Esc** (Xbox Menu). This opens Settings. **Q / E** switch tabs (LB / RB), the arrows move the selection, and **Backspace** goes back (B). The observed tab strip included Control Scheme, Controller, Gameplay, Display, UI and Camera.
 
 ### Identify the compute shader from the actual first bind
 

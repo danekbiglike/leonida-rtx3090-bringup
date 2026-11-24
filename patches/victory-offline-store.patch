@@ -1,0 +1,24 @@
+diff --git a/crates/victory-hle/src/modules/xstore.rs b/crates/victory-hle/src/modules/xstore.rs
+--- a/crates/victory-hle/src/modules/xstore.rs
++++ b/crates/victory-hle/src/modules/xstore.rs
+@@ -138,8 +138,8 @@
+     package: *const c_char,
+     block: *mut AsyncBlock,
+ ) -> HRESULT {
+-    let ours = text(package).is_some_and(|p| p == xpackage::identifier());
+-    license_for(ours, block)
++    let _ = package;
++    offline(block, "package licence unavailable")
+ }
+ /// The user owns no durables: their licences are not valid.
+ extern "system" fn license_for_durables_async(
+@@ -195,8 +195,7 @@
+ }
+ 
+ extern "system" fn game_license_async(_: This, _: Handle, block: *mut AsyncBlock) -> HRESULT {
+-    let license = xasync::bytes(game_license());
+-    xasync::finished_with(block, (&raw const GAME_LICENSE).cast(), Ok(license))
++    offline(block, "game licence unavailable")
+ }
+ extern "system" fn game_license_result(
+     _: This,

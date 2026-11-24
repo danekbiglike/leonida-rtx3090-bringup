@@ -1,0 +1,16 @@
+diff --git a/crates/victory-hle/src/modules/gameinput.rs b/crates/victory-hle/src/modules/gameinput.rs
+--- a/crates/victory-hle/src/modules/gameinput.rs
++++ b/crates/victory-hle/src/modules/gameinput.rs
+@@ -1208,6 +1208,12 @@
+ 
+     impl Source for Host {
+         fn pad(&mut self, slot: usize) -> Option<PadState> {
++            static KEYBOARD_ONLY: LazyLock<bool> = LazyLock::new(|| {
++                std::env::var("VICTORY_KEYBOARD_ONLY").as_deref() == Ok("1")
++            });
++            if *KEYBOARD_ONLY {
++                return None;
++            }
+             if self.empty_until[slot].is_some_and(|until| Instant::now() < until) {
+                 return None;
+             }
