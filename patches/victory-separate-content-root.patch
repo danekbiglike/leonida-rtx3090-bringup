@@ -1,0 +1,13 @@
+diff --git a/apps/victory/src/run.rs b/apps/victory/src/run.rs
+index 52131478d737d98b06b8e1336f937a718dbd2bda..2b152810719499116da0d98fe80ffa7ade4f3f21 100644
+--- a/apps/victory/src/run.rs
++++ b/apps/victory/src/run.rs
+@@ -56,7 +56,7 @@ pub fn run(
+         title.storage_bytes >> 20
+     );
+     // The console's fixed drives: the package as `G:`, temporary files `T:`.
+-    victory_hle::modules::files::mount_at('G', title_dir);
++    victory_hle::modules::files::mount_at('G', cfg.game_dir.as_deref().unwrap_or(title_dir));
+     let temp = cfg.data_subdir(&format!("{:08X}/temp", title.id))?;
+     victory_hle::modules::files::mount_at('T', &temp);
+     victory_hle::runtime::set_title(victory_hle::runtime::Title { storage, ..title });

@@ -1,0 +1,126 @@
+diff --git a/crates/victory-hle/src/modules/gameinput.rs b/crates/victory-hle/src/modules/gameinput.rs
+index a411bd0f4a7dc2b970ac6f90a7e2048fd7fddd26..23c4e4cdf6f9e6d6b4a0cf53b3ffc1dcfae0b8e3 100644
+--- a/crates/victory-hle/src/modules/gameinput.rs
++++ b/crates/victory-hle/src/modules/gameinput.rs
+@@ -454,6 +454,13 @@ impl State {
+     ) -> Vec<Event> {
+         let now = now();
+         let mut events = std::mem::take(&mut self.pending);
++        static KEYBOARD_PAD: LazyLock<bool> = LazyLock::new(|| {
++            std::env::var("VICTORY_KEYBOARD_PAD").as_deref() == Ok("1")
++        });
++        let mut pads = pads;
++        if *KEYBOARD_PAD && let Some(active) = pads.iter_mut().flatten().next() {
++            active.buttons |= fallback(&keys).buttons;
++        }
+         let any_pad = pads.iter().any(Option::is_some);
+         for (slot, pad) in pads.into_iter().enumerate() {
+             self.update(devices, slot, pad.map(Value::Pad), now, &mut events);
+@@ -480,6 +487,10 @@ impl State {
+         if let Some(value) = value
+             && (!was || slot.history.back().is_none_or(|r| r.value != value))
+         {
++            #[cfg(feature = "diagnostics")]
++            if let Value::Pad(pad) = &value {
++                tracing::info!(device = index, buttons = pad.buttons, "pad state changed");
++            }
+             slot.sequence += 1;
+             if slot.history.len() == HISTORY {
+                 slot.history.pop_front();
+@@ -1067,6 +1078,69 @@ pub(crate) fn module() -> HleModule {
+     }
+ }
+ 
++/// Keep a short tap on a window's mapped controller keys visible to frame-based polling.
++#[derive(Default)]
++struct WindowTaps(Vec<(u8, Instant, bool)>);
++
++impl WindowTaps {
++    fn change(&mut self, key: u8, down: bool, at: Instant) {
++        if !FALLBACK_BUTTONS.iter().any(|&(vk, _)| vk == key) {
++            return;
++        }
++        if down {
++            self.0.retain(|&(vk, _, _)| vk != key);
++            self.0.push((key, at + Duration::from_millis(65), true));
++        } else if let Some(entry) = self.0.iter_mut().find(|entry| entry.0 == key) {
++            entry.2 = false;
++        }
++    }
++
++    fn add_active(&mut self, now: Instant, down: &mut Vec<u8>) {
++        self.0.retain(|&(_, until, held)| held || now < until);
++        for &(vk, _, _) in &self.0 {
++            if !down.contains(&vk) {
++                down.push(vk);
++            }
++        }
++    }
++}
++
++static WINDOW_TAPS: LazyLock<Mutex<WindowTaps>> = LazyLock::new(Default::default);
++
++pub(super) fn window_key(key: u8, down: bool) {
++    WINDOW_TAPS.lock().unwrap_or_else(PoisonError::into_inner).change(key, down, Instant::now());
++}
++
++pub(super) fn clear_window_taps() {
++    WINDOW_TAPS.lock().unwrap_or_else(PoisonError::into_inner).0.clear();
++}
++
++#[test]
++fn window_taps_reach_the_next_frame_without_sticking() {
++    let now = Instant::now();
++    let mut taps = WindowTaps::default();
++    taps.change(0x0d, true, now);
++    taps.change(0x0d, false, now);
++    taps.change(b'P', true, now);
++    let mut down = vec![0x0d];
++    taps.add_active(now, &mut down);
++    assert_eq!(down, [0x0d]);
++    down.clear();
++    taps.add_active(now + Duration::from_millis(33), &mut down);
++    assert_eq!(down, [0x0d]);
++    down.clear();
++    let later = now + Duration::from_millis(66);
++    taps.add_active(later, &mut down);
++    assert!(down.is_empty());
++    taps.change(0x28, true, now);
++    taps.add_active(later, &mut down);
++    assert_eq!(down, [0x28]);
++    taps.change(0x28, false, later);
++    down.clear();
++    taps.add_active(later, &mut down);
++    assert!(down.is_empty());
++}
++
+ /// Host input: XInput pads, the keyboard while our process has focus.
+ #[cfg(windows)]
+ mod host {
+@@ -1162,6 +1236,8 @@ mod host {
+                     .collect();
+                 down.extend(held);
+             }
++            WINDOW_TAPS.lock().unwrap_or_else(PoisonError::into_inner)
++                .add_active(Instant::now(), &mut down);
+             down.into_iter()
+                 .map(|vk| KeyState {
+                     // SAFETY: plain query.
+diff --git a/crates/victory-hle/src/modules/lifecycle.rs b/crates/victory-hle/src/modules/lifecycle.rs
+index 6ab93eab2735ec2347159583f368ca6a73ae3806..0eb2e2d767d336d6990aa9bb1b320747c8309626 100644
+--- a/crates/victory-hle/src/modules/lifecycle.rs
++++ b/crates/victory-hle/src/modules/lifecycle.rs
+@@ -168,6 +168,13 @@ extern "system" fn window_proc(
+     wparam: WPARAM,
+     lparam: LPARAM,
+ ) -> LRESULT {
++    if (message == wm::WM_KEYDOWN && lparam & (1 << 30) == 0) || message == wm::WM_KEYUP {
++        if let Ok(key) = u8::try_from(wparam) {
++            super::gameinput::window_key(key, message == wm::WM_KEYDOWN);
++        }
++    } else if message == wm::WM_KILLFOCUS {
++        super::gameinput::clear_window_taps();
++    }
+     // A user close (close button, Alt+F4, window or taskbar menu); a
+     // console title never sees one, nor a WM_CLOSE from it.
+     if message == wm::WM_SYSCOMMAND && wparam & 0xFFF0 == wm::SC_CLOSE as usize {

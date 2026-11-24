@@ -1,6 +1,24 @@
 # GTA VI Xbox to PC on an RTX 3090 with Leonida
 
-The Xbox build opens its own window on a Windows RTX 3090. With on-demand graphics compilation it now submits two draws into an intermediate texture and a third into the surface it presents. The final pass now has a verified view of the intermediate texture. Both surfaces are still black in the sampled frames. An interactive GTA VI menu has not been observed.
+The Xbox build opens its own window on a Windows RTX 3090. With on-demand graphics compilation it now submits two draws into an intermediate texture and a third into the surface it presents. The final pass now has a verified view of the intermediate texture. Both surfaces are still black in the sampled frames. Leonida still has no verified interactive menu on this machine. A separate VIctory run reached and responded to first-run settings, as recorded below.
+
+## Native Windows menus with VIctory
+
+On the same RTX 3090, VIctory rendered the offline profile prompt, the animated introduction and the Russian first-run settings. The game responded to controller A, and a normal keyboard Enter advanced between the navigation, text-size, subtitle and brightness screens. The initial settings persisted locally. The window reported about 30 fps on these screens. The first settings run later exhausted allocations while loading, with a per-process commit limit of 16 GiB. This page does not claim playable world rendering.
+
+This was a separate D3D12/DXIL runtime built from [VIctory at 97c78d1](https://github.com/Marvisak/VIctory/tree/97c78d1087808bd6ce5eabb5d566083a38406a90). Our local run used its Series X mode, an offline AppContainer, a read-only package, external cache and profile directories, and store licence queries configured to report offline. The first profile selection in the measured run used VIctory's built-in diagnostic A-button input. Later settings changes were verified with real window input. At the same setup stage, a Series S comparison rendered black in the sampled frames on this machine.
+
+The [window input patch](patches/victory-window-pad-input.patch) captures mapped controller keys received by the game's own window, including brief taps between input polls. Releasing the key or losing focus clears held input. The optional `VICTORY_KEYBOARD_PAD=1` also maps keyboard buttons to the first attached pad. Native analog inputs stay intact. All eight GameInput tests passed on Windows. The [separate content-root patch](patches/victory-separate-content-root.patch) lets an executable staged outside its data folder mount the configured package on the virtual game drive.
+
+### Identify the compute shader from the actual first bind
+
+The independently measured VIctory first bind selected a single compute container. Its recorded byte length and 64-bit BLAKE3 prefix matched exactly one container in the local package extraction. Its source SHA-256 independently matched a request in the Leonida trace. The 8 × 8 × 1 Vulkan translation passed SPIR-V validation. Adding only that module to the graphics catalogue gave Leonida a matching compute entry on a repeat run. That 26-second run ended before a dispatch was observed. This identifies the active program without substituting an arbitrary pipeline.
+
+Install the Python `blake3` package and put `spirv-val` on PATH. Supply a VIctory diagnostic log with first-bind events and a Leonida log with the compute-request probe. This prints the uniquely matched module name on your own machine. To repeat the one-module experiment, copy the graphics catalogue to a new sibling folder and add that module's SPIR-V file and unmodified metadata entry from the full translation index. Keep the original native graphics map and the deferred graphics setting.
+
+```powershell
+python tools/match_active_compute.py --victory-log $victoryLog --leonida-log $leonidaLog --dxbc $dxbc --translated $translations
+```
 
 ## Where black enters the frame
 
