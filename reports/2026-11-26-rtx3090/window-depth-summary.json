@@ -1,0 +1,36 @@
+{
+  "start_seconds": 640,
+  "requested_seconds": 90,
+  "covered_seconds": 90.206447,
+  "frames": 268,
+  "fps": 2.9709628182118735,
+  "p50_ms": 336.943,
+  "p95_ms": 376.337,
+  "p99_ms": 389.738,
+  "max_ms": 410.177,
+  "frames_over_200ms": 268,
+  "all_frames_within_200ms": false,
+  "mean_draw_calls": 4869.440298507463,
+  "split_modes": [
+    1
+  ],
+  "joined_hash_modes": [
+    1
+  ],
+  "clock": "Accepted DXGI Present calls returning S_OK",
+  "scene": "Fixed prison window in player control",
+  "diagnostic_window_count": 16,
+  "diagnostic_interval_medians": {
+    "fps": 3.0,
+    "frame_ms": 334.95,
+    "prepare_ms": 134.05,
+    "buffer_copies_ms": 78.6,
+    "textures_ms": 11.25,
+    "gpu_wait_ms": 163.95,
+    "copy_back_ms": 189.05,
+    "draws": 4858.5,
+    "dropped_pipelines": 365.0,
+    "pipelines_compiling": 0.0,
+    "heap_pass_ms": 49.25
+  }
+}

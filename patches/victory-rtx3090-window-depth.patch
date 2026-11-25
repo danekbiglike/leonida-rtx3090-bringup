@@ -1,0 +1,284 @@
+diff --git a/apps/victory/src/shader.rs b/apps/victory/src/shader.rs
+index 49180ea..cc66204 100644
+--- a/apps/victory/src/shader.rs
++++ b/apps/victory/src/shader.rs
+@@ -112,7 +112,15 @@ pub fn run(paths: Vec<PathBuf>, verbose: bool, disasm: bool) -> Result<()> {
+                         let mut list = Vec::new();
+                         for n in &programs {
+                             *t.native_stages.entry(n.stage).or_default() += 1;
+-                            list.push(format!("{:?} {} B", n.stage, n.code.len()));
++                            // A pixel program's DB_SHADER_CONTROL too (depth export,
++                            // kill, Z order, depth test before the shader).
++                            let db = match &n.io {
++                                victory_shader::native::StageIo::Ps { db_shader_control, .. } => {
++                                    format!(" db {db_shader_control:#x}")
++                                }
++                                _ => String::new(),
++                            };
++                            list.push(format!("{:?} {} B{db}", n.stage, n.code.len()));
+                             match gfx10::decode(&n.code) {
+                                 Ok(insts) => {
+                                     t.decoded += 1;
+diff --git a/crates/victory-gpu/src/host.rs b/crates/victory-gpu/src/host.rs
+index 946f61f..d71bf6d 100644
+--- a/crates/victory-gpu/src/host.rs
++++ b/crates/victory-gpu/src/host.rs
+@@ -6722,7 +6722,17 @@ impl Host {
+                 .then(|| crate::capture::read_back(&self.device, list, texture))
+                 .flatten();
+             #[cfg(feature = "diagnostics")]
+-            let probe = if slot.is_some() { None } else { crate::capture::probe(&self.device, list, texture) };
++            let probe = {
++                static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
++                let enabled = ENABLED.get_or_init(|| {
++                    std::env::var_os("VICTORY_BLACK_FRAME_PROBE").is_none_or(|value| value != "0")
++                });
++                if slot.is_none() && *enabled {
++                    crate::capture::probe(&self.device, list, texture)
++                } else {
++                    None
++                }
++            };
+             #[cfg(not(feature = "diagnostics"))]
+             let _ = frame;
+             list.ResourceBarrier(&[
+@@ -6745,8 +6755,11 @@ impl Host {
+             if let Some((buffer, footprint)) = capture {
+                 crate::capture::save_read_back(frame, &buffer, &footprint);
+             }
+-            let _ = p.swap_chain.Present(0, DXGI_PRESENT(0));
+-            p.meter.frame(p.hwnd);
++            // An occluded swap chain also returns a success status but has
++            // not presented a new frame. Count only DXGI's ordinary S_OK.
++            if p.swap_chain.Present(0, DXGI_PRESENT(0)) == windows::core::HRESULT(0) {
++                p.meter.frame(p.hwnd);
++            }
+             #[cfg(feature = "diagnostics")]
+             return Some(probe.is_some_and(|b| crate::capture::black(&b)));
+             #[cfg(not(feature = "diagnostics"))]
+diff --git a/crates/victory-gpu/src/shadow.rs b/crates/victory-gpu/src/shadow.rs
+index 756462d..d0ae08b 100644
+--- a/crates/victory-gpu/src/shadow.rs
++++ b/crates/victory-gpu/src/shadow.rs
+@@ -772,6 +772,54 @@ pub(crate) fn outside(from: usize, to: usize, mut skip: Vec<(usize, usize)>) ->
+     out
+ }
+ 
++/// New snapshot bytes in a write declaration. `target` is clipped to this
++/// buffer and expressed in offsets; pending declarations are absolute.
++fn uncovered_write_offsets(base: usize, target: (usize, usize), pending: &[(usize, usize)]) -> Vec<(usize, usize)> {
++    let (from, to) = target;
++    if from >= to {
++        return Vec::new();
++    }
++    let (begin, end) = (base + from, base + to);
++    let mut overlaps = Vec::new();
++    for &(a, b) in pending {
++        if a <= begin && b >= end {
++            return Vec::new();
++        }
++        let (left, right) = (a.max(begin), b.min(end));
++        if left < right {
++            overlaps.push((left - base, right - base));
++        }
++    }
++    outside(from, to, overlaps)
++}
++
++#[cfg(test)]
++mod write_offset_tests {
++    use super::uncovered_write_offsets;
++
++    #[test]
++    fn clipped_snapshot_gaps_match_a_byte_map() {
++        let base = 301usize;
++        let mut pending = vec![(base - 8, base + 2), (base + 67, base + 103)];
++        let mut state = 73u32;
++        for step in 0..90 {
++            let from = (step * 23) % 65;
++            let to = (from + step % 31).min(70);
++            let gaps = uncovered_write_offsets(base, (from, to), &pending);
++            assert!(gaps.windows(2).all(|w| w[0].1 < w[1].0));
++            for i in 0..70 {
++                let expected = (from..to).contains(&i)
++                    && !pending.iter().any(|&(a,b)| (a..b).contains(&(base+i)));
++                assert_eq!(gaps.iter().any(|&(a,b)| (a..b).contains(&i)), expected);
++            }
++            state = state.wrapping_mul(1664525).wrapping_add(1013904223);
++            let a = base - 8 + (state >> 16) as usize % 90;
++            pending.push((a, a + step % 10));
++            if step % 11 == 10 { pending.drain(..5); }
++        }
++    }
++}
++
+ /// The runs of 4-byte words of title memory (cut on its addresses;
+ /// `read` and `merged` are of the memory at `address`) that hold a byte in
+ /// which `merged` differs from `read`, as (offset, bytes) in order to
+@@ -2342,24 +2390,7 @@ impl Shadow {
+         // The parts no declared range holds yet: their bytes are taken now,
+         // just after the range's refresh (a part declared earlier has not
+         // been refreshed since, and keeps the bytes taken then).
+-        let mut parts = vec![self.inside(address, len)];
+-        for &(a, e) in pending.iter() {
+-            let (a, e) = self.inside(a, e - a);
+-            let mut rest = Vec::with_capacity(parts.len() + 1);
+-            for (from, to) in parts {
+-                if e <= from || a >= to {
+-                    rest.push((from, to));
+-                    continue;
+-                }
+-                if from < a {
+-                    rest.push((from, a));
+-                }
+-                if e < to {
+-                    rest.push((e, to));
+-                }
+-            }
+-            parts = rest;
+-        }
++        let parts = uncovered_write_offsets(self.start as usize, self.inside(address, len), &pending);
+         pending.push(range);
+         let taken: usize = parts.iter().map(|&(from, to)| to.saturating_sub(from)).sum();
+         BACK_CLASS[usize::from(!self.window)].fetch_add(taken as u64, Ordering::Relaxed);
+diff --git a/crates/victory-shader/src/emit/lower.rs b/crates/victory-shader/src/emit/lower.rs
+index 3d3f40e..0589173 100644
+--- a/crates/victory-shader/src/emit/lower.rs
++++ b/crates/victory-shader/src/emit/lower.rs
+@@ -1152,6 +1152,29 @@ fn packed_half(
+     })
+ }
+ 
++/// Whether a pixel program runs its depth and stencil tests before the
++/// shader on the console (`DB_SHADER_CONTROL.DEPTH_BEFORE_SHADER`, bit 12:
++/// HLSL `[earlydepthstencil]`), so the host is told too (ShaderFlags
++/// ForceEarlyDepthStencil). Without it the host tests after the shader, and
++/// a program that writes unordered views writes them for pixels the depth
++/// test then rejects: the title's glass prepass wrote its depth and motion
++/// for every pixel of a window pane, the character standing in front of it
++/// too, and a later pass copied those over the character's. Not for a
++/// program that exports depth, stencil or coverage (bits 0-2 and 8, or such
++/// an output), which cannot test before it runs.
++pub(super) fn early_depth(io: &StageIo, outputs: &[SigElement]) -> bool {
++    const DEPTH_BEFORE_SHADER: u32 = 1 << 12;
++    const EXPORTS: u32 = 0b111 | 1 << 8;
++    let StageIo::Ps { db_shader_control, .. } = io else {
++        return false;
++    };
++    // SV_Depth, SV_DepthLessEqual, SV_DepthGreaterEqual, SV_Coverage,
++    // SV_StencilRef.
++    db_shader_control & DEPTH_BEFORE_SHADER != 0
++        && db_shader_control & EXPORTS == 0
++        && !outputs.iter().any(|o| matches!(o.kind, 14 | 17 | 18 | 19 | 20))
++}
++
+ /// The pixel inputs packing two 16-bit rows per dword, as (first row,
+ /// second row) ([`packed_layout`]).
+ fn input_packs(io: &StageIo, inputs: &[SigElement]) -> Vec<(u8, Option<u8>)> {
+@@ -1257,6 +1280,9 @@ impl<'a> Lower<'a> {
+         let mut s = Shader::new(x.native.stage == HwStage::Ps);
+         s.inputs = x.inputs.clone();
+         s.outputs = x.outputs.clone();
++        if early_depth(&x.native.io, &x.outputs) {
++            s.flags |= flags::EARLY_DEPTH;
++        }
+         let insts = || p.blocks.iter().flat_map(|b| &b.insts);
+         let writes_uavs = insts().any(|i| {
+             matches!(i.fields, Fields::Image { .. } | Fields::Buffer { .. })
+diff --git a/crates/victory-shader/src/emit/mod.rs b/crates/victory-shader/src/emit/mod.rs
+index 4e71300..6cc4659 100644
+--- a/crates/victory-shader/src/emit/mod.rs
++++ b/crates/victory-shader/src/emit/mod.rs
+@@ -931,6 +931,79 @@ mod tests {
+         assert_ne!(features & 0x200, 0, "SFI0 {features:#x}: no StencilRef");
+     }
+ 
++    /// A pixel program the console tests depth for before it runs
++    /// (`DB_SHADER_CONTROL` 0x1050: DEPTH_BEFORE_SHADER, early Z, kill, as
++    /// the title's glass prepass has it) declares ForceEarlyDepthStencil:
++    /// the module differs from the same program without the bit only by that
++    /// flag, and the validator, where there is one, accepts it. With a depth
++    /// output the bit is not declared (the host cannot test before a shader
++    /// that writes the depth).
++    #[test]
++    fn a_pixel_program_tested_before_it_runs_declares_early_depth() {
++        // v_mov_b32 v0, 1.0; exp mrt0 v0, v0, v0, v0 done vm; s_endpgm
++        let color = [0x7E00_02F2u32, 0xF800_180F, 0x0000_0000, 0xBF81_0000];
++        // v_mov_b32 v0, 1.0; exp mrtz v0, off, off, off done vm; s_endpgm
++        let depth = [0x7E00_02F2u32, 0xF800_1881, 0x0000_0000, 0xBF81_0000];
++        let el = |name: &str, kind, cols| SigElement {
++            name: name.into(),
++            index: 0,
++            kind,
++            comp: 9,
++            interp: 0,
++            // A render target has a register; depth and stencil do not.
++            row: (kind == 16).then_some(0),
++            col: 0,
++            cols,
++            usage: (1 << cols) - 1,
++            half: false,
++        };
++        let emitted = |words: &[u32], out: SigElement, db: u32| {
++            let native = NativeProgram {
++                stage: HwStage::Ps,
++                wave64: false,
++                vgprs: 1,
++                layout: vec![],
++                used: vec![],
++                io: StageIo::Ps {
++                    inputs: vec![],
++                    input_addr: 0,
++                    db_shader_control: db,
++                    patches: vec![],
++                },
++                code: words.iter().flat_map(|w| w.to_le_bytes()).collect(),
++            };
++            let osg1 = container::signature(&[out], false);
++            let bytes = crate::dxbc::build(&[(FourCC::OSG1, &osg1)]);
++            let c = Container::parse(&bytes).unwrap();
++            let p = ir::build(&native.patched_code(), native.wave64, native.vgprs).unwrap();
++            let st = structure::structure(&p).unwrap();
++            let res = resource::track(&p, &native.layout, native.stage, Some(&st)).unwrap();
++            let io = io::raise(&p, &native).unwrap();
++            emit(&c, &native, &p, &st, &io, &res).unwrap().dxil
++        };
++        let late = emitted(&color, el("SV_Target", 16, 4), 0x50);
++        let early = emitted(&color, el("SV_Target", 16, 4), 0x1050);
++        assert_ne!(late, early, "the early-depth flag changed nothing");
++        #[cfg(windows)]
++        if let Ok(mut v) = super::validator::Validator::load(
++            super::validator::Validator::default_path().as_deref(),
++        ) {
++            v.validate(&mut early.clone()).unwrap();
++        }
++        let late = emitted(&depth, el("SV_Depth", 17, 1), 0x51);
++        let early = emitted(&depth, el("SV_Depth", 17, 1), 0x1051);
++        assert_eq!(late, early, "early depth declared for a depth export");
++        // The rule alone: the bit, and no export of depth, stencil or coverage.
++        let ps = |db| StageIo::Ps { inputs: vec![], input_addr: 0, db_shader_control: db, patches: vec![] };
++        assert!(lower::early_depth(&ps(0x1450), &[]));
++        assert!(lower::early_depth(&ps(0x1010), &[]));
++        assert!(!lower::early_depth(&ps(0x0450), &[]));
++        assert!(!lower::early_depth(&ps(0x1012), &[]));
++        assert!(!lower::early_depth(&ps(0x1150), &[]));
++        assert!(!lower::early_depth(&ps(0x1050), &[el("SV_StencilRef", 20, 1)]));
++        assert!(!lower::early_depth(&StageIo::None, &[]));
++    }
++
+     /// A wave64 compute program that writes only EXEC's high dword
+     /// (`s_mov_b32 exec_hi, 0`) before a vector instruction. The new mask was
+     /// opaque and keyed by the unchanged low dword, so building its lane bit
+diff --git a/crates/victory-shader/src/emit/shader.rs b/crates/victory-shader/src/emit/shader.rs
+index 9835ab9..55957ee 100644
+--- a/crates/victory-shader/src/emit/shader.rs
++++ b/crates/victory-shader/src/emit/shader.rs
+@@ -80,6 +80,8 @@ pub const USER_GROUP_BASE: u32 = 0x104;
+ 
+ /// `ShaderFlags` bits (metadata) and their `SFI0` feature bits.
+ pub(crate) mod flags {
++    /// ForceEarlyDepthStencil (`[earlydepthstencil]`; no `SFI0` bit).
++    pub const EARLY_DEPTH: u64 = 1 << 3;
+     pub const RAW_BUFFERS: u64 = 1 << 4;
+     pub const DOUBLES: u64 = 1 << 2;
+     pub const STENCIL_REF: u64 = 1 << 11;

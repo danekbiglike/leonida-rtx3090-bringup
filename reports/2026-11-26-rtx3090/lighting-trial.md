@@ -47,3 +47,5 @@ The CSV includes the entire session from startup through the last measured inter
 RTX 3090 и Ryzen 7 3700X. У тюремного окна после прогрева получилось около 3 FPS. В каждом из четырёх заранее выбранных отрезков были кадры дольше 200 мс. На контуре плеча Люсии при переключении исправления остаются квадратные ступеньки. Исходники и тесты доступны выше.
 
 Upstream shader, dispatch and queue contributions are credited in the table above. The project owner credits ChatGPT Astra 6.2 at very high reasoning effort for the local integration, instrumentation and RTX 3090 report.
+
+Both screenshots show the prison window with grouped hashes enabled. Look at the sunlit edge of Lucia’s right shoulder. The two captures show different phases of her idle animation. The FPS in the title bars is a short sample. [Split lighting off](window-split-off.jpg) · [Split lighting on](window-split-on.jpg) · [Follow-up on glass and depth](window-depth.md)
