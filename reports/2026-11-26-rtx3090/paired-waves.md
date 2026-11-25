@@ -44,3 +44,14 @@ At the same prison window, the sunlit shoulder and hair lost the large rectangul
 Across 16 diagnostic intervals the median reported copy-back time was 193.3 ms, texture preparation was 7.3 ms, and the median number of draws discarded for lack of a host pipeline was zero (365 in the depth run). These timings overlap. FPS fell from 2.97 to 2.58 in this scene. Both trials used the same graphics settings. The change of upstream revision and enabled features prevents attributing the visual change to any single switch.
 
 На RTX 3090 крупные световые ступени на плече у окна исчезли. При повороте в камеру волосы тоже освещены ровнее. В этой сцене осталось 2,58 FPS, на полу заметны другие артефакты.
+
+## In-flight readback on the same binary
+
+Turning on `VICTORY_CARD_FETCH_INFLIGHT=1` with `VICTORY_CARD_FETCH_INFLIGHT_MB=128` slowed the fixed-window run to **2.19 FPS**. The large shoulder blocks remained absent. Keyboard movement after the timed sample turned Lucia away from the window. Use the paired-wave configuration above for the 2.58 FPS result. [Window screenshot](paired-wave-fetch-window.jpg) · [Per-frame CSV](paired-wave-fetch-frames.csv) · [Summary](paired-wave-fetch-summary.json)
+
+| Mode | Accepted frames | FPS | P95 interval | Over 200 ms | Mean draws |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Original transfers | 233 | 2.58 | 431.0 ms | 233 | 4,884 |
+| Fetch inside the flight, 128 MiB | 198 | 2.19 | 591.9 ms | 198 | 4,888 |
+
+The second measurement covers elapsed seconds 1050–1140 in the per-frame capture. The game save was copied from the same starting profile. The executable, paired shaders, graphics settings and camera were the same, and this launch reused the pipeline cache. Median time waiting specifically for a fetch fell from 50.3 ms to zero, but the landing thread spent 227.1 ms waiting for other GPU work compared with 76.1 ms before. The fine-grained relay counters sampled 72 intervals during the in-flight run. They showed 101.5 MB per frame fetched inside the flight and zero median fallback landings. Texture preparation was 6.7 ms. The separate GPU frame diagnostic sampled 15 intervals. These counters overlap.

@@ -1,0 +1,52 @@
+{
+  "start_seconds": 1050,
+  "requested_seconds": 90,
+  "covered_seconds": 90.230836,
+  "frames": 198,
+  "fps": 2.194371777736826,
+  "p50_ms": 465.429,
+  "p95_ms": 591.873,
+  "p99_ms": 634.558,
+  "max_ms": 640.902,
+  "frames_over_200ms": 198,
+  "all_frames_within_200ms": false,
+  "mean_draw_calls": 4887.515151515152,
+  "split_modes": [],
+  "joined_hash_modes": [],
+  "clock": "Accepted DXGI Present calls returning S_OK",
+  "scene": "Fixed prison window in player control",
+  "diagnostic_window_count": 15,
+  "diagnostic_interval_medians": {
+    "fps": 2.1,
+    "frame_ms": 465.7,
+    "prepare_ms": 196.9,
+    "buffer_copies_ms": 84.3,
+    "textures_ms": 6.7,
+    "gpu_wait_ms": 229.8,
+    "copy_back_ms": 138.1,
+    "draws": 4896.0,
+    "dropped_pipelines": 0.0,
+    "pipelines_compiling": 0.0,
+    "heap_pass_ms": 43.5
+  },
+  "relay_interval_medians": {
+    "relay": {
+      "interval_count": 72,
+      "waiting_gpu_ms": 227.1,
+      "waiting_fetch_ms": 0.0,
+      "landing_ms": 138.55
+    },
+    "inside_flight": {
+      "interval_count": 72,
+      "pieces": 1639.65,
+      "megabytes": 101.49,
+      "old_fetch_landings": 0.0,
+      "overflow_landings": 0.0
+    },
+    "copy_queue": {
+      "interval_count": 72,
+      "pieces_fetched": 0.0,
+      "refetched": 0.0
+    }
+  }
+}
