@@ -1,0 +1,1613 @@
+diff --git a/crates/victory-gpu/src/descriptor/host.rs b/crates/victory-gpu/src/descriptor/host.rs
+index 21cc194..4fcb906 100644
+--- a/crates/victory-gpu/src/descriptor/host.rs
++++ b/crates/victory-gpu/src/descriptor/host.rs
+@@ -565,28 +565,49 @@ impl TextureQueue {
+     ///   (run 52: 98% of the drawn pixels had no colour texture in the
+     ///   first 3D frames).
+     fn due(&self, frame: u64, max: usize) -> Vec<(u32, u64)> {
+-        let mut again: Vec<(u64, u32, u64)> = Vec::new();
+-        let mut fresh: Vec<(u64, u32, u64)> = Vec::new();
++        if max == 0 {
++            return Vec::new();
++        }
++        let mut again = Vec::new();
++        let mut fresh = Vec::new();
+         for (&index, w) in self.slots.iter().filter(|(_, w)| w.due <= frame) {
+             let class = if w.looks > 0 || w.mapped > 0 { &mut again } else { &mut fresh };
+-            class.push((w.written, index, w.write));
++            class.push((index, w.write));
++        }
++        // Write numbers are unique. Partition each end before sorting so a
++        // full queue sorts only the entries this pass can actually serve.
++        let newest_first = |a: &(u32, u64), b: &(u32, u64)| b.1.cmp(&a.1);
++        if again.len() > max {
++            again.select_nth_unstable_by(max, newest_first);
++            again.truncate(max);
+         }
+-        // By the number of the write, counted over the run.
+-        let newest_first = |a: &(u64, u32, u64), b: &(u64, u32, u64)| b.2.cmp(&a.2);
+         again.sort_unstable_by(newest_first);
+-        fresh.sort_unstable_by(newest_first);
+-        let mut order: Vec<(u32, u64)> = again.iter().map(|&(_, index, write)| (index, write)).collect();
+-        let (mut new, mut old) = (0, fresh.len());
+-        while new < old && order.len() < max {
+-            order.push((fresh[new].1, fresh[new].2));
+-            new += 1;
+-            if new < old && order.len() < max {
+-                old -= 1;
+-                order.push((fresh[old].1, fresh[old].2));
++        let take = (max - again.len()).min(fresh.len());
++        if take == 0 {
++            return again;
++        }
++        let new_count = take.div_ceil(2);
++        let old_count = take / 2;
++        if new_count < fresh.len() {
++            fresh.select_nth_unstable_by(new_count, newest_first);
++        }
++        let (newest, rest) = fresh.split_at_mut(new_count);
++        newest.sort_unstable_by(newest_first);
++        let mut oldest = &mut rest[..0];
++        if old_count > 0 {
++            let oldest_at = rest.len() - old_count;
++            if oldest_at > 0 {
++                rest.select_nth_unstable_by(oldest_at, newest_first);
+             }
++            oldest = &mut rest[oldest_at..];
++            oldest.sort_unstable_by(|a, b| newest_first(b, a));
+         }
+-        order.truncate(max);
+-        order
++        again.reserve(take);
++        for (position, &entry) in newest.iter().enumerate() {
++            again.push(entry);
++            again.extend(oldest.get(position).copied());
++        }
++        again
+     }
+ 
+     /// The entry of `index` if it is still the write the pass was handed.
+@@ -2689,13 +2710,10 @@ fn make(view: &View, at: D3D12_CPU_DESCRIPTOR_HANDLE) -> Option<Kept> {
+                     return None;
+                 }
+                 // Levels on demand (`crate::tiles`): a texture made level by
+-                // level is shown from the first level that is the title's
+-                // and has memory, if the title's view starts before it (a
+-                // level without memory reads zeros: a black texture). The
+-                // title's own view mostly starts there already.
+-                if let Some(first) = crate::resource::first_shown(resource)
+-                    && first > 0
+-                {
++                // level exposes only a contiguous run of resident mips so
++                // the sampler cannot reach a hole behind a valid level.
++                let resident = crate::resource::shown_levels(resource);
++                if resident != 0 {
+                     // SAFETY: a live resource.
+                     let own = unsafe { texture.GetDesc() };
+                     // The texture's own view (the title gave none): all of it.
+@@ -2712,7 +2730,7 @@ fn make(view: &View, at: D3D12_CPU_DESCRIPTOR_HANDLE) -> Option<Kept> {
+                             },
+                         },
+                     };
+-                    crate::tiles::show_from(desc.get_or_insert(whole), first, u32::from(own.MipLevels));
++                    crate::tiles::show_resident(desc.get_or_insert(whole), resident, u32::from(own.MipLevels));
+                 }
+                 // SAFETY: a live texture and a slot of our heap.
+                 unsafe {
+@@ -3204,6 +3222,84 @@ mod tests {
+         assert!(q.due(16, 100).iter().any(|d| d.0 == 98));
+     }
+ 
++    fn due_full_sort(q: &TextureQueue, frame: u64, max: usize) -> Vec<(u32, u64)> {
++        let mut again = Vec::new();
++        let mut fresh = Vec::new();
++        for (&index, w) in q.slots.iter().filter(|(_, w)| w.due <= frame) {
++            let queue = if w.looks > 0 || w.mapped > 0 { &mut again } else { &mut fresh };
++            queue.push((w.written, index, w.write));
++        }
++        again.sort_unstable_by_key(|entry| std::cmp::Reverse(entry.2));
++        fresh.sort_unstable_by_key(|entry| std::cmp::Reverse(entry.2));
++        let mut order: Vec<_> = again.into_iter().map(|(_, index, write)| (index, write)).collect();
++        let mut fresh = fresh.into_iter();
++        while order.len() < max {
++            let Some((_, index, write)) = fresh.next() else { break };
++            order.push((index, write));
++            if order.len() < max && let Some((_, index, write)) = fresh.next_back() {
++                order.push((index, write));
++            }
++        }
++        order.truncate(max);
++        order
++    }
++
++    fn due_fixture(slots: u32, repeat_every: u32) -> TextureQueue {
++        let mut q = TextureQueue::default();
++        for i in 0..slots {
++            // An odd multiplier gives unique slots in the 64K table and
++            // puts write order out of slot order, as in a streamed heap.
++            let index = i.wrapping_mul(32749) & 0xffff;
++            q.written(index, u64::from(i), u64::from(i % 11 == 0), false);
++            if i.is_multiple_of(repeat_every) {
++                q.slots.get_mut(&index).unwrap().looks = 1;
++            }
++        }
++        q
++    }
++
++    #[test]
++    fn bounded_texture_selection_matches_full_sort() {
++        for repeat_every in [1, 3, 17] {
++            let q = due_fixture(73, repeat_every);
++            for frame in [0, 1] {
++                for max in 0..=75 {
++                    assert_eq!(q.due(frame, max), due_full_sort(&q, frame, max));
++                }
++            }
++        }
++    }
++
++    #[test]
++    #[ignore = "benchmark a full streaming queue"]
++    fn bench_bounded_texture_selection() {
++        use std::hint::black_box;
++        use std::time::Instant;
++
++        for repeat_every in [2, 17] {
++            let q = due_fixture(40_000, repeat_every);
++            assert_eq!(q.due(1, 4096), due_full_sort(&q, 1, 4096));
++            let mut samples = [Vec::new(), Vec::new()];
++            for _ in 0..15 {
++                for (i, elapsed) in samples.iter_mut().enumerate() {
++                    let began = Instant::now();
++                    let order = if i == 0 {
++                        due_full_sort(black_box(&q), 1, 4096)
++                    } else {
++                        black_box(&q).due(1, 4096)
++                    };
++                    black_box(order);
++                    elapsed.push(began.elapsed());
++                }
++            }
++            samples.iter_mut().for_each(|v| v.sort_unstable());
++            eprintln!(
++                "40,000 due slots, every {repeat_every}th a retry, 4,096 returned: full sort {:?}, bounded {:?}",
++                samples[0][7], samples[1][7],
++            );
++        }
++    }
++
+     /// Slots held back for lack of room on the card are not handed out
+     /// until their frame, keep their place, are not counted as waiting
+     /// for their memory, and all come back at once when the card has room;
+diff --git a/crates/victory-gpu/src/draw.rs b/crates/victory-gpu/src/draw.rs
+index 9ba0c2f..4ced437 100644
+--- a/crates/victory-gpu/src/draw.rs
++++ b/crates/victory-gpu/src/draw.rs
+@@ -771,10 +771,16 @@ impl State {
+         dword: u32,
+         memory: Option<&crate::memory::Ready>,
+     ) -> u32 {
+-        use victory_shader::emit::{USER_MEMORY_BASE, USER_VIEW_ADDRESS, USER_VIEW_BIAS};
++        use victory_shader::emit::{USER_GROUP_BASE, USER_MEMORY_BASE, USER_VIEW_ADDRESS, USER_VIEW_BIAS};
+         if kind == USER_MEMORY_BASE {
+             return memory.map_or(0, |m| m.base);
+         }
++        if kind == USER_GROUP_BASE {
++            // The first group of the dispatch in x: 0 but for the second
++            // execution of an indirect record split at 65,535 groups, whose
++            // caller sets it itself ([`group_base_word`]).
++            return 0;
++        }
+         if kind == USER_VIEW_BIAS {
+             // The view begins on 16 bytes of the copy the address finds
+             // (`root_uav`, `root_srv_table`).
+@@ -1724,8 +1730,7 @@ impl State {
+         // Slots whose texture's memory the runtime mapped, unmapped or
+         // wrote since the last pass are due again.
+         host.texture_slots_remapped(frame);
+-        // Levels on demand: the slots of textures whose first level with
+-        // memory changed since the last pass are made again from it.
++        // Levels on demand: rebuild slots whose resident mips have changed.
+         host.texture_views_remade();
+         // And with room, the textures whose upload left a held level
+         // without the card's memory are uploaded again.
+@@ -2391,7 +2396,7 @@ impl State {
+             let draws: u32 = census.1.values().sum();
+             if draws > 0 {
+                 let mut rects: Vec<([i32; 4], u32)> = census.1.iter().map(|(r, n)| (*r, *n)).collect();
+-                rects.sort_unstable_by(|a, b| b.1.cmp(&a.1));
++                rects.sort_unstable_by_key(|r| std::cmp::Reverse(r.1));
+                 let scissors: Vec<String> = rects
+                     .iter()
+                     .take(5)
+@@ -2968,6 +2973,8 @@ impl State {
+             self.window = None;
+         }
+         let same = |w: &Window| w.copy == args.id() && w.kind == kind && w.stride == stride;
++        let group_base = if kind == DISPATCH && max == 1 { group_base_word(p) } else { None };
++        let mut second: Option<((u32, u32), u64)> = None;
+         let hit = self
+             .window
+             .as_ref()
+@@ -3010,6 +3017,11 @@ impl State {
+                 // whose unfilled slots must not spend the list's budget.
+                 let bounded = if windowed && records > 1 {
+                     crate::indirect::bound_ahead(list, (&args.buffer, offset), (kind, step, records))
++                } else if let Some(base) = group_base {
++                    // The groups past 65,535 in x run as second records,
++                    // `records` records on in the scratch buffer.
++                    second = Some((base, u64::from(step) * u64::from(records)));
++                    crate::indirect::bound_split(list, (&args.buffer, offset), count_arg, (kind, step, records))
+                 } else {
+                     crate::indirect::bound(list, (&args.buffer, offset), count_arg, (kind, step, records))
+                 };
+@@ -3062,6 +3074,32 @@ impl State {
+                 counter.as_ref().map_or(0, |(s, at)| s.offset(*at)),
+             )
+         };
++        // The groups past 65,535 in x: the second records, with the first
++        // group in x at 65,535 (a dispatch runs at most 65,535 groups in
++        // each dimension). Records that asked for fewer run no groups here.
++        if let Some(((param, dword), offset)) = second {
++            static LIGHTING_SEEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
++            if !LIGHTING_SEEN.load(Ordering::Relaxed)
++                && p.stages.iter().any(|s| s.shader.hash.starts_with("2dc364df5d3278b8"))
++                && !LIGHTING_SEEN.swap(true, Ordering::Relaxed)
++            {
++                tracing::warn!("paired indirect dispatch active for classified-tile lighting");
++            }
++            // SAFETY: as above; the compute root signature bound has the
++            // user-data parameter `param` with dword `dword`.
++            unsafe {
++                list.list.SetComputeRoot32BitConstant(param, 65535, dword);
++                list.list.ExecuteIndirect(
++                    &signature,
++                    max,
++                    &bounded,
++                    at + offset,
++                    counter.as_ref().map(|(s, _)| &s.buffer),
++                    counter.as_ref().map_or(0, |(s, at)| s.offset(*at)),
++                );
++                list.list.SetComputeRoot32BitConstant(param, 0, dword);
++            }
++        }
+         if kind == MESH {
+             self.mesh_scissor(list, false);
+         }
+@@ -3075,6 +3113,31 @@ impl State {
+     }
+ }
+ 
++/// Where the compute program of `p` takes the first thread group of its
++/// dispatch in x (`victory_shader::emit::USER_GROUP_BASE`): its user-data
++/// root parameter and dword. `None` if it does not read the group id in x,
++/// or with `VICTORY_DISPATCH_SPLIT=0`.
++/// shortcut: only programs that read the group id in x run their groups
++/// past 65,535 (a second execution for every indirect dispatch of the
++/// others would double the indirect compute commands of a frame); the
++/// others' are still cut, which matters for one that takes its work from a
++/// counter. The only program seen asking for more in the prologue reads it.
++pub(crate) static LIGHTING_SPLIT_ENABLED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
++
++fn group_base_word(p: &crate::pipeline::host::HostPipeline) -> Option<(u32, u32)> {
++    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
++    if !LIGHTING_SPLIT_ENABLED.load(Ordering::Relaxed) ||
++        !*ON.get_or_init(|| std::env::var_os("VICTORY_DISPATCH_SPLIT").is_none_or(|v| v != "0")) {
++        return None;
++    }
++    p.stages.iter().find_map(|stage| {
++        let (param, _) = stage.user_data?;
++        let base = RootType::Other(victory_shader::emit::USER_GROUP_BASE);
++        let u = stage.translated().host.user_data.iter().find(|u| u.root == base)?;
++        Some((param, u.index))
++    })
++}
++
+ /// The host command signature for one argument of `kind` with records
+ /// `stride` bytes apart (no root arguments, so no root signature), made
+ /// once.
+diff --git a/crates/victory-gpu/src/host.rs b/crates/victory-gpu/src/host.rs
+index 76e233e..946f61f 100644
+--- a/crates/victory-gpu/src/host.rs
++++ b/crates/victory-gpu/src/host.rs
+@@ -1732,8 +1732,11 @@ void main(uint3 group : SV_GroupID, uint t : SV_GroupIndex) {
+ fn rehash_runs() -> bool {
+     static ON: OnceLock<bool> = OnceLock::new();
+     *ON.get_or_init(|| std::env::var_os("VICTORY_CARD_REHASH_RUNS").is_some_and(|v| v == "1"))
++        && !SEPARATE_HASH_PASSES.load(Ordering::Relaxed)
+ }
+ 
++static SEPARATE_HASH_PASSES: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
++
+ /// Since the last frame-rate line, of our own passes over copies in the
+ /// card's memory: hash passes after ranges were sent up, the pieces they
+ /// hashed, and compare passes after the lists.
+@@ -6317,6 +6320,8 @@ struct Presenter {
+ /// every few seconds.
+ struct Meter {
+     since: std::time::Instant,
++    frame_csv: Option<(std::io::BufWriter<std::fs::File>, std::time::Instant, u64)>,
++    split_off_file: Option<std::path::PathBuf>,
+     frames: u32,
+     #[cfg(feature = "diagnostics")]
+     copy_stats_frames: u64,
+@@ -6331,6 +6336,14 @@ impl Meter {
+         let now = std::time::Instant::now();
+         Meter {
+             since: now,
++            frame_csv: std::env::var_os("VICTORY_FRAME_CSV").and_then(|path| {
++                use std::io::Write;
++                let file = std::fs::OpenOptions::new().create_new(true).write(true).open(path).ok()?;
++                let mut out = std::io::BufWriter::new(file);
++                writeln!(out, "present_interval_us,draw_calls,split_enabled,joined_hashes").ok()?;
++                Some((out, now, crate::draw::drawn()))
++            }),
++            split_off_file: std::env::var_os("VICTORY_FRAME_CSV").map(|p| std::path::PathBuf::from(p).with_file_name("split-off")),
+             frames: 0,
+             #[cfg(feature = "diagnostics")]
+             copy_stats_frames: 0,
+@@ -6342,6 +6355,18 @@ impl Meter {
+ 
+     /// Counts a presented frame.
+     fn frame(&mut self, hwnd: HWND) {
++        if let Some((out, last, prev_draws)) = self.frame_csv.as_mut() {
++            use std::io::Write;
++            let now = std::time::Instant::now();
++            let draws = crate::draw::drawn();
++            let split = crate::draw::LIGHTING_SPLIT_ENABLED.load(Ordering::Relaxed);
++            let result = writeln!(out, "{},{},{},{}", now.duration_since(*last).as_micros(), draws.saturating_sub(*prev_draws), u8::from(split), u8::from(rehash_runs()));
++            *last = now;
++            *prev_draws = draws;
++            if result.is_err() || (now.duration_since(self.since).as_secs() >= 1 && out.flush().is_err()) {
++                self.frame_csv = None;
++            }
++        }
+         #[cfg(feature = "diagnostics")]
+         tracing::debug!(target: "victory_gpu::frame", token = crate::frame::current(), "present");
+         #[cfg(feature = "diagnostics")]
+@@ -6357,6 +6382,13 @@ impl Meter {
+         }
+         let drawn = crate::draw::drawn();
+         let frames = f64::from(self.frames);
++        if let Some(path) = &self.split_off_file {
++            let enabled = !path.exists();
++            SEPARATE_HASH_PASSES.store(path.with_file_name("rehash-off").exists(), Ordering::Relaxed);
++            if crate::draw::LIGHTING_SPLIT_ENABLED.swap(enabled, Ordering::Relaxed) != enabled {
++                tracing::warn!(enabled, "indirect dispatch comparison switched");
++            }
++        }
+         let fps = frames / elapsed.as_secs_f64();
+         let ms = elapsed.as_secs_f64() * 1000.0 / frames;
+         let draws = (drawn - self.drawn) as f64 / frames;
+diff --git a/crates/victory-gpu/src/indirect.rs b/crates/victory-gpu/src/indirect.rs
+index 3005031..ad3b751 100644
+--- a/crates/victory-gpu/src/indirect.rs
++++ b/crates/victory-gpu/src/indirect.rs
+@@ -36,7 +36,7 @@ cbuffer Record : register(b0) {
+     uint args_offset;
+     // Bit 0: a count buffer bounds the records. Bit 1: the records are a
+     // window clamped ahead of their draws: one that asks for more than can
+-    // run is left empty and costs nothing.
++    // run is left empty and costs nothing. Bit 3 emits an overflow dispatch.
+     uint has_count;
+     uint count_offset;
+ };
+@@ -92,7 +92,12 @@ void main(uint3 id : SV_DispatchThreadID) {
+         if (g.z != 0 && g.x * g.y > GROUPS / g.z) {
+             g = uint3(0, 0, 0);
+         }
+-        cost = g.x * g.y * g.z * 64u;
++        uint rest = ((has_count & 8u) != 0 && g.x == 65535u) ? min(asked.x - 65535u, 65535u) : 0u;
++        if (rest != 0 && g.y * g.z != 0 && g.x + rest > GROUPS / (g.y * g.z)) {
++            g = uint3(0, 0, 0);
++            rest = 0;
++        }
++        cost = (g.x + rest) * g.y * g.z * 64u;
+         groups = g;
+     } else {
+         // Mesh dispatches: the console's are one-dimensional.
+@@ -138,6 +143,12 @@ void main(uint3 id : SV_DispatchThreadID) {
+         if (over) {
+             groups = uint3(0, 0, 0);
+         }
++        // Split: the second record, `records` records on, takes the groups
++        // past 65,535 in x (none where the first is not full).
++        if (kind == 2 && (has_count & 8u) != 0) {
++            uint rest = groups.x == 65535u ? min(src_args.Load(src_at) - 65535u, 65535u) : 0u;
++            dst_args.Store3(records * stride + dst_at, uint3(rest, groups.yz));
++        }
+         dst_args.Store3(dst_at, groups);
+         for (uint off = 12; off < stride; off += 4) {
+             dst_args.Store(dst_at + off, src_args.Load(src_at + off));
+@@ -268,6 +279,20 @@ pub(crate) fn bound(
+     record_clamp(c, &list.list, &dst, budget, src, count, spec).then_some(dst)
+ }
+ 
++/// Store a second set of dispatch records after the first, for the tail
++/// of a workload wider than a single D3D12 Dispatch.
++pub(crate) fn bound_split(
++    list: &HostList,
++    src: (&ID3D12Resource, u64),
++    count: Option<(&ID3D12Resource, u64)>,
++    spec: (u32, u32, u32),
++) -> Option<ID3D12Resource> {
++    let bytes = validate_layout(spec, src.1, count.map(|(_, off)| off))?;
++    let both = bytes.checked_mul(2).filter(|&n| n <= u64::from(u32::MAX))?;
++    let (c, budget, dst) = (clamp()?, list.budget()?, list.indirect_scratch(both)?);
++    record_clamp_with(c, &list.list, &dst, budget, src, count, spec, (false, true)).then_some(dst)
++}
++
+ /// [`bound`] for a window of records clamped ahead of the draws that will
+ /// read them (`crate::draw`'s windows; no count buffer). The records past
+ /// the ones the title filled are whatever the buffer holds, and each
+@@ -304,6 +329,20 @@ fn record_clamp(
+ /// their draws ([`bound_ahead`]).
+ #[allow(clippy::too_many_arguments)]
+ fn record_clamp_as(
++    c: &Clamp,
++    l: &ID3D12GraphicsCommandList,
++    dst: &ID3D12Resource,
++    budget: u64,
++    src: (&ID3D12Resource, u64),
++    count: Option<(&ID3D12Resource, u64)>,
++    spec: (u32, u32, u32),
++    ahead: bool,
++) -> bool {
++    record_clamp_with(c, l, dst, budget, src, count, spec, (ahead, false))
++}
++
++#[allow(clippy::too_many_arguments)]
++fn record_clamp_with(
+     c: &Clamp,
+     l: &ID3D12GraphicsCommandList,
+     dst: &ID3D12Resource,
+@@ -311,7 +350,7 @@ fn record_clamp_as(
+     (src, src_offset): (&ID3D12Resource, u64),
+     count: Option<(&ID3D12Resource, u64)>,
+     (kind, stride, records): (u32, u32, u32),
+-    ahead: bool,
++    (ahead, split): (bool, bool),
+ ) -> bool {
+     let Some(bytes) = validate_layout(
+         (kind, stride, records),
+@@ -356,7 +395,8 @@ fn record_clamp_as(
+         }
+         None => (src_gpu, 0u32, 0u32),
+     };
+-    let constants = [kind, stride, records, args_offset, has_count | (u32::from(ahead) << 1), count_offset];
++    let flags = has_count | (u32::from(ahead) << 1) | (u32::from(split) << 3);
++    let constants = [kind, stride, records, args_offset, flags, count_offset];
+     // SAFETY: an open list; our root signature and pipeline; live source,
+     // count, scratch destination, and budget buffers. `src` and `count` stay
+     // in `COMMON` / `GENERIC_READ` via implicit buffer promotion while `dst`
+@@ -1071,6 +1111,115 @@ void main() {
+         assert_ne!(clamped_words[21], 0xDEAD_BEEF);
+     }
+ 
++    /// Counts each group it runs at `x + base + 131072 * (y + 16 * z)`.
++    const SPLIT_CS: &str = r#"
++#define RS "RootConstants(num32BitConstants=1, b0), UAV(u0)"
++cbuffer First : register(b0) { uint base; };
++RWByteAddressBuffer hits : register(u0);
++[RootSignature(RS)]
++[numthreads(1, 1, 1)]
++void main(uint3 g : SV_GroupID) {
++    uint prev;
++    hits.InterlockedAdd(4 * (g.x + base + 131072u * (g.y + 16u * g.z)), 1, prev);
++}
++"#;
++
++    /// One dispatch record of `asked` groups through the clamp, split
++    /// (`bound_split`'s two parts, the second with its first group at
++    /// 65,535) or not: how many times each group ran, and the budget spent.
++    fn split_run(warp: &mut WarpHarness, worker: &Clamp, asked: [u32; 3], split: bool) -> (Vec<u32>, u32) {
++        const STRIDE: u32 = 12;
++        const CELLS: usize = 131_072 * 48;
++        let (src_buf, src_ptr, _) = warp.shared_buffer(64);
++        let (_budget_buf, budget_ptr, budget_gpu) = warp.shared_buffer(256);
++        let (_hits_buf, hits_ptr, hits_gpu) = warp.shared_buffer((CELLS * 4) as u64);
++        let dst_buf = warp.default_uav(u64::from(STRIDE) * 2);
++        let sig = warp.signature(2, STRIDE);
++        // SAFETY: buffers are mapped with the capacities above.
++        unsafe {
++            for (k, w) in asked.into_iter().enumerate() {
++                src_ptr.cast::<u32>().add(k).write_volatile(w);
++            }
++            std::ptr::write_bytes(budget_ptr, 0, 256);
++            std::ptr::write_bytes(hits_ptr, 0, CELLS * 4);
++        }
++        assert!(record_clamp_with(
++            &warp.clamp,
++            &warp.list,
++            &dst_buf,
++            budget_gpu,
++            (&src_buf, 0),
++            None,
++            (2, STRIDE, 1),
++            (false, split),
++        ));
++        // SAFETY: an open list, the worker's root signature and pipeline,
++        // live buffers; the scratch buffer is in `INDIRECT_ARGUMENT`.
++        unsafe {
++            let l = &warp.list;
++            l.SetComputeRootSignature(&worker.root);
++            l.SetPipelineState(&worker.pso);
++            l.SetComputeRootUnorderedAccessView(1, hits_gpu);
++            l.SetComputeRoot32BitConstant(0, 0, 0);
++            l.ExecuteIndirect(&sig, 1, &dst_buf, 0, None, 0);
++            if split {
++                l.SetComputeRoot32BitConstant(0, 65535, 0);
++                l.ExecuteIndirect(&sig, 1, &dst_buf, u64::from(STRIDE), None, 0);
++            }
++        }
++        warp.submit_and_wait();
++        // SAFETY: the GPU is done; mapped host memory.
++        unsafe {
++            let hits = std::slice::from_raw_parts(hits_ptr.cast::<u32>().cast_const(), CELLS).to_vec();
++            (hits, budget_ptr.cast::<u32>().read_volatile())
++        }
++    }
++
++    /// A dispatch record of more than 65,535 groups in x, split in two
++    /// parts, runs each of its groups exactly once (up to 131,070 in x),
++    /// with y and z as asked, and the budget charges them all; unsplit,
++    /// the groups past 65,535 never run.
++    #[test]
++    fn warp_split_runs_every_group_of_a_wide_dispatch_once() {
++        let Some(mut warp) = WarpHarness::new() else {
++            return;
++        };
++        let worker = compile_cs(&warp.device, SPLIT_CS).expect("split worker must compile");
++        // The last: 65,535 x 16 groups fit the 2^20 a dispatch may run, the
++        // whole 70,000 x 16 does not, so neither part runs.
++        let cases: [[u32; 3]; 8] = [
++            [1, 1, 1],
++            [65_535, 1, 1],
++            [65_536, 1, 1],
++            [89_968, 1, 1],
++            [131_070, 1, 1],
++            [200_000, 1, 1],
++            [70_000, 2, 3],
++            [70_000, 16, 1],
++        ];
++        for asked in cases {
++            let (hits, spent) = split_run(&mut warp, &worker, asked, true);
++            let fits = asked[0].min(131_070) * asked[1] * asked[2] <= 1 << 20;
++            let runs = if fits { asked[0].min(131_070) } else { 0 };
++            for z in 0..3u32 {
++                for y in 0..16u32 {
++                    let row = 131_072 * (y + 16 * z) as usize;
++                    let inside = y < asked[1] && z < asked[2];
++                    for x in 0..131_072u32 {
++                        let want = u32::from(inside && x < runs);
++                        assert_eq!(hits[row + x as usize], want, "asked {asked:?}: group ({x}, {y}, {z})");
++                    }
++                }
++            }
++            assert_eq!(spent, runs * asked[1] * asked[2] * 64, "asked {asked:?}: budget");
++        }
++        // Unsplit, as before: cut at 65,535 in x.
++        let (hits, spent) = split_run(&mut warp, &worker, [89_968, 1, 1], false);
++        assert!(hits[..65_535].iter().all(|&h| h == 1));
++        assert!(hits[65_535..].iter().all(|&h| h == 0));
++        assert_eq!(spent, 65_535 * 64);
++    }
++
+     /// WARP D3D12 test proving `BUDGET` saturates without 32-bit unsigned
+     /// wraparound across >64 huge indexed-draw records (`count = None`), while
+     /// preserving `StartIndexLocation`, `BaseVertexLocation`,
+@@ -1433,6 +1582,7 @@ void work() {
+         heap_pairs: [[Option<ID3D12DescriptorHeap>; 2]; 2],
+         tables: [D3D12_GPU_DESCRIPTOR_HANDLE; 2],
+         targets: [D3D12_CPU_DESCRIPTOR_HANDLE; 2],
++        #[allow(dead_code)]
+         depth_written: D3D12_CPU_DESCRIPTOR_HANDLE,
+         depth_tested: D3D12_CPU_DESCRIPTOR_HANDLE,
+         stamps: ID3D12QueryHeap,
+diff --git a/crates/victory-gpu/src/pipeline.rs b/crates/victory-gpu/src/pipeline.rs
+index 60ed05c..dfaac6a 100644
+--- a/crates/victory-gpu/src/pipeline.rs
++++ b/crates/victory-gpu/src/pipeline.rs
+@@ -294,12 +294,14 @@ pub(crate) fn builder_runs() -> bool {
+     if b.whole {
+         return true;
+     }
+-    let missing = b.pipelines.iter().filter(|p| !make::now(p)).count();
++    let unmade: Vec<String> = b.pipelines.iter().filter(|p| !make::now(p)).map(|p| make::names(p)).collect();
++    let missing = unmade.len();
+     if missing > 0 {
+         b.off = true;
+         tracing::warn!(
+             missing,
+             of = b.pipelines.len(),
++            unmade = ?unmade,
+             "the ray-tracing structure builder stays off: not all of its programs have a host pipeline, and its stages run all or none"
+         );
+         return false;
+diff --git a/crates/victory-gpu/src/pipeline/make.rs b/crates/victory-gpu/src/pipeline/make.rs
+index 9862446..58a7a9d 100644
+--- a/crates/victory-gpu/src/pipeline/make.rs
++++ b/crates/victory-gpu/src/pipeline/make.rs
+@@ -137,6 +137,11 @@ pub(crate) fn now(p: &Arc<Pending>) -> bool {
+     p.made.get().is_some_and(|made| made.is_some())
+ }
+ 
++/// The stages and hashes of `p`'s shaders, for the log.
++pub(crate) fn names(p: &Pending) -> String {
++    p.shaders.iter().map(|s| format!("{} {}", s.stage, s.hash)).collect::<Vec<_>>().join(", ")
++}
++
+ /// At the title's creation of a pipeline: starts it at once if an earlier
+ /// run drew with it (during loading, so the world's first frames find it).
+ pub(crate) fn early(p: &Arc<Pending>) {
+diff --git a/crates/victory-gpu/src/resource.rs b/crates/victory-gpu/src/resource.rs
+index 2f501bd..ba94e27 100644
+--- a/crates/victory-gpu/src/resource.rs
++++ b/crates/victory-gpu/src/resource.rs
+@@ -2163,12 +2163,12 @@ pub(crate) fn host_tiled(this: This) -> Option<OnDemand> {
+     hosted(this, false).map(|(host, _)| host).filter(|host| host.tiled.is_some()).map(OnDemand)
+ }
+ 
+-/// The first level a view of title texture `this` may show, if its host
++/// The levels a view of title texture `this` may show, if its host
+ /// copy is made level by level and some level is held and has memory
+-/// (`crate::tiles::Tiled::first_shown`).
++/// (`crate::tiles::Tiled::shown_levels`).
+ #[cfg(windows)]
+-pub(crate) fn first_shown(this: This) -> Option<u32> {
+-    host_tiled(this)?.tiled()?.first_shown()
++pub(crate) fn shown_levels(this: This) -> u32 {
++    host_tiled(this).and_then(|host| host.tiled().map(|tiles| tiles.shown_levels())).unwrap_or(0)
+ }
+ 
+ /// A host copy made without memory of its own (`crate::tiles`), as a
+@@ -2550,6 +2550,7 @@ static PLACED_TWINS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64
+ 
+ /// See [`PLACED_TWINS`].
+ #[cfg(windows)]
++#[cfg_attr(not(feature = "diagnostics"), allow(dead_code))]
+ pub(crate) fn placed_filler_twins() -> u64 {
+     PLACED_TWINS.load(std::sync::atomic::Ordering::Relaxed)
+ }
+diff --git a/crates/victory-gpu/src/shader_cache.rs b/crates/victory-gpu/src/shader_cache.rs
+index c5365c4..8e3ffa4 100644
+--- a/crates/victory-gpu/src/shader_cache.rs
++++ b/crates/victory-gpu/src/shader_cache.rs
+@@ -74,9 +74,34 @@ fn build() -> [u8; 32] {
+     }
+     h.update(&victory_shader::emit::translation_fingerprint());
+     h.update(include_bytes!("shader_cache.rs"));
++    // The lists this file reads for the translator (`translate_listed`): the
++    // shader crate's fingerprint does not see them.
++    for name in ["VICTORY_WAVE_WIDE_ONLY", "VICTORY_FIRSTLANE_OWN_ONLY"] {
++        h.update(name.as_bytes());
++        h.update(b"=");
++        if let Some(value) = std::env::var_os(name) {
++            h.update(value.as_encoded_bytes());
++        }
++        h.update(b"\0");
++    }
+     *h.finalize().as_bytes()
+ }
+ 
++/// A container translated with the forms this file allows it by its hash
++/// (the wave-wide form, the host wave's own first lane: [`WAVE_WIDE`],
++/// [`FIRSTLANE_OWN`]); for runs and the offline warm-up alike, which share
++/// the cache.
++fn translate_listed(c: &[u8]) -> Result<HostShader, String> {
++    let hash = blake3::hash(c).to_hex();
++    victory_shader::emit::with_wave_wide(listed(&WAVE_WIDE, "VICTORY_WAVE_WIDE_ONLY", &WAVE_WIDE_DEFAULT, &hash), || {
++        victory_shader::emit::with_firstlane_own(
++            listed(&FIRSTLANE_OWN, "VICTORY_FIRSTLANE_OWN_ONLY", &FIRSTLANE_OWN_DEFAULT, &hash),
++            || victory_shader::emit::translate(c),
++        )
++    })
++    .map_err(|e| e.to_string())
++}
++
+ /// The offline warm-up (`victory translate --warm`): `container` is
+ /// translated into the cache unless it is there already. `Ok(true)`: it
+ /// was translated now. Needs [`use_shader_cache`] and the same host facts
+@@ -86,7 +111,7 @@ pub fn warm(container: &[u8]) -> Result<bool, String> {
+     let ran = AtomicBool::new(false);
+     let translate = |c: &[u8]| {
+         ran.store(true, Ordering::Relaxed);
+-        victory_shader::emit::translate(c).map_err(|e| e.to_string())
++        translate_listed(c)
+     };
+     cached(cache, &build(), container, translate).map(|_| ran.load(Ordering::Relaxed))
+ }
+@@ -94,13 +119,53 @@ pub fn warm(container: &[u8]) -> Result<bool, String> {
+ /// The translation of a console shader container, from the cache when
+ /// there is one.
+ pub(crate) fn host_shader(container: &[u8]) -> Result<HostShader, String> {
+-    let translate = |c: &[u8]| victory_shader::emit::translate(c).map_err(|e| e.to_string());
++    let translate = translate_listed;
+     match CACHE.get() {
+         Some(cache) => cached(cache, &build(), container, translate),
+         None => translate(container),
+     }
+ }
+ 
++/// The containers (by the 16-digit hash the log names shaders with) whose
++/// wave64 compute program may take the wave-wide form on a host of 32-lane
++/// waves (`victory_shader::emit::with_wave_wide`): `VICTORY_WAVE_WIDE_ONLY`,
++/// a list of hashes, or by default the four programs of this title that
++/// come out of it with 32-lane waves and otherwise do not run at all on
++/// such a host (the driver refuses their 64-lane form: water transmission
++/// volumetrics, both kinds; particle visibility; the tiling of the
++/// screen-space reflection pass). `VICTORY_WAVE_WIDE_ONLY=none` allows none.
++static WAVE_WIDE: OnceLock<Vec<String>> = OnceLock::new();
++const WAVE_WIDE_DEFAULT: [&str; 4] = ["5dc3b25986622949", "6f225b641c5b0708", "369cbe906ea72764", "2cc4c197ee29e291"];
++
++/// The containers whose first-lane reads where not every lane runs take the
++/// host wave's own first lane (`victory_shader::emit::with_firstlane_own`):
++/// `VICTORY_FIRSTLANE_OWN_ONLY`, or by default the three programs of the
++/// ray-tracing structure builder (`XboxBvhBuilder.dll`) that need it to
++/// translate for 32-lane waves. Their scans read a sum of scalars, the same
++/// in every lane of the console wave, which is where the host wave's own
++/// first lane is exact; without them the builder's other 49 programs cannot
++/// run either (its stages run all or none, `crate::pipeline`).
++static FIRSTLANE_OWN: OnceLock<Vec<String>> = OnceLock::new();
++// (As the title passes them, then as `victory translate` finds them in the DLL.)
++const FIRSTLANE_OWN_DEFAULT: [&str; 6] = [
++    "39321a95223001ed",
++    "77360df21e12ea43",
++    "9fc111d3be79364f",
++    "dc78c5de69c7c155",
++    "322ed4ad832bdea6",
++    "d441b097704ab616",
++];
++
++/// Whether `hash` (a container's, in hex) is on the list `env` names (hashes
++/// separated by commas, `none` for none), or on `default` without it.
++fn listed(list: &OnceLock<Vec<String>>, env: &str, default: &[&str], hash: &str) -> bool {
++    let list = list.get_or_init(|| match std::env::var(env) {
++        Ok(v) => v.split(',').map(|h| h.trim().to_lowercase()).filter(|h| !h.is_empty() && h != "none").collect(),
++        Err(_) => default.iter().map(|h| h.to_string()).collect(),
++    });
++    list.iter().any(|h| hash.starts_with(h.as_str()))
++}
++
+ /// The cache entry's converter: the build and the container in, the
+ /// encoded translation out. `ran` tells a miss from a hit.
+ struct Translate<F> {
+diff --git a/crates/victory-gpu/src/tiles.rs b/crates/victory-gpu/src/tiles.rs
+index 6d3c3d8..0bcff7c 100644
+--- a/crates/victory-gpu/src/tiles.rs
++++ b/crates/victory-gpu/src/tiles.rs
+@@ -33,11 +33,9 @@
+ //! - The small levels the card packs into shared tiles are given together
+ //!   when any of them is held; the upload writes all of them (zeros for
+ //!   the ones not held).
+-//! - A shader must not reach a level without memory (it reads zeros: a
+-//!   black texture). The host view of a slot is made from the first level
+-//!   that is held and has tiles ([`show_from`], `descriptor/host.rs`
+-//!   `make`), and the slots of a texture are made again when that level
+-//!   changes (`HostHeap::texture_views_remade`).
++//! - A shader view selects a contiguous mip range with initialized tiles
++//!   ([`show_resident`], `descriptor/host.rs` `make`). The texture's slots
++//!   are made again when its resident levels change.
+ //! - shortcut: tiles are not taken back while the host copy lives. A level
+ //!   the title lets go of, or that turns out to be the next texture's,
+ //!   keeps its tiles; it is hidden by the views and written with zeros at
+@@ -247,6 +245,16 @@ struct Given {
+     runs: Vec<(usize, u32, u32)>,
+ }
+ 
++/// One reserved texture can map several mip regions to the same heap in
++/// one queue call. Heap ranges follow the corresponding regions in order.
++struct TileMappings {
++    heap: ID3D12Heap,
++    coordinates: Vec<D3D12_TILED_RESOURCE_COORDINATE>,
++    sizes: Vec<D3D12_TILE_REGION_SIZE>,
++    starts: Vec<u32>,
++    counts: Vec<u32>,
++}
++
+ /// A host texture made without memory, and the tiles its levels have been
+ /// given.
+ pub(crate) struct Tiled {
+@@ -260,9 +268,7 @@ pub(crate) struct Tiled {
+     /// The bytes all its tiles would take.
+     pub(crate) full: u64,
+     given: Mutex<Given>,
+-    /// The first level a view of the texture may show: the first one that
+-    /// is held or was written by the card and has tiles (`u32::MAX`: none
+-    /// yet).
++    /// Levels that are held or were written by the card and have tiles.
+     shown: AtomicU32,
+     /// The levels held at the last upload (a bit a level).
+     held: AtomicU32,
+@@ -333,7 +339,7 @@ impl Tiled {
+             packed: packed_tiles,
+             levels,
+             full,
+-            shown: AtomicU32::new(u32::MAX),
++            shown: AtomicU32::new(0),
+             held: AtomicU32::new(0),
+             card: AtomicU32::new(0),
+             claimed: AtomicU32::new(0),
+@@ -351,7 +357,7 @@ impl Tiled {
+     /// card's gate in `draw.rs` on the ground that it takes no memory;
+     /// with tiles given here regardless, the line would not bound these
+     /// textures.)
+-    /// Returns whether the first level a view may show changed, and
++    /// Returns whether the levels a view may show changed, and
+     /// whether a level named is still without tiles (no room, or no heap
+     /// could be had): the caller has the upload recorded again later, or
+     /// the level would stay empty until the title writes the texture.
+@@ -386,7 +392,7 @@ impl Tiled {
+     /// At the submission of a list in which the card itself writes the
+     /// levels `levels` of `texture` (after zeros, if they were new:
+     /// [`Tiled::claim`]): tiles for those that have none. Returns whether
+-    /// the first level a view may show changed.
++    /// the levels a view may show changed.
+     /// Only the levels this list writes get tiles here: a held level that
+     /// is waiting for room is written by no copy of this list, and tiles
+     /// hold what their last owner left.
+@@ -486,13 +492,13 @@ impl Tiled {
+     /// name (a bit a level, level 0 the lowest) and that have none yet;
+     /// the levels the card packs together get theirs when any of them is
+     /// so named. `named`: the levels that are the title's or the card's
+-    /// own, by which the first level a view may show is told; `may`: the
++    /// own, which determines the levels a view may show; `may`: the
+     /// ones of them that may get tiles in this call. To be called only
+     /// from a submission-time step of a list that writes every level of
+     /// `may`, whole: the call is ahead of that list on `queue`, and tiles
+     /// hold what their last owner left.
+-    /// Returns whether the first level a view may show changed
+-    /// ([`Tiled::first_shown`]): the caller has the texture's slots made
++    /// Returns whether the levels a view may show changed
++    /// ([`Tiled::shown_levels`]): the caller has the texture's slots made
+     /// again.
+     #[cfg(test)]
+     pub(crate) fn give_on(
+@@ -516,7 +522,6 @@ impl Tiled {
+         named: u32,
+         may: u32,
+     ) -> bool {
+-        let has = |level: u32| level < 32 && named & (1 << level) != 0;
+         let now = |level: u32| level < 32 && named & may & (1 << level) != 0;
+         let first_packed = self.standard.len() as u32;
+         // (subresource, tiles, the level if it has tiles of its own) to map now.
+@@ -529,73 +534,74 @@ impl Tiled {
+         if self.packed > 0 && !given.packed && (first_packed..self.levels).any(now) {
+             wanted.push((first_packed, self.packed, None));
+         }
++        let mut mappings = std::collections::BTreeMap::new();
+         for (subresource, tiles, level) in wanted {
+             let Some((heap, index, runs)) = take(device, tiles) else {
+                 continue;
+             };
+-            let at = D3D12_TILED_RESOURCE_COORDINATE {
++            let mapping = mappings.entry(index).or_insert_with(|| TileMappings {
++                heap,
++                coordinates: Vec::new(),
++                sizes: Vec::new(),
++                starts: Vec::new(),
++                counts: Vec::new(),
++            });
++            mapping.coordinates.push(D3D12_TILED_RESOURCE_COORDINATE {
+                 X: 0,
+                 Y: 0,
+                 Z: 0,
+                 Subresource: subresource,
+-            };
+-            let size = D3D12_TILE_REGION_SIZE {
++            });
++            mapping.sizes.push(D3D12_TILE_REGION_SIZE {
+                 NumTiles: tiles,
+                 ..Default::default()
+-            };
+-            // One region, the subresource's tiles in order, on as many
+-            // ranges of the heap as the runs taken.
+-            let flags = vec![D3D12_TILE_RANGE_FLAG_NONE; runs.len()];
+-            let starts: Vec<u32> = runs.iter().map(|run| run.0).collect();
+-            let counts: Vec<u32> = runs.iter().map(|run| run.1).collect();
++            });
++            for (start, count) in runs {
++                mapping.starts.push(start);
++                mapping.counts.push(count);
++                given.runs.push((index, start, count));
++            }
++            match level {
++                Some(level) => given.levels[level] = true,
++                None => given.packed = true,
++            }
++            STATS[2].fetch_add(u64::from(tiles) * TILE, Ordering::Relaxed);
++            STATS[5].fetch_add(1, Ordering::Relaxed);
++        }
++        for mapping in mappings.values() {
+             let began = std::time::Instant::now();
+-            // SAFETY: a live reserved texture and a live heap of ours; one
+-            // region of `tiles` tiles from the subresource's first tile;
+-            // `runs.len()` ranges whose counts add up to `tiles`, in three
+-            // arrays of that length that live through the call.
++            // SAFETY: live objects and matching coordinate/size and
++            // start/count arrays. Each region's ranges cover exactly its
++            // tile count. Null flags map every range with the normal mode.
+             unsafe {
+                 queue.UpdateTileMappings(
+                     texture,
+-                    1,
+-                    Some(&raw const at),
+-                    Some(&raw const size),
+-                    &heap,
+-                    runs.len() as u32,
+-                    Some(flags.as_ptr()),
+-                    Some(starts.as_ptr()),
+-                    Some(counts.as_ptr()),
++                    mapping.coordinates.len() as u32,
++                    Some(mapping.coordinates.as_ptr()),
++                    Some(mapping.sizes.as_ptr()),
++                    &mapping.heap,
++                    mapping.starts.len() as u32,
++                    None,
++                    Some(mapping.starts.as_ptr()),
++                    Some(mapping.counts.as_ptr()),
+                     D3D12_TILE_MAPPING_FLAG_NONE,
+                 );
+             }
+             STATS[6].fetch_add(1, Ordering::Relaxed);
+             STATS[7].fetch_add(began.elapsed().as_micros() as u64, Ordering::Relaxed);
+-            match level {
+-                Some(level) => given.levels[level] = true,
+-                None => given.packed = true,
+-            }
+-            for &(start, count) in &runs {
+-                given.runs.push((index, start, count));
+-            }
+-            STATS[2].fetch_add(u64::from(tiles) * TILE, Ordering::Relaxed);
+-            STATS[5].fetch_add(1, Ordering::Relaxed);
+         }
+-        let with_tiles = |level: u32| {
+-            if level < first_packed {
+-                given.levels[level as usize]
+-            } else {
+-                given.packed
+-            }
+-        };
+-        let shown = (0..self.levels).find(|&level| has(level) && with_tiles(level)).unwrap_or(u32::MAX);
++        let shown = named & !self.without_locked(given, named);
+         self.shown.swap(shown, Ordering::Relaxed) != shown
+     }
+ 
+-    /// The first level a view of the texture may show; `None` while no
+-    /// level is both held and given (the views are then as the title made
+-    /// them, and read zeros).
+-    pub(crate) fn first_shown(&self) -> Option<u32> {
+-        let shown = self.shown.load(Ordering::Relaxed);
+-        (shown != u32::MAX).then_some(shown)
++    pub(crate) fn shown_levels(&self) -> u32 {
++        self.shown.load(Ordering::Relaxed)
++    }
++
++    #[cfg(test)]
++    fn first_shown(&self) -> Option<u32> {
++        let shown = self.shown_levels();
++        (shown != 0).then(|| shown.trailing_zeros())
+     }
+ 
+     /// Whether level `level` has tiles.
+@@ -645,26 +651,39 @@ impl Drop for Tiled {
+     }
+ }
+ 
+-/// Keeps a two-dimensional shader view (2D or 2D array) from the levels
+-/// before `first` of a texture of `levels` levels: it starts at `first` if
+-/// it started before it, shows as many levels fewer (clamped to the
+-/// remaining levels), and reduces `ResourceMinLODClamp` by the same shift so
+-/// the effective minimum LOD stays at the same resource level.
+-pub(crate) fn show_from(desc: &mut D3D12_SHADER_RESOURCE_VIEW_DESC, first: u32, levels: u32) {
+-    if first >= levels {
++/// Restricts a 2D shader view to the first contiguous resident mip run
++/// within its requested range. If the whole range is absent, use the
++/// nearest coarser resident mip, or the coarsest finer one.
++pub(crate) fn show_resident(desc: &mut D3D12_SHADER_RESOURCE_VIEW_DESC, resident: u32, levels: u32) {
++    let levels = levels.min(32);
++    if levels == 0 || resident == 0 {
+         return;
+     }
++    let resident = resident & (u32::MAX >> (32 - levels));
+     let clamp = |most: &mut u32, mips: &mut u32, min_lod: &mut f32| {
+-        if first <= *most {
++        if *most >= levels || *mips == 0 || resident == 0 {
+             return;
+         }
+-        let fewer = first - *most;
+-        *most = first;
+-        if *mips != u32::MAX {
+-            *mips = mips.saturating_sub(fewer).clamp(1, levels - first);
++        let end = most.saturating_add(*mips).min(levels);
++        let requested = end - *most;
++        let coarser = resident >> *most;
++        if coarser == 0 {
++            *most = u32::BITS - 1 - resident.leading_zeros();
++            *mips = 1;
++            *min_lod = 0.0;
++            return;
+         }
++        let shift = coarser.trailing_zeros();
++        let first = *most + shift;
++        let available = (coarser >> shift).trailing_ones();
++        let count = if first < end { available.min(end - first) } else { 1 };
++        if shift == 0 && count == requested {
++            return;
++        }
++        *most = first;
++        *mips = count;
+         if *min_lod > 0.0 {
+-            *min_lod = (*min_lod - fewer as f32).max(0.0);
++            *min_lod = (*min_lod - shift as f32).clamp(0.0, (count - 1) as f32);
+         }
+     };
+     match desc.ViewDimension {
+@@ -745,9 +764,8 @@ mod tests {
+     const SIDE: u32 = 1024;
+     const LEVELS: u16 = 11;
+ 
+-    /// Two views of one texture read at the same place and level: the
+-    /// first as the layer makes it for a texture whose level 0 has no
+-    /// memory, the second as the title asked.
++    /// Two views with the same first mip sample the next level. The first
++    /// view clamps to the resident run, while the legacy view sees the hole.
+     const LOOK: &str = r#"
+ #define RS "DescriptorTable(SRV(t0, numDescriptors = 2)), UAV(u0), StaticSampler(s0, filter = FILTER_MIN_MAG_MIP_POINT)"
+ Texture2D<float4> clamped : register(t0);
+@@ -757,8 +775,8 @@ RWByteAddressBuffer words : register(u0);
+ [RootSignature(RS)]
+ [numthreads(1, 1, 1)]
+ void look() {
+-    float4 a = clamped.SampleLevel(nearest, float2(0.3, 0.3), 0);
+-    float4 b = whole.SampleLevel(nearest, float2(0.3, 0.3), 0);
++    float4 a = clamped.SampleLevel(nearest, float2(0.3, 0.3), 1);
++    float4 b = whole.SampleLevel(nearest, float2(0.3, 0.3), 1);
+     words.Store(0, (uint)(a.x * 255.0 + 0.5));
+     words.Store(4, (uint)(b.x * 255.0 + 0.5));
+ }
+@@ -1264,9 +1282,8 @@ void look() {
+         give_back(singles[1].1, &singles[1].2);
+     }
+ 
+-    /// (v) A view made by [`show_from`] of a texture whose level 0 has no
+-    /// tiles returns level 1's colour for a sample at level 0; the view as
+-    /// the title asked returns zero.
++    /// (v) Shader sampling clamps at the end of the first resident run,
++    /// even when there are more resident levels beyond a hole.
+     fn the_view_starts_at_the_first_level_with_tiles(rig: &mut Rig) -> Option<()> {
+         rig.step = "step 5, the view from the first level with tiles";
+         let cs = compile(LOOK, s!("look"), s!("cs_5_1")).ok()?;
+@@ -1274,10 +1291,18 @@ void look() {
+         let desc = Rig::desc(format, SIDE, LEVELS, true);
+         let layout = rig.footprints(&desc);
+         let (texture, tiled) = rig.reserved(&desc);
+-        // Every level but the largest; each level's bytes are sixteen
+-        // times its number plus one.
+-        rig.give(&tiled, &texture, from_level(1));
++        // Level 1 and the coarse mips are backed, with a hole at level 2.
++        let before = STATS[6].load(Ordering::Relaxed);
++        let regions_before = STATS[5].load(Ordering::Relaxed);
++        rig.give(&tiled, &texture, from_level(1) & !(1 << 2));
++        let calls = STATS[6].load(Ordering::Relaxed) - before;
++        let regions = STATS[5].load(Ordering::Relaxed) - regions_before;
++        let given = tiled.given.lock().unwrap();
++        let heaps = given.runs.iter().map(|run| run.0).collect::<std::collections::BTreeSet<_>>();
++        assert_eq!(calls as usize, heaps.len(), "one mapping call per backing heap");
++        drop(given);
+         assert_eq!(tiled.first_shown(), Some(1));
++        assert!(!tiled.has_tiles(2));
+         let upload = rig.filled(&layout, |level| (level as u8 + 1) * 16);
+         rig.round_trip(&texture, &layout, Some(&upload));
+         // SAFETY: plain object creation; the views are made in a heap
+@@ -1318,13 +1343,16 @@ void look() {
+                 },
+             };
+             let mut shown = as_asked;
+-            show_from(&mut shown, tiled.first_shown()?, u32::from(LEVELS));
++            show_resident(&mut shown, tiled.shown_levels(), u32::from(LEVELS));
+             assert_eq!(shown.Anonymous.Texture2D.MostDetailedMip, 1);
++            assert_eq!(shown.Anonymous.Texture2D.MipLevels, 1);
++            let mut legacy = as_asked;
++            legacy.Anonymous.Texture2D.MostDetailedMip = 1;
+             let step = rig.device.GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV) as usize;
+             let mut at = views.GetCPUDescriptorHandleForHeapStart();
+             rig.device.CreateShaderResourceView(&texture, Some(&raw const shown), at);
+             at.ptr += step;
+-            rig.device.CreateShaderResourceView(&texture, Some(&raw const as_asked), at);
++            rig.device.CreateShaderResourceView(&texture, Some(&raw const legacy), at);
+             let words = rig.buffer(
+                 D3D12_HEAP_TYPE_DEFAULT,
+                 D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
+@@ -1359,9 +1387,9 @@ void look() {
+             back.Unmap(0, None);
+             read
+         };
+-        eprintln!("a sample at level 0: {} through the view from level 1, {} through the view as asked", read[0], read[1]);
+-        assert_eq!(read[0], 32, "the view from the first level with tiles reads level 1");
+-        assert_eq!(read[1], 0, "the view from level 0 reads a level without tiles");
++        eprintln!("sample through resident view: {}, legacy view: {}; mapped {regions} regions in {calls} calls", read[0], read[1]);
++        assert_eq!(read[0], 32, "the resident view clamps sampling to level 1");
++        assert_eq!(read[1], 0, "the legacy view samples the unmapped level 2");
+         Some(())
+     }
+ 
+@@ -1411,9 +1439,9 @@ void look() {
+         assert_eq!(tiled.first_shown(), Some(0));
+         assert_eq!(tiled.claim(1 << 0), 0, "a level with tiles is not claimed again");
+         // With room everything held gets its tiles.
+-        let (_, waiting) = tiled.uploaded_on(&rig.queue, &rig.device, &texture, from_level(1), true);
++        let (changed, waiting) = tiled.uploaded_on(&rig.queue, &rig.device, &texture, from_level(1), true);
+         rig.check("the last upload, with room");
+-        assert!(!waiting && tiled.whole());
++        assert!(changed && !waiting && tiled.whole(), "filling the hole changes the view even if its first mip stays the same");
+         read_as_given(rig, "everything given");
+     }
+ 
+@@ -1481,7 +1509,7 @@ void look() {
+     }
+ 
+     #[test]
+-    fn show_from_clamps_2d_and_2d_array_and_adjusts_min_lod() {
++    fn show_resident_clamps_2d_and_2d_array_and_adjusts_min_lod() {
+         let mut srv2d = D3D12_SHADER_RESOURCE_VIEW_DESC {
+             Format: DXGI_FORMAT_R8G8B8A8_UNORM,
+             ViewDimension: D3D12_SRV_DIMENSION_TEXTURE2D,
+@@ -1495,7 +1523,7 @@ void look() {
+                 },
+             },
+         };
+-        show_from(&mut srv2d, 3, 11);
++        show_resident(&mut srv2d, from_level(3), 11);
+         // SAFETY: `ViewDimension` is `TEXTURE2D`.
+         let v2d = unsafe { srv2d.Anonymous.Texture2D };
+         assert_eq!(v2d.MostDetailedMip, 3);
+@@ -1518,12 +1546,18 @@ void look() {
+                 },
+             },
+         };
+-        show_from(&mut srv_arr, 2, 11);
++        show_resident(&mut srv_arr, from_level(2), 11);
+         // SAFETY: `ViewDimension` is `TEXTURE2DARRAY`.
+         let varr = unsafe { srv_arr.Anonymous.Texture2DArray };
+         assert_eq!(varr.MostDetailedMip, 2);
+         assert_eq!(varr.MipLevels, 4);
+         assert_eq!(varr.ResourceMinLODClamp, 0.0);
++
++        // A view asking for a missing range still has a valid finer mip.
++        show_resident(&mut srv_arr, 1, 11);
++        let fallback = unsafe { srv_arr.Anonymous.Texture2DArray };
++        assert_eq!(fallback.MostDetailedMip, 0);
++        assert_eq!(fallback.MipLevels, 1);
+     }
+ 
+     #[test]
+@@ -1565,7 +1599,7 @@ void look() {
+                 packed: false,
+                 runs: Vec::new(),
+             }),
+-            shown: AtomicU32::new(u32::MAX),
++            shown: AtomicU32::new(0),
+             held: AtomicU32::new(0),
+             card: AtomicU32::new(0),
+             claimed: AtomicU32::new(0),
+diff --git a/crates/victory-hle/src/modules/xmem.rs b/crates/victory-hle/src/modules/xmem.rs
+index e898459..531e12c 100644
+--- a/crates/victory-hle/src/modules/xmem.rs
++++ b/crates/victory-hle/src/modules/xmem.rs
+@@ -32,6 +32,10 @@ use windows_sys::core::BOOL;
+ 
+ use crate::{HleModule, hle_export};
+ 
++/// `VirtualFree`'s flag that joins adjacent placeholders into one (not in
++/// windows-sys' memory module).
++const MEM_COALESCE_PLACEHOLDERS: u32 = 0x1;
++
+ const MIB: usize = 1 << 20;
+ 
+ /// Whether we run under Wine (its ntdll exports `wine_get_version`).
+@@ -745,12 +749,12 @@ pub fn map_alias(to: u64, from: u64, len: u64) -> bool {
+     // As in `XMemMapPhysicalPages`: no read in place meets the gap.
+     let _changing = victory_gpu::title_memory_remapping();
+     unmap(&mut physical, to, len);
+-    for k in (0..len).step_by(PAGE) {
+-        if from == 0 {
+-            break;
+-        }
+-        let at = from + k;
+-        let Some(slice) = physical
++    if from == 0 {
++        return true;
++    }
++    // The slice `from + k` shows.
++    let slice_at = |physical: &Physical, at: usize| {
++        physical
+             .views
+             .range(..=at)
+             .next_back()
+@@ -759,12 +763,53 @@ pub fn map_alias(to: u64, from: u64, len: u64) -> bool {
+                 index: s.index + (at - base) / PAGE,
+                 section: s.section.clone(),
+             })
+-        else {
++    };
++    // One view per run of consecutive slices of one section, as
++    // `XMemMapPhysicalPages` maps: page by page was three host calls a
++    // page under the remapping lock, which texture reads wait on while the
++    // world streams in (up to 2 s of a frame's texture refreshes on the
++    // RTX 5070 test machine, runs r03 and r04).
++    // Where the two ranges overlap, a page looked up may be one just mapped:
++    // page by page then, as before.
++    let overlap = from < to + len && to < from + len;
++    let pages = len.div_ceil(PAGE);
++    let mut i = 0;
++    while i < pages {
++        let Some(first) = slice_at(&physical, from + i * PAGE) else {
+             return false;
+         };
+-        if !map(&mut physical, to + k, PAGE, slice) {
+-            return false;
++        let mut run = 1;
++        while !overlap
++            && i + run < pages
++            && slice_at(&physical, from + (i + run) * PAGE)
++                .is_some_and(|s| Arc::ptr_eq(&s.section, &first.section) && s.index == first.index + run)
++        {
++            run += 1;
+         }
++        let at = to + i * PAGE;
++        if run > 1 {
++            // `unmap` leaves a placeholder per view it took away (a page each
++            // here): made one, or the run is mapped page by page below.
++            // SAFETY: acts only on placeholders; fails harmlessly unless
++            // `[at, at + run pages)` is exactly whole adjacent placeholders.
++            unsafe {
++                VirtualFree(at as *mut c_void, run * PAGE, MEM_RELEASE | MEM_COALESCE_PLACEHOLDERS);
++            }
++            if map_quiet(&mut physical, at, run * PAGE, first.clone()) {
++                i += run;
++                continue;
++            }
++        }
++        for k in 0..run {
++            let slice = Slice {
++                index: first.index + k,
++                section: first.section.clone(),
++            };
++            if !map(&mut physical, at + k * PAGE, PAGE, slice) {
++                return false;
++            }
++        }
++        i += run;
+     }
+     true
+ }
+@@ -772,6 +817,16 @@ pub fn map_alias(to: u64, from: u64, len: u64) -> bool {
+ /// Maps `slice` and the slices after it over `[base, base + len)`, which
+ /// must lie in one placeholder.
+ fn map(physical: &mut Physical, base: usize, len: usize, slice: Slice) -> bool {
++    map_logged(physical, base, len, slice, true)
++}
++
++/// [`map`] without the warning when the host refuses (a caller with
++/// another way to map).
++fn map_quiet(physical: &mut Physical, base: usize, len: usize, slice: Slice) -> bool {
++    map_logged(physical, base, len, slice, false)
++}
++
++fn map_logged(physical: &mut Physical, base: usize, len: usize, slice: Slice, log: bool) -> bool {
+     // SAFETY: splits the placeholder around the range (failing harmlessly
+     // when the range is the whole placeholder), then maps the section
+     // there; both act only on placeholders.
+@@ -794,6 +849,9 @@ fn map(physical: &mut Physical, base: usize, len: usize, slice: Slice) -> bool {
+         )
+     };
+     if view.Value as usize != base {
++        if !log {
++            return false;
++        }
+         tracing::warn!(
+             address = format_args!("{base:#x}"),
+             len,
+@@ -1226,6 +1284,49 @@ mod tests {
+         assert_eq!(XMemIsToolsMemAvailable(), 0);
+     }
+ 
++    /// The GPU's page-mapping copy over a range that holds a view per page
++    /// (how it leaves one): the pages are mapped as one view, and every
++    /// address shows the page it should.
++    #[test]
++    fn a_page_mapping_copy_maps_a_run_as_one_view() {
++        const N: usize = 4;
++        let mut pages = [0usize; N];
++        let mut n = N;
++        assert_eq!(XMemAllocatePhysicalPages(0, &mut n, pages.as_mut_ptr()), 1);
++        let reserve = || XMemVirtualAlloc(std::ptr::null_mut(), N * PAGE, MEM_RESERVE | PAGES_64K, 0, PAGE_READWRITE);
++        let (a, b) = (reserve(), reserve());
++        assert!(!a.is_null() && !b.is_null());
++        let at = |p: *mut c_void, page: usize| p.wrapping_byte_add(page * PAGE);
++        assert_eq!(XMemMapPhysicalPages(a, N, pages.as_ptr()), a);
++        for k in 0..N {
++            // SAFETY: mapped read-write.
++            unsafe { at(a, k).cast::<u8>().add(3).write(10 + k as u8) };
++            // A view per page at `b`, in reverse order of the pages.
++            assert!(map_alias(at(b, k) as u64, at(a, N - 1 - k) as u64, PAGE as u64));
++        }
++        // SAFETY: mapped read-write.
++        assert_eq!(unsafe { b.cast::<u8>().add(3).read() }, 10 + (N - 1) as u8);
++        assert!(map_alias(b as u64, a as u64, (N * PAGE) as u64));
++        {
++            let physical = physical();
++            let (len, _) = physical.views.get(&(b as usize)).expect("a view at b");
++            assert_eq!(*len, N * PAGE, "one view for the run");
++            assert!(physical.views.range(b as usize + 1..b as usize + N * PAGE).next().is_none());
++        }
++        for k in 0..N {
++            // SAFETY: mapped read-write.
++            assert_eq!(unsafe { at(b, k).cast::<u8>().add(3).read() }, 10 + k as u8);
++        }
++        // Unmapping one page in the middle of the run keeps the others.
++        assert!(map_alias(at(b, 1) as u64, 0, PAGE as u64));
++        assert_eq!(query(at(b, 1)).host.State, MEM_RESERVE);
++        // SAFETY: still mapped.
++        assert_eq!(unsafe { at(b, 2).cast::<u8>().add(3).read() }, 12);
++        assert!(map_alias(b as u64, 0, (N * PAGE) as u64));
++        assert!(map_alias(a as u64, 0, (N * PAGE) as u64));
++        assert_eq!(XMemFreePhysicalPages(N, pages.as_ptr()), 1);
++    }
++
+     /// A thread that reads a mapped page in place, as the GPU side reads a
+     /// texture, never meets the moment in which the runtime has taken the
+     /// page's view away to map it again: mapping the same pages at the same
+diff --git a/crates/victory-shader/src/emit/lower.rs b/crates/victory-shader/src/emit/lower.rs
+index 63c4de7..3d3f40e 100644
+--- a/crates/victory-shader/src/emit/lower.rs
++++ b/crates/victory-shader/src/emit/lower.rs
+@@ -2361,6 +2361,15 @@ impl<'a> Lower<'a> {
+             // host's value can be.
+             Input::FrontFace => (13, 0),
+             Input::ThreadIdInGroup(c) => return self.thread_id(c),
++            // The host's group id plus the dispatch's first group in x
++            // (`shader.rs` `USER_GROUP_BASE`).
++            Input::GroupId(0) => {
++                let Val::I32(g) = self.compute_id("groupId.i32", 94, 0) else {
++                    unreachable!()
++                };
++                let base = self.host_word(RootType::Other(super::shader::USER_GROUP_BASE), 0, 0);
++                return Val::I32(self.s.m.bin(self.s.entry, Bin::Add, g, base));
++            }
+             Input::GroupId(c) => return self.compute_id("groupId.i32", 94, c),
+             Input::GroupInfo => return Val::Missing("the thread-group info SGPR"),
+             Input::MeshGroup => {
+@@ -7589,7 +7598,9 @@ impl<'a> Lower<'a> {
+                         // the console wave (the ray-tracing builder's scans read a sum of
+                         // scalars this way, inside a loop whose exit is per console wave).
+                         static OWN: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+-                        if *OWN.get_or_init(|| std::env::var_os("VICTORY_FIRSTLANE_OWN").is_some_and(|v| v == "1")) {
++                        if *OWN.get_or_init(|| std::env::var_os("VICTORY_FIRSTLANE_OWN").is_some_and(|v| v == "1"))
++                            || super::firstlane_own_here()
++                        {
+                             return int(self, mine);
+                         }
+                         need(self.cur_ir);
+diff --git a/crates/victory-shader/src/emit/mod.rs b/crates/victory-shader/src/emit/mod.rs
+index 5217df8..4e71300 100644
+--- a/crates/victory-shader/src/emit/mod.rs
++++ b/crates/victory-shader/src/emit/mod.rs
+@@ -114,8 +114,8 @@ pub use lower::set_host_max_wave;
+ pub use rect::rect_list_gs;
+ pub use shader::{
+     MEMORY_FAULTS, MEMORY_PAGES, ROOT_CBV_SPACE, SAMPLER_SPACE, SLOT_FAULTS, SLOT_MEMORY, SLOT_STRIDES,
+-    SLOT_STRIDES_COUNT, USER_DATA_SPACE, USER_MEMORY_BASE, USER_VIEW_ADDRESS, USER_VIEW_BIAS,
+-    set_view_heap_limit, view_heap_limit,
++    SLOT_STRIDES_COUNT, USER_DATA_SPACE, USER_GROUP_BASE, USER_MEMORY_BASE, USER_VIEW_ADDRESS,
++    USER_VIEW_BIAS, set_view_heap_limit, view_heap_limit,
+ };
+ 
+ /// The loop limit without an override: 2^20.
+@@ -340,6 +340,46 @@ fn translate_plain(container: &[u8]) -> Result<HostShader, ShaderError> {
+     emit(&c, &native, &p, &st, &io, &res)
+ }
+ 
++thread_local! {
++    /// [`with_wave_wide`]'s choice, for this thread's translations.
++    static WAVE_WIDE_HERE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
++}
++
++/// Runs `f` (a translation) with the wave-wide form of a wave64 compute
++/// program on a host of 32-lane waves allowed, as `VICTORY_WAVE_WIDE=1`
++/// allows it for all: for programs known to come out of it right, while
++/// others stay off it (two programs that moved to it lost the card, runs
++/// 121-124). The form is still tried only after the exact ones, so a
++/// program that has one keeps it.
++pub fn with_wave_wide<R>(on: bool, f: impl FnOnce() -> R) -> R {
++    let before = WAVE_WIDE_HERE.replace(on);
++    let out = f();
++    WAVE_WIDE_HERE.set(before);
++    out
++}
++
++thread_local! {
++    /// [`with_firstlane_own`]'s choice, for this thread's translations.
++    static FIRSTLANE_OWN_HERE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
++}
++
++/// Runs `f` (a translation) with a first-lane read where not every lane runs
++/// taken from the host wave's own first lane, as `VICTORY_FIRSTLANE_OWN=1`
++/// takes it for all: exact where the value is the same in every lane of the
++/// console wave, which holds for the programs it is asked for (the
++/// ray-tracing structure builder's scans, which read a sum of scalars).
++pub fn with_firstlane_own<R>(on: bool, f: impl FnOnce() -> R) -> R {
++    let before = FIRSTLANE_OWN_HERE.replace(on);
++    let out = f();
++    FIRSTLANE_OWN_HERE.set(before);
++    out
++}
++
++/// Whether [`with_firstlane_own`] asked for it on this thread.
++pub(super) fn firstlane_own_here() -> bool {
++    FIRSTLANE_OWN_HERE.get()
++}
++
+ /// Emits a program whose earlier stages already ran.
+ pub fn emit(
+     c: &Container,
+@@ -422,7 +462,7 @@ pub fn emit(
+         // lost the card in a submission of two programs that had just moved to it
+         // (`ptfx_CS_lightAtlas_Sprite` and `_Trail`). The 32-lane programs' form below, which
+         // has no barrier, stays on.
+-        let wide_on = std::env::var_os("VICTORY_WAVE_WIDE").is_some_and(|v| v == "1");
++        let wide_on = std::env::var_os("VICTORY_WAVE_WIDE").is_some_and(|v| v == "1") || WAVE_WIDE_HERE.get();
+         // exact first: each host wave on its own where that is exact (the idiom, every
+         // form; no barriers), then the other exact forms; then approximate
+         for exact in [true, false] {
+@@ -1428,6 +1468,129 @@ mod tests {
+             );
+         }
+     }
++
++    /// A program that reads its thread-group id in x takes the dispatch's
++    /// first group from a user-data dword the host sets (`USER_GROUP_BASE`)
++    /// and adds the host's group id to it: the host runs the groups past
++    /// 65,535 of an indirect record as a second execution with it at 65,535.
++    #[test]
++    fn the_group_id_in_x_starts_at_the_host_base() {
++        let words: &[u32] = &[
++            0x7E02_0205, // v_mov_b32 v1, s5 (the group id in x)
++            0xBE85_0380, // s_mov_b32 s5, 0
++            0xF408_0302,
++            0xFA00_0000, // s_load_dwordx4 s[12:15], s[4:5], 0x0
++            0x3610_028F, // v_and_b32 v8, 15, v1
++            0x340E_1082, // v_lshlrev_b32 v7, 2, v8
++            0xE070_1000,
++            0x8003_0107, // buffer_store_dword v1, v7, s[12:15], 0 offen
++            0xBF81_0000, // s_endpgm
++        ];
++        let native = super::NativeProgram {
++            stage: super::HwStage::Cs,
++            wave64: false,
++            vgprs: 9,
++            layout: vec![
++                crate::RootParam {
++                    root: crate::RootType::Constants,
++                    table_offset_dwords: 0,
++                    sgprs: 4,
++                    base_register: 0,
++                    user_data: 0,
++                    slot: 0,
++                },
++                crate::RootParam {
++                    root: crate::RootType::Table,
++                    table_offset_dwords: 0,
++                    sgprs: 1,
++                    base_register: 0,
++                    user_data: 4,
++                    slot: 1,
++                },
++            ],
++            used: vec![crate::UsedResource {
++                kind: crate::ResourceType::Uav,
++                root: crate::RootType::Table,
++                table_offset_dwords: 0,
++                lower_bound: 0,
++                stride: 4,
++                dwords: 4,
++                user_data: 4,
++                slot: 1,
++            }],
++            // Five user SGPRs, then the group id in x (s5).
++            io: crate::native::StageIo::Cs(crate::native::ComputeIo {
++                rsrc2: 5 << 1 | 1 << 7,
++                threads: [1, 1, 1],
++            }),
++            code: words.iter().flat_map(|w| w.to_le_bytes()).collect(),
++        };
++        let p = crate::ir::build(&native.code, native.wave64, native.vgprs).unwrap();
++        let res = crate::resource::track(&p, &native.layout, native.stage, None).unwrap();
++        let io = crate::io::raise(&p, &native).unwrap();
++        let st = crate::structure::structure(&p).unwrap();
++        let l = super::lower::lower(&super::lower::Parts {
++            native: &native,
++            p: &p,
++            st: &st,
++            io: &io,
++            res: &res,
++            inputs: Vec::new(),
++            outputs: Vec::new(),
++            prims: Vec::new(),
++            mesh_stride: 0,
++        })
++        .unwrap();
++        let base = l
++            .user_data
++            .iter()
++            .find(|u| u.root == crate::RootType::Other(super::USER_GROUP_BASE))
++            .map(|u| u.index as usize)
++            .expect("no user-data dword for the first group");
++        let mut dxil = l.dxil;
++        #[cfg(windows)]
++        if let Ok(mut v) = super::validator::Validator::load(
++            super::validator::Validator::default_path().as_deref(),
++        ) {
++            v.validate(&mut dxil).unwrap();
++        }
++        #[cfg(windows)]
++        if let Ok(host) = super::host::Host::new(false) {
++            let cs = super::HostShader {
++                stage: super::HwStage::Cs,
++                dxil,
++                user_data: l.user_data,
++                samplers: Vec::new(),
++                static_samplers: Vec::new(),
++                root_cbvs: l.root_cbvs,
++                root_srvs: l.root_srvs,
++                root_uavs: l.root_uavs,
++                root_indexed_views: Vec::new(),
++            };
++            let (root, pso) = host.compute_pipeline(&cs).unwrap();
++            // Three groups, with the first at 0 and at 65,535: each stores
++            // the id it read at slot (id & 15).
++            for (first, slots) in [(0u32, [0usize, 1, 2]), (65535, [15, 0, 1])] {
++                let mut constants = vec![0u32; base + 1];
++                constants[base] = first;
++                let out = host
++                    .dispatch(
++                        &root,
++                        &pso,
++                        &super::host::Dispatch {
++                            roots: vec![(0, super::host::Root::Constants(constants))],
++                            views: &[super::host::View::RawUav(64)],
++                            samplers: &[],
++                            groups: [3, 1, 1],
++                        },
++                    )
++                    .unwrap();
++                for (k, slot) in slots.into_iter().enumerate() {
++                    assert_eq!(out[0][slot], first + k as u32, "group {k} with the first at {first}: {:?}", &out[0][..16]);
++                }
++            }
++        }
++    }
+ }
+ 
+ #[cfg(test)]
+diff --git a/crates/victory-shader/src/emit/shader.rs b/crates/victory-shader/src/emit/shader.rs
+index 28a36f1..9835ab9 100644
+--- a/crates/victory-shader/src/emit/shader.rs
++++ b/crates/victory-shader/src/emit/shader.rs
+@@ -69,6 +69,14 @@ pub const USER_VIEW_ADDRESS: u32 = 0x101;
+ /// view. Asked for every root UAV, and for the root SRVs of programs with
+ /// a spilled user-data table.
+ pub const USER_VIEW_BIAS: u32 = 0x103;
++/// `RootType::Other` code of a user-data dword the host computes: the
++/// thread-group id in x of the first group of this dispatch, added to the
++/// host's. A dispatch runs at most 65,535 groups in each dimension, the
++/// console's more in x: the host runs the groups past 65,535 of an
++/// indirect record as a second execution with this dword at 65,535, and
++/// sets it to 0 everywhere else. Asked by programs that read the group id
++/// in x.
++pub const USER_GROUP_BASE: u32 = 0x104;
+ 
+ /// `ShaderFlags` bits (metadata) and their `SFI0` feature bits.
+ pub(crate) mod flags {

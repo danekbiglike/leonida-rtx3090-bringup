@@ -1,0 +1,91 @@
+{
+  "scene": "Prison window in player control, camera held in place. Character idle animation and streamed assets continued.",
+  "platform": {
+    "gpu": "GeForce RTX 3090",
+    "cpu": "Ryzen 7 3700X",
+    "profile": "Series X"
+  },
+  "clock": "Consecutive application Present calls; this build did not inspect the DXGI return code.",
+  "windows": {
+    "A": {
+      "start_seconds": 615,
+      "requested_seconds": 90,
+      "covered_seconds": 90.23396,
+      "frames": 171,
+      "fps": 1.8950736507629722,
+      "p50_ms": 377.999,
+      "p95_ms": 1183.908,
+      "p99_ms": 1273.732,
+      "max_ms": 1362.036,
+      "frames_over_200ms": 171,
+      "all_frames_within_200ms": false,
+      "mean_draw_calls": 4836.964912280701,
+      "split_modes": [
+        1
+      ],
+      "joined_hash_modes": [
+        1
+      ]
+    },
+    "B": {
+      "start_seconds": 725,
+      "requested_seconds": 90,
+      "covered_seconds": 90.061304,
+      "frames": 268,
+      "fps": 2.975750828568949,
+      "p50_ms": 334.742,
+      "p95_ms": 369.28,
+      "p99_ms": 414.912,
+      "max_ms": 497.494,
+      "frames_over_200ms": 268,
+      "all_frames_within_200ms": false,
+      "mean_draw_calls": 4833.921641791045,
+      "split_modes": [
+        0
+      ],
+      "joined_hash_modes": [
+        1
+      ]
+    },
+    "C": {
+      "start_seconds": 837,
+      "requested_seconds": 90,
+      "covered_seconds": 90.309565,
+      "frames": 273,
+      "fps": 3.0229356104195606,
+      "p50_ms": 329.876,
+      "p95_ms": 366.363,
+      "p99_ms": 388.543,
+      "max_ms": 413.942,
+      "frames_over_200ms": 273,
+      "all_frames_within_200ms": false,
+      "mean_draw_calls": 4773.780219780219,
+      "split_modes": [
+        1
+      ],
+      "joined_hash_modes": [
+        0
+      ]
+    },
+    "D": {
+      "start_seconds": 947,
+      "requested_seconds": 90,
+      "covered_seconds": 90.51694,
+      "frames": 265,
+      "fps": 2.9276287952288267,
+      "p50_ms": 337.537,
+      "p95_ms": 373.427,
+      "p99_ms": 392.47,
+      "max_ms": 716.957,
+      "frames_over_200ms": 265,
+      "all_frames_within_200ms": false,
+      "mean_draw_calls": 4802.8,
+      "split_modes": [
+        1
+      ],
+      "joined_hash_modes": [
+        1
+      ]
+    }
+  }
+}

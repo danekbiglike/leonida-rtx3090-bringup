@@ -2,7 +2,7 @@
 
 ## RTX 3090 gameplay reports
 
-In the prison gameplay scene the texture-streaming patch measured 3.39 FPS before and 3.42 FPS after. The public report includes the pinned source revision, build commands, frame data and outstanding graphics defects. [RTX 3090 gameplay report and patch](reports/2026-11-26-rtx3090/README.md)
+In the prison gameplay scene the texture-streaming patch measured 3.39 FPS before and 3.42 FPS after. The public report includes the pinned source revision, build commands, frame data and outstanding graphics defects. [RTX 3090 gameplay report and patch](reports/2026-11-26-rtx3090/README.md) [RTX 3090 square lighting artifact tests and gameplay frame data](reports/2026-11-26-rtx3090/lighting-trial.md)
 
 
 The Xbox build opens its own window on a Windows RTX 3090. With on-demand graphics compilation it now submits two draws into an intermediate texture and a third into the surface it presents. The final pass now has a verified view of the intermediate texture. Both surfaces are still black in the sampled frames. Leonida still has no verified interactive menu on this machine. On VIctory the same PC now reaches the game's full Settings screen and switches tabs with the keyboard. The tested route is below.
