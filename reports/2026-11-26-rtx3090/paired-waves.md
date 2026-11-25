@@ -75,3 +75,5 @@ After the 90-second window sample, the S key turned the character toward the roo
 During ten warm-up system samples, Windows reported 676–2,020 MiB of available RAM, while the card had approximately 12.5 GiB in use according to nvidia-smi (12,819–12,826 MiB). These samples preceded the timed run. The GPU process diagnostics also reported about 8.5 GB of shared memory on one observation. These readings motivate testing smaller transfers and moving allocations to dedicated GPU memory.
 
 A separate opt-in CPU implementation merges device writes in 32-byte groups. It includes a reproducible differential test and isolated timings on the Ryzen 7 3700X. [Local AVX2 patch, measurements and reproduction](relay-merge-avx2.md)
+
+The 16 KiB profile subsequently measured 3.96 FPS at the window and 2.98 FPS in the room. [Updated profile, patch and frame timings](paired-wave-pieces.md)

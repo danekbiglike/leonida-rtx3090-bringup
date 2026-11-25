@@ -1,6 +1,6 @@
 # GTA VI gameplay on Windows with VIctory and RTX 3090
 
-The prison scene measured **3.39 FPS before and 3.42 FPS after** a local texture-streaming optimization. The difference in that scene was within run-to-run variation. Both texture-test modes showed square lighting artifacts. A subsequent paired-wave build removed the stepped outline at the prison window and measured 2.58 FPS in player control, rising to 3.16 FPS with the separate copy queue. Stable 5 FPS remains an open target. [Prison-window lighting tests, per-frame CSV and reproduction](lighting-trial.md) [Paired-wave RTX 3090 gameplay comparison](paired-waves.md)
+The prison scene measured **3.39 FPS before and 3.42 FPS after** a local texture-streaming optimization. The difference in that scene was within run-to-run variation. Both texture-test modes showed square lighting artifacts. A subsequent paired-wave build removed the stepped outline at the prison window and measured 2.58 FPS in player control, rising to 3.16 FPS with the separate copy queue. The next memory profile reached 3.96 FPS at the window and 2.98 FPS looking into the room. Stable 5 FPS remains an open target. [Memory profile and raw data](paired-wave-pieces.md) [Prison-window lighting tests, per-frame CSV and reproduction](lighting-trial.md) [Paired-wave RTX 3090 gameplay comparison](paired-waves.md)
 
 | Workload | Original | Patched | Comparison |
 | --- | ---: | ---: | --- |
