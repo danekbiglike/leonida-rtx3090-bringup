@@ -73,3 +73,5 @@ Eight options changed relative to the 2.58 FPS run: ASYNC_SUBMIT=1, QUEUE2=1, IN
 After the 90-second window sample, the S key turned the character toward the room. The 60-second sample in that heavier view averaged **2.59 FPS** (156 frames, P95 437.3 ms, max 513.9 ms, 6,967 draws/frame). All 156 intervals exceeded 200 ms. [Room data](paired-wave-queue-room-frames.csv) · [Room summary](paired-wave-queue-room-summary.json)
 
 During ten warm-up system samples, Windows reported 676–2,020 MiB of available RAM, while the card had approximately 12.5 GiB in use according to nvidia-smi (12,819–12,826 MiB). These samples preceded the timed run. The GPU process diagnostics also reported about 8.5 GB of shared memory on one observation. These readings motivate testing smaller transfers and moving allocations to dedicated GPU memory.
+
+A separate opt-in CPU implementation merges device writes in 32-byte groups. It includes a reproducible differential test and isolated timings on the Ryzen 7 3700X. [Local AVX2 patch, measurements and reproduction](relay-merge-avx2.md)
