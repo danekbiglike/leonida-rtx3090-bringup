@@ -1,0 +1,268 @@
+diff --git a/crates/victory-gpu/src/host.rs b/crates/victory-gpu/src/host.rs
+index 78a43cb..76e233e 100644
+--- a/crates/victory-gpu/src/host.rs
++++ b/crates/victory-gpu/src/host.rs
+@@ -6360,6 +6360,7 @@ impl Meter {
+         let fps = frames / elapsed.as_secs_f64();
+         let ms = elapsed.as_secs_f64() * 1000.0 / frames;
+         let draws = (drawn - self.drawn) as f64 / frames;
++        crate::texture::residency_interval(frames as u64, ms, draws);
+         (self.since, self.frames, self.drawn) = (std::time::Instant::now(), 0, drawn);
+         // Of a frame, ms preparing submissions and ms waiting for the GPU.
+         let [cpu, gpu] = [0, 1].map(|i| {
+diff --git a/crates/victory-gpu/src/resource.rs b/crates/victory-gpu/src/resource.rs
+index 244a76c..2f501bd 100644
+--- a/crates/victory-gpu/src/resource.rs
++++ b/crates/victory-gpu/src/resource.rs
+@@ -2559,6 +2559,31 @@ pub(crate) fn placed_filler_twins() -> u64 {
+ /// and for a description without a size.
+ #[cfg(windows)]
+ pub(crate) fn placed_bytes(desc: &[u32; 14]) -> Option<u64> {
++    if !crate::texture::streaming_optimizations() {
++        return placed_bytes_uncached(desc);
++    }
++    // A descriptor describes the allocation size completely. This cache
++    // never holds a texture, address or residency state. Limit storage per
++    // recording thread even for a title generating unique descriptions.
++    thread_local! {
++        static SIZES: std::cell::RefCell<std::collections::HashMap<[u32; 14], Option<u64>>> =
++            std::cell::RefCell::new(std::collections::HashMap::new());
++    }
++    SIZES.with_borrow_mut(|sizes| {
++        if let Some(&size) = sizes.get(desc) {
++            return size;
++        }
++        let size = placed_bytes_uncached(desc);
++        if sizes.len() >= 1024 {
++            sizes.clear();
++        }
++        sizes.insert(*desc, size);
++        size
++    })
++}
++
++#[cfg(windows)]
++fn placed_bytes_uncached(desc: &[u32; 14]) -> Option<u64> {
+     // SAFETY: 56 bytes in the description's layout.
+     let d = unsafe { desc.as_ptr().cast::<ResourceDesc>().read_unaligned() };
+     if d.dimension == BUFFER {
+@@ -2567,6 +2592,20 @@ pub(crate) fn placed_bytes(desc: &[u32; 14]) -> Option<u64> {
+     footprint(&d).map(|f| f.size)
+ }
+ 
++#[cfg(all(windows, test))]
++#[test]
++fn cached_sizes_match_layouts_across_eviction() {
++    let mut desc = [3, 0, 0, 0, 16, 0, 8, 65537, 10, 1, 0, 0x100, 3145728, 0];
++    for w in (1..1200).chain(1..30) {
++        desc[4] = w;
++        let original = placed_bytes_uncached(&desc);
++        assert_eq!(placed_bytes(&desc), original);
++        assert_eq!(placed_bytes(&desc), original);
++    }
++    desc[0] = BUFFER;
++    assert_eq!(placed_bytes(&desc), None);
++}
++
+ /// The resource [`texture_at`] made for a texture placed at `address` with
+ /// the description `desc`, if it has made one: never made here (for the
+ /// frame listing, which must not count as a use).
+diff --git a/crates/victory-gpu/src/texture.rs b/crates/victory-gpu/src/texture.rs
+index bdac9f7..3debc5a 100644
+--- a/crates/victory-gpu/src/texture.rs
++++ b/crates/victory-gpu/src/texture.rs
+@@ -1287,6 +1287,85 @@ fn committed_by_query(at: *const u8, len: usize) -> bool {
+     true
+ }
+ 
++const TEXTURE_BLOCK: usize = 64 << 10;
++static BATCH_RESIDENCY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
++pub(super) fn streaming_optimizations() -> bool {
++    BATCH_RESIDENCY.load(std::sync::atomic::Ordering::Relaxed)
++}
++static MEASURE_RESIDENCY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
++static RESIDENCY_TOTALS: [std::sync::atomic::AtomicU64; 3] =
++    [const { std::sync::atomic::AtomicU64::new(0) }; 3];
++
++// Optional in-game A/B. Each caption interval is entirely in one mode, except
++// work already in flight at the boundary. Leave the fast path enabled normally.
++pub(crate) fn residency_interval(frames: u64, ms: f64, draws: f64) {
++    use std::sync::atomic::Ordering::Relaxed;
++    static STOP_FILE: std::sync::OnceLock<Option<std::path::PathBuf>> = std::sync::OnceLock::new();
++    let Some(stop_file) = STOP_FILE.get_or_init(|| {
++        std::env::var_os("VICTORY_RESIDENCY_AB")?;
++        Some(std::path::PathBuf::from(std::env::var_os("LOCALAPPDATA")?).join("residency-complete"))
++    }) else { return; };
++    if stop_file.exists() {
++        MEASURE_RESIDENCY.store(false, Relaxed);
++        BATCH_RESIDENCY.store(true, Relaxed);
++        return;
++    }
++    static INTERVAL: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
++    let interval = INTERVAL.fetch_add(1, Relaxed);
++    let batch = BATCH_RESIDENCY.load(Relaxed);
++    let [calls, blocks, probe_us] = [0, 1, 2].map(|i| RESIDENCY_TOTALS[i].swap(0, Relaxed));
++    tracing::warn!(interval, batch, frames, ms, draws, calls, blocks, probe_us, "texture residency comparison");
++    MEASURE_RESIDENCY.store(true, Relaxed);
++    // ABBA in four-interval groups to balance steady changes in scene load.
++    BATCH_RESIDENCY.store(matches!(((interval + 1) / 4) % 4, 0 | 3), Relaxed);
++}
++
++fn sampled_block_bytes(start: usize, end: usize, batch: bool) -> u64 {
++    use windows_sys::Win32::System::ProcessStatus::{K32QueryWorkingSetEx, PSAPI_WORKING_SET_EX_INFORMATION};
++    use windows_sys::Win32::System::Threading::GetCurrentProcess;
++    const PAGE: usize = 4096;
++    let mut block = start & !(TEXTURE_BLOCK - 1);
++    let mut there = 0u64;
++    if !batch || end - block <= TEXTURE_BLOCK {
++        while block < end {
++            let next = block.saturating_add(TEXTURE_BLOCK);
++            let lo = block.max(start);
++            if readable(lo, 1, true).0 == 1 {
++                there += (next.min(end) - lo) as u64;
++            }
++            block = next;
++        }
++        return there;
++    }
++    // Query the same 4 KiB page in each console block as the scalar path.
++    // A trimmed page still needs the one-byte kernel read to distinguish
++    // a readable allocation from a missing page.
++    // SAFETY: the Windows query records contain only a pointer and flags.
++    let mut info: [PSAPI_WORKING_SET_EX_INFORMATION; 128] = unsafe { std::mem::zeroed() };
++    while block < end {
++        let count = (end - block).div_ceil(TEXTURE_BLOCK).min(info.len());
++        let entries = &mut info[..count];
++        for (i, entry) in entries.iter_mut().enumerate() {
++            let lo = (block + i * TEXTURE_BLOCK).max(start);
++            entry.VirtualAddress = (lo & !(PAGE - 1)) as *mut _;
++        }
++        // SAFETY: the kernel fills this mutable slice for the current process.
++        let asked = unsafe {
++            K32QueryWorkingSetEx(GetCurrentProcess(), entries.as_mut_ptr().cast(), size_of_val(entries) as u32)
++        } != 0;
++        for entry in entries {
++            // SAFETY: on success the flags were filled in by the query.
++            let valid = asked && unsafe { entry.VirtualAttributes.Flags } & 1 != 0;
++            let next = block.saturating_add(TEXTURE_BLOCK);
++            if valid || crate::host::read_into(entry.VirtualAddress.cast(), &mut [0u8]) {
++                there += (next.min(end) - block.max(start)) as u64;
++            }
++            block = next;
++        }
++    }
++    there
++}
++
+ /// How many bytes of `[at, at + len)` are committed memory: all of a
+ /// texture that is there, some of one streaming in (its smaller mips lie
+ /// at the start of its memory, and their pages are mapped first), none of
+@@ -1318,17 +1397,18 @@ pub(crate) fn mapped_bytes(at: *const u8, len: usize) -> u64 {
+         // for each of its missing pages, every frame it stayed due: 1,663
+         // textures "uploaded in part" kept the pass over the heap's views at
+         // 90-160 ms a frame (run 81). `VICTORY_MAPPED_BY_PAGE=1`: by page.
+-        const BLOCK: usize = 64 << 10;
+-        let mut there = 0u64;
+-        let mut block = start & !(BLOCK - 1);
+-        while block < end {
+-            let (lo, hi) = (block.max(start), block.saturating_add(BLOCK).min(end));
+-            if readable(lo, 1, true).0 == 1 {
+-                there += (hi - lo) as u64;
+-            }
+-            block = block.saturating_add(BLOCK);
++        use std::sync::atomic::Ordering::Relaxed;
++        let batch = streaming_optimizations();
++        if MEASURE_RESIDENCY.load(Relaxed) {
++            let now = std::time::Instant::now();
++            let bytes = sampled_block_bytes(start, end, batch);
++            let blocks = (end - (start & !(TEXTURE_BLOCK - 1))).div_ceil(TEXTURE_BLOCK);
++            RESIDENCY_TOTALS[0].fetch_add(1, Relaxed);
++            RESIDENCY_TOTALS[1].fetch_add(blocks as u64, Relaxed);
++            RESIDENCY_TOTALS[2].fetch_add(now.elapsed().as_micros() as u64, Relaxed);
++            return bytes;
+         }
+-        return there;
++        return sampled_block_bytes(start, end, batch);
+     }
+     let (mut p, mut there) = (start, 0u64);
+     while p < end {
+@@ -1433,6 +1513,79 @@ fn staging(resource: This, texture: &ID3D12Resource) -> Option<Arc<Staging>> {
+ mod title_memory_tests {
+     use super::with_title;
+ 
++    #[test]
++    fn batched_texture_probes_agree_on_partial_and_replaced_blocks() {
++        use super::{sampled_block_bytes, TEXTURE_BLOCK as B};
++        use windows_sys::Win32::System::Memory::*;
++        const BLOCKS: usize = 269;
++        // SAFETY: this test exclusively owns the reservation. Only committed
++        // pages are touched, and all probes use the kernel for missing pages.
++        unsafe {
++            let base = VirtualAlloc(std::ptr::null(), B * BLOCKS, MEM_RESERVE, PAGE_NOACCESS).cast::<u8>();
++            assert!(!base.is_null());
++            for i in 0..BLOCKS {
++                if i % 3 != 1 {
++                    assert!(!VirtualAlloc(base.add(i * B).cast(), B, MEM_COMMIT, PAGE_READWRITE).is_null());
++                    if i % 2 == 0 { base.add(i * B).write(42); }
++                }
++            }
++            let a = base as usize;
++            for (offset, len) in [(0, 1), (B - 5, 9), (B + 77, 381), (12345, 7 * B + 97), (B + 313, 255 * B + 7000), (0, B * BLOCKS)] {
++                let end = offset + len;
++                let expected = (0..BLOCKS).filter(|i| i % 3 != 1)
++                    .map(|i| end.min((i + 1) * B).saturating_sub(offset.max(i * B)))
++                    .sum::<usize>() as u64;
++                for batch in [false, true] {
++                    assert_eq!(sampled_block_bytes(a + offset, a + end, batch), expected);
++                }
++            }
++            // Exercise misaligned endpoints on both sides of query-batch boundaries.
++            let mut state = 0xbe8047013dd8c381_u64;
++            for _ in 0..48 {
++                state ^= state << 13;
++                state ^= state >> 7;
++                state ^= state << 17;
++                let offset = (state as usize) % (7 * B);
++                let width = (125 + ((state >> 32) as usize % 9)) * B + (offset % 4096);
++                assert_eq!(
++                    sampled_block_bytes(a + offset, a + offset + width, true),
++                    sampled_block_bytes(a + offset, a + offset + width, false)
++                );
++            }
++            assert_ne!(VirtualFree(base.cast(), B, MEM_DECOMMIT), 0);
++            for batch in [false, true] {
++                assert_eq!(sampled_block_bytes(a, a + 3 * B, batch), B as u64);
++            }
++            assert_ne!(VirtualFree(base.cast(), 0, MEM_RELEASE), 0);
++        }
++    }
++
++    #[test]
++    #[ignore = "local timing run"]
++    fn time_resident_texture_probes() {
++        use super::{sampled_block_bytes, TEXTURE_BLOCK as B};
++        use std::hint::black_box;
++        use std::time::Instant;
++        let mut data = vec![0u8; 257 * B];
++        for byte in data.iter_mut().step_by(4096) { *byte = 1; }
++        let start = (data.as_ptr() as usize).next_multiple_of(B);
++        for blocks in [4, 16, 64, 256] {
++            let mut timings = [Vec::new(), Vec::new()];
++            for pass in 0..12 {
++                for batch in [pass % 2 == 0, pass % 2 != 0] {
++                    let begin = Instant::now();
++                    for _ in 0..128 {
++                        assert_eq!(black_box(sampled_block_bytes(start, start + blocks * B, batch)), (blocks * B) as u64);
++                    }
++                    timings[usize::from(batch)].push(begin.elapsed().as_nanos() / 128);
++                }
++            }
++            for t in &mut timings { t.sort_unstable(); }
++            println!("{blocks} blocks: scalar {} ns, batch {} ns", timings[0][6], timings[1][6]);
++        }
++        black_box(data);
++    }
++
+     /// Title memory whose tail is reserved and not committed reads through
+     /// the copy as its bytes and then zeros, without a fault; so does
+     /// memory a page of which is taken away between two reads, and the
