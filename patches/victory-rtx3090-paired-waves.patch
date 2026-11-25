@@ -1,0 +1,641 @@
+diff --git a/crates/victory-gpu/src/host.rs b/crates/victory-gpu/src/host.rs
+index 21f7664..f402720 100644
+--- a/crates/victory-gpu/src/host.rs
++++ b/crates/victory-gpu/src/host.rs
+@@ -1686,6 +1686,91 @@ void main(uint3 id : SV_DispatchThreadID) {
+ }
+ "#;
+ 
++/// [`CARD_COMPARE`] with a group of 64 threads to a piece
++/// (`VICTORY_CARD_HASH_WIDE`, on by default; `=0` for the thread a piece).
++///
++/// With a thread a piece, a pass hashes its 64 KiB pieces in 4,096 steps
++/// one after the other, and its time is that of one piece however few
++/// pieces it has: the card waits on one load at a time and runs next to
++/// nothing else. The passes run before every submission's lists (hashes
++/// after ranges were sent up, 300 to 450 a frame) and after them (compares,
++/// about 100). Measured on an RTX 3060 in the first rooms with the frame
++/// rate switches on: the card was 85 % busy, and "our send-and-hash lists"
++/// were 23 to 29 ms of its frame.
++///
++/// Here thread `t` of a piece's group hashes the 16-byte steps `t`, `t +
++/// 64`, `t + 128`... of the piece (neighbouring threads read neighbouring
++/// bytes), and the first thread folds the 64 lane hashes in lane order into
++/// the piece's hash. It is another hash than [`CARD_COMPARE`]'s, so one
++/// process uses one of them for every hash it stores and compares (it is
++/// chosen once). Copies are under 1 GiB (`shadow::card_for`): at most
++/// 16,385 pieces, one group each, within a dispatch's 65,535.
++pub(crate) const CARD_COMPARE_WIDE: &str = r#"
++#define RS "RootConstants(num32BitConstants=6, b0), SRV(t0), UAV(u0), UAV(u1)"
++cbuffer Span : register(b0) {
++    uint first;    // the first piece
++    uint skew;     // where the copy starts in its piece 0
++    uint size;     // the copy's buffer, in bytes (a multiple of 64 KiB)
++    uint pieces;
++    uint out_at;   // the first piece's dword in `differs`, in bytes
++    uint compare;  // 0: the hashes are stored; else compared with those stored (2: and then stored)
++};
++ByteAddressBuffer now : register(t0);
++RWByteAddressBuffer hashes : register(u0);
++RWByteAddressBuffer differs : register(u1);
++groupshared uint4 lanes[64];
++[RootSignature(RS)]
++[numthreads(64, 1, 1)]
++void main(uint3 group : SV_GroupID, uint t : SV_GroupIndex) {
++    uint i = group.x;
++    if (i >= pieces) return;
++    uint piece = first + i;
++    uint lo = piece * 65536u;
++    lo = lo > skew ? lo - skew : 0u;
++    uint hi = min((piece + 1u) * 65536u - skew, size);
++    lo = lo & ~15u;
++    hi = (hi + 15u) & ~15u;
++    uint4 h = uint4(0x9E3779B9u, 0x85EBCA6Bu, 0xC2B2AE35u, 0x27D4EB2Fu) ^ t;
++    [loop]
++    for (uint at = lo + t * 16u; at < hi; at += 1024u) {
++        h = (h ^ now.Load4(at)) * uint4(0x01000193u, 0x9E3779B1u, 0x85EBCA77u, 0xC2B2AE3Du);
++        h = h.yzwx ^ (h >> 15);
++    }
++    lanes[t] = h;
++    GroupMemoryBarrierWithGroupSync();
++    if (t != 0u) return;
++    uint4 all = uint4(0x27D4EB2Fu, 0x165667B1u, 0xD3A2646Cu, 0xFD7046C5u);
++    [loop]
++    for (uint k = 0u; k < 64u; k++) {
++        all = (all ^ lanes[k]) * uint4(0x01000193u, 0x9E3779B1u, 0x85EBCA77u, 0xC2B2AE3Du);
++        all = all.yzwx ^ (all >> 15);
++    }
++    if (compare != 0u) {
++        differs.Store(out_at + i * 4u, any(all != hashes.Load4(piece * 16u)) ? 1u : 0u);
++        if (compare == 2u) hashes.Store4(piece * 16u, all);
++    } else {
++        hashes.Store4(piece * 16u, all);
++    }
++}
++"#;
++
++/// Whether [`CARD_COMPARE_WIDE`] is the compare (`VICTORY_CARD_HASH_WIDE`;
++/// on unless `0`). Chosen once: stored and compared hashes must agree.
++pub(crate) fn card_hash_wide() -> bool {
++    static ON: OnceLock<bool> = OnceLock::new();
++    *ON.get_or_init(|| std::env::var_os("VICTORY_CARD_HASH_WIDE").is_none_or(|v| v != "0"))
++}
++
++/// The compare's source for this process ([`card_hash_wide`]).
++pub(crate) fn card_compare_source() -> &'static str {
++    if card_hash_wide() { CARD_COMPARE_WIDE } else { CARD_COMPARE }
++}
++
++/// The groups a compare pass over `pieces` pieces is dispatched with.
++pub(crate) fn card_compare_groups(pieces: u32) -> u32 {
++    if card_hash_wide() { pieces } else { pieces.div_ceil(64) }
++}
++
+ /// Whether the pieces a flight's compare flags come down to the PC inside
+ /// the flight itself (`VICTORY_CARD_FETCH_INFLIGHT=1`; off by default, and
+ /// only with [`relay`]).
+@@ -4004,9 +4089,10 @@ impl Host {
+         // SAFETY: the source and names live through the call; the out
+         // pointer is ours.
+         unsafe {
++            let source = card_compare_source();
+             D3DCompile(
+-                CARD_COMPARE.as_ptr().cast(),
+-                CARD_COMPARE.len(),
++                source.as_ptr().cast(),
++                source.len(),
+                 windows::core::s!("card compare"),
+                 None,
+                 None,
+@@ -4326,7 +4412,7 @@ impl Host {
+                         for run in runs {
+                             let constants = [run.first, run.skew, shadow.card_hashed().unwrap_or(size) as u32, run.pieces, 0, 0];
+                             list.SetComputeRoot32BitConstants(0, 6, constants.as_ptr().cast(), 0);
+-                            list.Dispatch(run.pieces.div_ceil(64), 1, 1);
++                            list.Dispatch(card_compare_groups(run.pieces), 1, 1);
+                         }
+                     }
+                     crate::cardmeter::end(list, timed);
+@@ -4422,7 +4508,7 @@ impl Host {
+                         list.SetComputeRoot32BitConstants(0, 6, constants.as_ptr().cast(), 0);
+                         list.SetComputeRootShaderResourceView(1, r.shadow.buffer.GetGPUVirtualAddress());
+                         list.SetComputeRootUnorderedAccessView(2, before.GetGPUVirtualAddress());
+-                        list.Dispatch(r.span.pieces.div_ceil(64), 1, 1);
++                        list.Dispatch(card_compare_groups(r.span.pieces), 1, 1);
+                         CARD_PASSES[2].fetch_add(1, Ordering::Relaxed);
+                     }
+                     // The fetch inside the flight (`inflight_fetch`): behind
+@@ -7909,6 +7995,7 @@ struct Presenter {
+ /// every few seconds.
+ struct Meter {
+     since: std::time::Instant,
++    frame_csv: Option<(std::io::BufWriter<std::fs::File>, std::time::Instant, u64)>,
+     frames: u32,
+     #[cfg(feature = "diagnostics")]
+     copy_stats_frames: u64,
+@@ -7923,6 +8010,13 @@ impl Meter {
+         let now = std::time::Instant::now();
+         Meter {
+             since: now,
++            frame_csv: std::env::var_os("VICTORY_FRAME_CSV").and_then(|path| {
++                use std::io::Write;
++                let file = std::fs::File::create_new(path).ok()?;
++                let mut out = std::io::BufWriter::new(file);
++                writeln!(out, "present_interval_us,draw_calls").ok()?;
++                Some((out, now, crate::draw::drawn()))
++            }),
+             frames: 0,
+             #[cfg(feature = "diagnostics")]
+             copy_stats_frames: 0,
+@@ -7934,6 +8028,18 @@ impl Meter {
+ 
+     /// Counts a presented frame.
+     fn frame(&mut self, hwnd: HWND) {
++        if let Some((out, last, previous_draws)) = self.frame_csv.as_mut() {
++            use std::io::Write;
++            let now = std::time::Instant::now();
++            let draws = crate::draw::drawn();
++            let duration = now.duration_since(*last).as_micros();
++            let result = writeln!(out, "{duration},{}", draws.saturating_sub(*previous_draws));
++            *last = now;
++            *previous_draws = draws;
++            if result.is_err() || (self.since.elapsed().as_secs() >= 1 && out.flush().is_err()) {
++                self.frame_csv = None;
++            }
++        }
+         #[cfg(feature = "diagnostics")]
+         tracing::debug!(target: "victory_gpu::frame", token = crate::frame::current(), "present");
+         #[cfg(feature = "diagnostics")]
+@@ -7953,6 +8059,7 @@ impl Meter {
+         crate::fpsbox::set(fps);
+         let ms = elapsed.as_secs_f64() * 1000.0 / frames;
+         let draws = (drawn - self.drawn) as f64 / frames;
++        crate::texture::residency_interval(frames as u64, ms, draws);
+         (self.since, self.frames, self.drawn) = (std::time::Instant::now(), 0, drawn);
+         // Of a frame, ms preparing submissions and ms waiting for the GPU.
+         let [cpu, gpu] = [0, 1].map(|i| {
+@@ -8319,7 +8426,17 @@ impl Host {
+                 .then(|| crate::capture::read_back(&self.device, list, texture))
+                 .flatten();
+             #[cfg(feature = "diagnostics")]
+-            let probe = if slot.is_some() { None } else { crate::capture::probe(&self.device, list, texture) };
++            let probe = {
++                static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
++                let enabled = ENABLED.get_or_init(|| {
++                    std::env::var_os("VICTORY_BLACK_FRAME_PROBE").is_none_or(|value| value != "0")
++                });
++                if slot.is_none() && *enabled {
++                    crate::capture::probe(&self.device, list, texture)
++                } else {
++                    None
++                }
++            };
+             #[cfg(not(feature = "diagnostics"))]
+             let _ = frame;
+             list.ResourceBarrier(&[
+@@ -8342,8 +8459,9 @@ impl Host {
+             if let Some((buffer, footprint)) = capture {
+                 crate::capture::save_read_back(frame, &buffer, &footprint);
+             }
+-            let _ = p.swap_chain.Present(0, DXGI_PRESENT(0));
+-            p.meter.frame(p.hwnd);
++            if p.swap_chain.Present(0, DXGI_PRESENT(0)) == windows::core::HRESULT(0) {
++                p.meter.frame(p.hwnd);
++            }
+             #[cfg(feature = "diagnostics")]
+             return Some(probe.is_some_and(|b| crate::capture::black(&b)));
+             #[cfg(not(feature = "diagnostics"))]
+diff --git a/crates/victory-gpu/src/indirect.rs b/crates/victory-gpu/src/indirect.rs
+index 5cdb4b2..b137dd6 100644
+--- a/crates/victory-gpu/src/indirect.rs
++++ b/crates/victory-gpu/src/indirect.rs
+@@ -1213,10 +1213,78 @@ void main() {
+     /// compare before it, also a change back.
+     #[test]
+     fn warp_card_compare_stores_the_hash_it_made_when_told() {
++        // Both forms: a thread a piece, and a group a piece (the default).
++        card_compare_on_warp(crate::host::CARD_COMPARE, |pieces| pieces.div_ceil(64));
++        card_compare_on_warp(crate::host::CARD_COMPARE_WIDE, |pieces| pieces);
++    }
++
++    /// Every one-byte change is found, in the piece it is in, with a copy
++    /// that does not start on a piece boundary (`skew`) and a span that
++    /// does not start at piece 0: both forms of the compare.
++    #[test]
++    fn warp_card_compare_finds_every_byte_with_skew() {
++        for (source, groups) in [
++            (crate::host::CARD_COMPARE, (|p: u32| p.div_ceil(64)) as fn(u32) -> u32),
++            (crate::host::CARD_COMPARE_WIDE, |p| p),
++        ] {
++            let Some(mut warp) = WarpHarness::new() else {
++                return;
++            };
++            let compare = compile_cs(&warp.device, source).expect("the card compare must compile on WARP");
++            const PIECE: usize = 64 << 10;
++            const SKEW: u32 = 0x3450;
++            const FIRST: u32 = 1;
++            const PIECES: u32 = 4;
++            let size = PIECE * 6;
++            let (_now, now_ptr, now_gpu) = warp.shared_buffer(size as u64);
++            let (_hashes, _, hashes_gpu) = warp.shared_buffer(16 * 8);
++            let (_differs, differs_ptr, differs_gpu) = warp.shared_buffer(64);
++            let content: Vec<u8> = (0..size).map(|i| (i * 131 + i / 7) as u8).collect();
++            // SAFETY: the mapping holds `size` bytes.
++            unsafe { std::ptr::copy_nonoverlapping(content.as_ptr(), now_ptr, size) };
++            let run = |warp: &mut WarpHarness, mode: u32| -> Vec<u32> {
++                // SAFETY: as in `card_compare_on_warp`.
++                unsafe {
++                    for i in 0..PIECES as usize {
++                        differs_ptr.cast::<u32>().add(i).write_volatile(7);
++                    }
++                    warp.list.SetComputeRootSignature(&compare.root);
++                    warp.list.SetPipelineState(&compare.pso);
++                    let constants = [FIRST, SKEW, size as u32, PIECES, 0, mode];
++                    warp.list.SetComputeRoot32BitConstants(0, 6, constants.as_ptr().cast(), 0);
++                    warp.list.SetComputeRootShaderResourceView(1, now_gpu);
++                    warp.list.SetComputeRootUnorderedAccessView(2, hashes_gpu);
++                    warp.list.SetComputeRootUnorderedAccessView(3, differs_gpu);
++                    warp.list.Dispatch(groups(PIECES), 1, 1);
++                }
++                warp.submit_and_wait();
++                // SAFETY: as above.
++                (0..PIECES as usize).map(|i| unsafe { differs_ptr.cast::<u32>().add(i).read_volatile() }).collect()
++            };
++            run(&mut warp, 0);
++            assert_eq!(run(&mut warp, 1), vec![0; PIECES as usize]);
++            // Piece `FIRST + i` of the copy covers offsets [lo, hi) as the
++            // compare cuts them; a byte there changed flags that piece alone.
++            for (k, step) in [0usize, 1, 15, 16, 1023, 1024, 4095, 30001, 65535].iter().enumerate() {
++                let i = (k % PIECES as usize) as u32;
++                let lo = ((FIRST + i) as usize * PIECE).saturating_sub(SKEW as usize);
++                let at = lo + step % (PIECE - 16);
++                // SAFETY: inside the mapping.
++                unsafe { now_ptr.add(at).write_volatile(content[at] ^ 0x5a) };
++                let flagged = run(&mut warp, 1);
++                assert_eq!(flagged[i as usize], 1, "{source:.20}: byte {at:#x} of piece {i} not found");
++                // SAFETY: inside the mapping.
++                unsafe { now_ptr.add(at).write_volatile(content[at]) };
++                assert_eq!(run(&mut warp, 1), vec![0; PIECES as usize]);
++            }
++        }
++    }
++
++    fn card_compare_on_warp(source: &str, groups: fn(u32) -> u32) {
+         let Some(mut warp) = WarpHarness::new() else {
+             return;
+         };
+-        let compare = compile_cs(&warp.device, crate::host::CARD_COMPARE).expect("the card compare must compile on WARP");
++        let compare = compile_cs(&warp.device, source).expect("the card compare must compile on WARP");
+         const PIECE: usize = 64 << 10;
+         const PIECES: u32 = 3;
+         let size = PIECE * PIECES as usize;
+@@ -1242,7 +1310,7 @@ void main() {
+                 warp.list.SetComputeRootShaderResourceView(1, now_gpu);
+                 warp.list.SetComputeRootUnorderedAccessView(2, hashes_gpu);
+                 warp.list.SetComputeRootUnorderedAccessView(3, differs_gpu);
+-                warp.list.Dispatch(PIECES.div_ceil(64), 1, 1);
++                warp.list.Dispatch(groups(PIECES), 1, 1);
+             }
+             warp.submit_and_wait();
+             // SAFETY: as above.
+diff --git a/crates/victory-gpu/src/resource.rs b/crates/victory-gpu/src/resource.rs
+index 1fff3d6..2fcde53 100644
+--- a/crates/victory-gpu/src/resource.rs
++++ b/crates/victory-gpu/src/resource.rs
+@@ -2595,6 +2595,31 @@ pub(crate) fn title_texture(this: This) -> Option<(victory_formats::texture::Lay
+ /// and for a description without a size.
+ #[cfg(windows)]
+ pub(crate) fn placed_bytes(desc: &[u32; 14]) -> Option<u64> {
++    if !crate::texture::streaming_optimizations() {
++        return placed_bytes_uncached(desc);
++    }
++    // A descriptor describes the allocation size completely. This cache
++    // never holds a texture, address or residency state. Limit storage per
++    // recording thread even for a title generating unique descriptions.
++    thread_local! {
++        static SIZES: std::cell::RefCell<std::collections::HashMap<[u32; 14], Option<u64>>> =
++            std::cell::RefCell::new(std::collections::HashMap::new());
++    }
++    SIZES.with_borrow_mut(|sizes| {
++        if let Some(&size) = sizes.get(desc) {
++            return size;
++        }
++        let size = placed_bytes_uncached(desc);
++        if sizes.len() >= 1024 {
++            sizes.clear();
++        }
++        sizes.insert(*desc, size);
++        size
++    })
++}
++
++#[cfg(windows)]
++fn placed_bytes_uncached(desc: &[u32; 14]) -> Option<u64> {
+     // SAFETY: 56 bytes in the description's layout.
+     let d = unsafe { desc.as_ptr().cast::<ResourceDesc>().read_unaligned() };
+     if d.dimension == BUFFER {
+@@ -2603,6 +2628,20 @@ pub(crate) fn placed_bytes(desc: &[u32; 14]) -> Option<u64> {
+     footprint(&d).map(|f| f.size)
+ }
+ 
++#[cfg(all(windows, test))]
++#[test]
++fn cached_sizes_match_layouts_across_eviction() {
++    let mut desc = [3, 0, 0, 0, 16, 0, 8, 65537, 10, 1, 0, 0x100, 3145728, 0];
++    for w in (1..1200).chain(1..30) {
++        desc[4] = w;
++        let original = placed_bytes_uncached(&desc);
++        assert_eq!(placed_bytes(&desc), original);
++        assert_eq!(placed_bytes(&desc), original);
++    }
++    desc[0] = BUFFER;
++    assert_eq!(placed_bytes(&desc), None);
++}
++
+ /// The resource [`texture_at`] made for a texture placed at `address` with
+ /// the description `desc`, if it has made one: never made here (for the
+ /// frame listing, which must not count as a use).
+diff --git a/crates/victory-gpu/src/shadow.rs b/crates/victory-gpu/src/shadow.rs
+index a04a159..d56c50d 100644
+--- a/crates/victory-gpu/src/shadow.rs
++++ b/crates/victory-gpu/src/shadow.rs
+@@ -908,6 +908,54 @@ pub(crate) fn outside(from: usize, to: usize, mut skip: Vec<(usize, usize)>) ->
+     out
+ }
+ 
++/// New snapshot bytes in a write declaration. `target` is clipped to this
++/// buffer and expressed in offsets; pending declarations are absolute.
++fn uncovered_write_offsets(base: usize, target: (usize, usize), pending: &[(usize, usize)]) -> Vec<(usize, usize)> {
++    let (from, to) = target;
++    if from >= to {
++        return Vec::new();
++    }
++    let (begin, end) = (base + from, base + to);
++    let mut overlaps = Vec::new();
++    for &(a, b) in pending {
++        if a <= begin && b >= end {
++            return Vec::new();
++        }
++        let (left, right) = (a.max(begin), b.min(end));
++        if left < right {
++            overlaps.push((left - base, right - base));
++        }
++    }
++    outside(from, to, overlaps)
++}
++
++#[cfg(test)]
++mod write_offset_tests {
++    use super::uncovered_write_offsets;
++
++    #[test]
++    fn clipped_snapshot_gaps_match_a_byte_map() {
++        let base = 301usize;
++        let mut pending = vec![(base - 8, base + 2), (base + 67, base + 103)];
++        let mut state = 73u32;
++        for step in 0..90 {
++            let from = (step * 23) % 65;
++            let to = (from + step % 31).min(70);
++            let gaps = uncovered_write_offsets(base, (from, to), &pending);
++            assert!(gaps.windows(2).all(|w| w[0].1 < w[1].0));
++            for i in 0..70 {
++                let expected = (from..to).contains(&i)
++                    && !pending.iter().any(|&(a,b)| (a..b).contains(&(base+i)));
++                assert_eq!(gaps.iter().any(|&(a,b)| (a..b).contains(&i)), expected);
++            }
++            state = state.wrapping_mul(1664525).wrapping_add(1013904223);
++            let a = base - 8 + (state >> 16) as usize % 90;
++            pending.push((a, a + step % 10));
++            if step % 11 == 10 { pending.drain(..5); }
++        }
++    }
++}
++
+ /// The runs of 4-byte words of title memory (cut on its addresses;
+ /// `read` and `merged` are of the memory at `address`) that hold a byte in
+ /// which `merged` differs from `read`, as (offset, bytes) in order to
+@@ -2816,24 +2864,7 @@ impl Shadow {
+         // The parts no declared range holds yet: their bytes are taken now,
+         // just after the range's refresh (a part declared earlier has not
+         // been refreshed since, and keeps the bytes taken then).
+-        let mut parts = vec![self.inside(address, len)];
+-        for &(a, e) in pending.iter() {
+-            let (a, e) = self.inside(a, e - a);
+-            let mut rest = Vec::with_capacity(parts.len() + 1);
+-            for (from, to) in parts {
+-                if e <= from || a >= to {
+-                    rest.push((from, to));
+-                    continue;
+-                }
+-                if from < a {
+-                    rest.push((from, a));
+-                }
+-                if e < to {
+-                    rest.push((e, to));
+-                }
+-            }
+-            parts = rest;
+-        }
++        let parts = uncovered_write_offsets(self.start as usize, self.inside(address, len), &pending);
+         pending.push(range);
+         let taken: usize = parts.iter().map(|&(from, to)| to.saturating_sub(from)).sum();
+         BACK_CLASS[usize::from(!self.window)].fetch_add(taken as u64, Ordering::Relaxed);
+diff --git a/crates/victory-gpu/src/texture.rs b/crates/victory-gpu/src/texture.rs
+index caf1709..3375407 100644
+--- a/crates/victory-gpu/src/texture.rs
++++ b/crates/victory-gpu/src/texture.rs
+@@ -1400,6 +1400,85 @@ fn committed_by_query(at: *const u8, len: usize) -> bool {
+     true
+ }
+ 
++const TEXTURE_BLOCK: usize = 64 << 10;
++static BATCH_RESIDENCY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
++pub(super) fn streaming_optimizations() -> bool {
++    BATCH_RESIDENCY.load(std::sync::atomic::Ordering::Relaxed)
++}
++static MEASURE_RESIDENCY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
++static RESIDENCY_TOTALS: [std::sync::atomic::AtomicU64; 3] =
++    [const { std::sync::atomic::AtomicU64::new(0) }; 3];
++
++// Optional in-game A/B. Each caption interval is entirely in one mode, except
++// work already in flight at the boundary. Leave the fast path enabled normally.
++pub(crate) fn residency_interval(frames: u64, ms: f64, draws: f64) {
++    use std::sync::atomic::Ordering::Relaxed;
++    static STOP_FILE: std::sync::OnceLock<Option<std::path::PathBuf>> = std::sync::OnceLock::new();
++    let Some(stop_file) = STOP_FILE.get_or_init(|| {
++        std::env::var_os("VICTORY_RESIDENCY_AB")?;
++        Some(std::path::PathBuf::from(std::env::var_os("LOCALAPPDATA")?).join("residency-complete"))
++    }) else { return; };
++    if stop_file.exists() {
++        MEASURE_RESIDENCY.store(false, Relaxed);
++        BATCH_RESIDENCY.store(true, Relaxed);
++        return;
++    }
++    static INTERVAL: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
++    let interval = INTERVAL.fetch_add(1, Relaxed);
++    let batch = BATCH_RESIDENCY.load(Relaxed);
++    let [calls, blocks, probe_us] = [0, 1, 2].map(|i| RESIDENCY_TOTALS[i].swap(0, Relaxed));
++    tracing::warn!(interval, batch, frames, ms, draws, calls, blocks, probe_us, "texture residency comparison");
++    MEASURE_RESIDENCY.store(true, Relaxed);
++    // ABBA in four-interval groups to balance steady changes in scene load.
++    BATCH_RESIDENCY.store(matches!(((interval + 1) / 4) % 4, 0 | 3), Relaxed);
++}
++
++fn sampled_block_bytes(start: usize, end: usize, batch: bool) -> u64 {
++    use windows_sys::Win32::System::ProcessStatus::{K32QueryWorkingSetEx, PSAPI_WORKING_SET_EX_INFORMATION};
++    use windows_sys::Win32::System::Threading::GetCurrentProcess;
++    const PAGE: usize = 4096;
++    let mut block = start & !(TEXTURE_BLOCK - 1);
++    let mut there = 0u64;
++    if !batch || end - block <= TEXTURE_BLOCK {
++        while block < end {
++            let next = block.saturating_add(TEXTURE_BLOCK);
++            let lo = block.max(start);
++            if readable(lo, 1, true).0 == 1 {
++                there += (next.min(end) - lo) as u64;
++            }
++            block = next;
++        }
++        return there;
++    }
++    // Query the same 4 KiB page in each console block as the scalar path.
++    // A trimmed page still needs the one-byte kernel read to distinguish
++    // a readable allocation from a missing page.
++    // SAFETY: the Windows query records contain only a pointer and flags.
++    let mut info: [PSAPI_WORKING_SET_EX_INFORMATION; 128] = unsafe { std::mem::zeroed() };
++    while block < end {
++        let count = (end - block).div_ceil(TEXTURE_BLOCK).min(info.len());
++        let entries = &mut info[..count];
++        for (i, entry) in entries.iter_mut().enumerate() {
++            let lo = (block + i * TEXTURE_BLOCK).max(start);
++            entry.VirtualAddress = (lo & !(PAGE - 1)) as *mut _;
++        }
++        // SAFETY: the kernel fills this mutable slice for the current process.
++        let asked = unsafe {
++            K32QueryWorkingSetEx(GetCurrentProcess(), entries.as_mut_ptr().cast(), size_of_val(entries) as u32)
++        } != 0;
++        for entry in entries {
++            // SAFETY: on success the flags were filled in by the query.
++            let valid = asked && unsafe { entry.VirtualAttributes.Flags } & 1 != 0;
++            let next = block.saturating_add(TEXTURE_BLOCK);
++            if valid || crate::host::read_into(entry.VirtualAddress.cast(), &mut [0u8]) {
++                there += (next.min(end) - block.max(start)) as u64;
++            }
++            block = next;
++        }
++    }
++    there
++}
++
+ /// How many bytes of `[at, at + len)` are committed memory: all of a
+ /// texture that is there, some of one streaming in (its smaller mips lie
+ /// at the start of its memory, and their pages are mapped first), none of
+@@ -1431,17 +1510,18 @@ pub(crate) fn mapped_bytes(at: *const u8, len: usize) -> u64 {
+         // for each of its missing pages, every frame it stayed due: 1,663
+         // textures "uploaded in part" kept the pass over the heap's views at
+         // 90-160 ms a frame (run 81). `VICTORY_MAPPED_BY_PAGE=1`: by page.
+-        const BLOCK: usize = 64 << 10;
+-        let mut there = 0u64;
+-        let mut block = start & !(BLOCK - 1);
+-        while block < end {
+-            let (lo, hi) = (block.max(start), block.saturating_add(BLOCK).min(end));
+-            if readable(lo, 1, true).0 == 1 {
+-                there += (hi - lo) as u64;
+-            }
+-            block = block.saturating_add(BLOCK);
++        use std::sync::atomic::Ordering::Relaxed;
++        let batch = streaming_optimizations();
++        if MEASURE_RESIDENCY.load(Relaxed) {
++            let now = std::time::Instant::now();
++            let bytes = sampled_block_bytes(start, end, batch);
++            let blocks = (end - (start & !(TEXTURE_BLOCK - 1))).div_ceil(TEXTURE_BLOCK);
++            RESIDENCY_TOTALS[0].fetch_add(1, Relaxed);
++            RESIDENCY_TOTALS[1].fetch_add(blocks as u64, Relaxed);
++            RESIDENCY_TOTALS[2].fetch_add(now.elapsed().as_micros() as u64, Relaxed);
++            return bytes;
+         }
+-        return there;
++        return sampled_block_bytes(start, end, batch);
+     }
+     let (mut p, mut there) = (start, 0u64);
+     while p < end {
+@@ -1547,6 +1627,79 @@ fn staging(resource: This, texture: &ID3D12Resource) -> Option<Arc<Staging>> {
+ mod title_memory_tests {
+     use super::with_title;
+ 
++    #[test]
++    fn batched_texture_probes_agree_on_partial_and_replaced_blocks() {
++        use super::{sampled_block_bytes, TEXTURE_BLOCK as B};
++        use windows_sys::Win32::System::Memory::*;
++        const BLOCKS: usize = 269;
++        // SAFETY: this test exclusively owns the reservation. Only committed
++        // pages are touched, and all probes use the kernel for missing pages.
++        unsafe {
++            let base = VirtualAlloc(std::ptr::null(), B * BLOCKS, MEM_RESERVE, PAGE_NOACCESS).cast::<u8>();
++            assert!(!base.is_null());
++            for i in 0..BLOCKS {
++                if i % 3 != 1 {
++                    assert!(!VirtualAlloc(base.add(i * B).cast(), B, MEM_COMMIT, PAGE_READWRITE).is_null());
++                    if i % 2 == 0 { base.add(i * B).write(42); }
++                }
++            }
++            let a = base as usize;
++            for (offset, len) in [(0, 1), (B - 5, 9), (B + 77, 381), (12345, 7 * B + 97), (B + 313, 255 * B + 7000), (0, B * BLOCKS)] {
++                let end = offset + len;
++                let expected = (0..BLOCKS).filter(|i| i % 3 != 1)
++                    .map(|i| end.min((i + 1) * B).saturating_sub(offset.max(i * B)))
++                    .sum::<usize>() as u64;
++                for batch in [false, true] {
++                    assert_eq!(sampled_block_bytes(a + offset, a + end, batch), expected);
++                }
++            }
++            // Exercise misaligned endpoints on both sides of query-batch boundaries.
++            let mut state = 0xbe8047013dd8c381_u64;
++            for _ in 0..48 {
++                state ^= state << 13;
++                state ^= state >> 7;
++                state ^= state << 17;
++                let offset = (state as usize) % (7 * B);
++                let width = (125 + ((state >> 32) as usize % 9)) * B + (offset % 4096);
++                assert_eq!(
++                    sampled_block_bytes(a + offset, a + offset + width, true),
++                    sampled_block_bytes(a + offset, a + offset + width, false)
++                );
++            }
++            assert_ne!(VirtualFree(base.cast(), B, MEM_DECOMMIT), 0);
++            for batch in [false, true] {
++                assert_eq!(sampled_block_bytes(a, a + 3 * B, batch), B as u64);
++            }
++            assert_ne!(VirtualFree(base.cast(), 0, MEM_RELEASE), 0);
++        }
++    }
++
++    #[test]
++    #[ignore = "local timing run"]
++    fn time_resident_texture_probes() {
++        use super::{sampled_block_bytes, TEXTURE_BLOCK as B};
++        use std::hint::black_box;
++        use std::time::Instant;
++        let mut data = vec![0u8; 257 * B];
++        for byte in data.iter_mut().step_by(4096) { *byte = 1; }
++        let start = (data.as_ptr() as usize).next_multiple_of(B);
++        for blocks in [4, 16, 64, 256] {
++            let mut timings = [Vec::new(), Vec::new()];
++            for pass in 0..12 {
++                for batch in [pass % 2 == 0, pass % 2 != 0] {
++                    let begin = Instant::now();
++                    for _ in 0..128 {
++                        assert_eq!(black_box(sampled_block_bytes(start, start + blocks * B, batch)), (blocks * B) as u64);
++                    }
++                    timings[usize::from(batch)].push(begin.elapsed().as_nanos() / 128);
++                }
++            }
++            for t in &mut timings { t.sort_unstable(); }
++            println!("{blocks} blocks: scalar {} ns, batch {} ns", timings[0][6], timings[1][6]);
++        }
++        black_box(data);
++    }
++
+     /// Title memory whose tail is reserved and not committed reads through
+     /// the copy as its bytes and then zeros, without a fault; so does
+     /// memory a page of which is taken away between two reads, and the
