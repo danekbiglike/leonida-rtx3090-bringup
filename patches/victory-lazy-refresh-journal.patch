@@ -1,0 +1,50 @@
+--- a/crates/victory-gpu/src/host.rs
++++ b/crates/victory-gpu/src/host.rs
+@@ -7846,13 +7846,9 @@
+         let ahead = self.refreshes.len() > 1;
+         if ahead {
+             let started = std::time::Instant::now();
+-            let ranges: Vec<(usize, usize)> = self
+-                .refreshes
+-                .iter()
+-                .filter(|r| !r.0.unwatched())
+-                .map(|r| (r.1, r.2))
+-                .collect();
+-            crate::watch::ask_ahead(&ranges);
++            crate::watch::ask_ahead(
++                self.refreshes.iter().filter(|r| !r.0.unwatched()).map(|r| (r.1, r.2)),
++            );
+             preparing(0, started.elapsed().as_micros() as u64);
+         }
+         if wide_refresh() && self.refreshes.len() >= 4 {
+--- a/crates/victory-gpu/src/watch.rs
++++ b/crates/victory-gpu/src/watch.rs
+@@ -95,11 +95,16 @@
+ /// submissions refresh thousands of host copies (6,664 askings a frame,
+ /// 456 ms, in run 14). Ranges that are not write-watched, or lie alone, are
+ /// left to `writes`.
+-pub(crate) fn ask_ahead(ranges: &[(usize, usize)]) {
++pub(crate) fn ask_ahead(ranges: impl Iterator<Item = (usize, usize)>) {
++    // The submission already queried its pages. Avoid walking per-list buffer
++    // references and sorting their page spans for every subsequent flush.
++    // Release the lock during a real sort, then recheck before publication.
++    if JOURNAL.lock().unwrap_or_else(|e| e.into_inner()).kept {
++        return;
++    }
+     let mut pieces: Vec<(usize, usize)> = ranges
+-        .iter()
+         .filter(|r| r.0 < r.1)
+-        .map(|&(start, end)| (start / PAGE, end.div_ceil(PAGE)))
++        .map(|(start, end)| (start / PAGE, end.div_ceil(PAGE)))
+         .collect();
+     if pieces.len() < 2 {
+         return;
+@@ -214,7 +219,7 @@
+         return;
+     }
+     ask_once_end();
+-    ask_ahead(ranges);
++    ask_ahead(ranges.iter().copied());
+     let mut j = JOURNAL.lock().unwrap_or_else(|e| e.into_inner());
+     let j = &mut *j;
+     if j.ahead.is_empty() {

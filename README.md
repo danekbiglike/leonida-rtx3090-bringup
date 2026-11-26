@@ -2,6 +2,8 @@
 
 ## RTX 3090 gameplay reports
 
+The buffer-refresh experiment on the RTX 3090 cut traffic by 81% while FPS stayed at 4.33. The report includes a reusable interval analyzer and a separate Rust patch for redundant CPU work. [Frame times, source and reproduction](reports/2026-11-26-rtx3090/buffer-refresh-and-hitches.md)
+
 **Recommended on the tested Ryzen 7 3700X and RTX 3090:** the TextureLOD build measured **4.66 FPS at the window, 3.93 at the door and 3.91 with keyboard input**. An additional minute averaged 2.76 FPS and included a 3.38 s stall. [Reproduce this build](reports/2026-11-26-rtx3090/descriptor-locks-texture-mips.md) · [PowerShell profile](profiles/rtx3090-paired-texture-lod.ps1)
 
 Compare the measured renderer builds at the prison window, facing the door and during keyboard input. [FPS comparison](reports/2026-11-26-rtx3090/gameplay-comparison.md) · [JSON for tools](reports/2026-11-26-rtx3090/gameplay-index.json) · [Reproduce the builds](reports/2026-11-26-rtx3090/parallel-relay.md#prepare-the-exact-renderer-sources)

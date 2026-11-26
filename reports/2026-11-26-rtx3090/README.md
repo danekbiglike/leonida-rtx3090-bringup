@@ -1,5 +1,7 @@
 # GTA VI gameplay on Windows with VIctory and RTX 3090
 
+Sending only changed 256-byte chunks cut median uploads from 117 MB to 23 MB per frame. Both modes delivered 4.33 FPS at the prison window. [RTX 3090 A/B test, raw data and local buffer patch](buffer-refresh-and-hitches.md)
+
 **Recommended on the tested Ryzen 7 3700X and RTX 3090:** the TextureLOD build measured **4.66 FPS at the window, 3.93 at the door and 3.91 with keyboard input**. An additional minute averaged 2.76 FPS and included a 3.38 s stall. [Reproduce this build](descriptor-locks-texture-mips.md) · [PowerShell profile](../../profiles/rtx3090-paired-texture-lod.ps1)
 
 Compare the measured renderer builds at the prison window, facing the door and during keyboard input. [FPS comparison](gameplay-comparison.md) · [JSON for tools](gameplay-index.json) · [Reproduce the builds](parallel-relay.md#prepare-the-exact-renderer-sources)
