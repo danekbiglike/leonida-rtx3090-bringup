@@ -1,0 +1,18 @@
+{
+  "start_seconds": 1020,
+  "requested_seconds": 60,
+  "covered_seconds": 60.26133,
+  "frames": 215,
+  "fps": 3.56779380740518,
+  "p50_ms": 275.653,
+  "p95_ms": 318.719,
+  "p99_ms": 343.656,
+  "max_ms": 468.671,
+  "frames_over_200ms": 215,
+  "all_frames_within_200ms": false,
+  "mean_draw_calls": 6986.358139534884,
+  "split_modes": [],
+  "joined_hash_modes": [],
+  "scene": "Prison room during timed W, A, D, W inputs",
+  "clock": "Intervals between successful DXGI Present calls"
+}

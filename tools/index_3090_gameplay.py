@@ -12,6 +12,7 @@ builds = [
     ("paired-wave-land", "Parallel copy-back", "parallel-relay.md"),
     ("paired-wave-spans", "Joined readback commands", "join-fetch-ranges.md"),
     ("paired-wave-mips", "Descriptor locks and texture mips", "descriptor-locks-texture-mips.md"),
+    ("paired-wave-journal", "Lazy write-watch range preparation", "buffer-refresh-and-hitches.md"),
 ]
 scenes = [("window", ""), ("door", "-room"), ("movement", "-moving"), ("additional", "-route")]
 rows = []

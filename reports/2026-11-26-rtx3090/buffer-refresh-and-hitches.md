@@ -31,6 +31,16 @@ cargo build --locked --profile diag --features diagnostics -p victory
 
 Use the existing [TextureLOD profile](../../profiles/rtx3090-paired-texture-lod.ps1) with this build.
 
+### Results with the journal patch alone
+
+| Scene | Average FPS | P95 | Frames over 200 ms | Evidence |
+| --- | ---: | ---: | ---: | --- |
+| Fixed prison window, 160 s | 4.25 | 271.2 ms | 617 / 680 | [Frames](paired-wave-journal-frames.csv) · [Summary](paired-wave-journal-summary.json) · [View](paired-wave-journal-window.jpg) |
+| Facing the door, 60 s | 3.56 | 327.1 ms | 215 / 215 | [Frames](paired-wave-journal-room-frames.csv) · [Summary](paired-wave-journal-room-summary.json) · [View](paired-wave-journal-room.jpg) |
+| With W, A, D, W inputs, 60 s | 3.57 | 318.7 ms | 215 / 215 | [Frames](paired-wave-journal-moving-frames.csv) · [Summary](paired-wave-journal-moving-summary.json) · [View](paired-wave-journal-moving.jpg) |
+
+Compilation for a subsequent build overlapped the last 18 seconds of the window sample. The first 120 seconds before compilation also averaged 4.25 FPS. The door and input windows began after the build and its two D3D12 checks finished. At comparable door and movement draw counts the earlier TextureLOD run recorded 3.93 and 3.91 FPS. The patch eliminated redundant source work but this run gave no evidence for promoting it on this PC. Hair still shows rectangular bands in the movement view. Across 55 GPU samples during these tests, the GPU stayed in P0 on a Gen 3 link, with a median graphics clock of 1,950 MHz in each scene. [GPU samples](paired-wave-journal-gpu.csv)
+
 ## Comparing full uploads with changed 256-byte blocks
 
 This experiment ran on the unchanged TextureLOD executable. At the prison window with the movement prompt visible, the renderer alternated its existing `VICTORY_COPY_CHANGED=alt` modes every 20 seconds. The sample was fixed in advance at 680–840 seconds from the first Present. Frames crossing a mode switch or the one-second margin on either side are reported separately. A second clock anchor differed by 0.6 ms. No movement inputs were sent during the sample.
@@ -48,6 +58,8 @@ This experiment ran on the unchanged TextureLOD executable. At the prison window
 | GPU wait, ms | 108.8 | 97.1 |
 
 The last four rows are medians of eight complete renderer reporting intervals per mode. Sending only changed blocks reduced upload traffic by 81% and multiplied the number of ranges by 6.6. The CPU spent more time preparing them. The net FPS difference was under 0.1%. The default profile keeps whole-range uploads. Zero- and two-second margins yield the same ordering. [Summaries including boundary frames](copy-refresh/summary.json) · [Renderer interval data](copy-refresh/stages.csv)
+
+The control view showed the movement prompt at the prison window and horizontal bands in the sunlit hair. [Game window](copy-refresh/prison-window.jpg)
 
 Reproduce the comparison from the public trace with Python 3.11 or later in the repository root.
 

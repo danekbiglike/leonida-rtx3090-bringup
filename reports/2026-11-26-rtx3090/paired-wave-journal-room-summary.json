@@ -1,0 +1,18 @@
+{
+  "start_seconds": 950,
+  "requested_seconds": 60,
+  "covered_seconds": 60.451519,
+  "frames": 215,
+  "fps": 3.5565690251720556,
+  "p50_ms": 273.389,
+  "p95_ms": 327.056,
+  "p99_ms": 358.572,
+  "max_ms": 572.753,
+  "frames_over_200ms": 215,
+  "all_frames_within_200ms": false,
+  "mean_draw_calls": 6938.274418604651,
+  "split_modes": [],
+  "joined_hash_modes": [],
+  "scene": "Fixed prison door under player control",
+  "clock": "Intervals between successful DXGI Present calls"
+}

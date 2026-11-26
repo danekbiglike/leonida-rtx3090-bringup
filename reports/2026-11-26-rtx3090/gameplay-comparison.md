@@ -12,3 +12,4 @@ Ryzen 7 3700X with the Series X graphics profile. Values are average FPS. Each n
 | [Parallel copy-back](parallel-relay.md) | [4.34](paired-wave-land-summary.json) | [3.36](paired-wave-land-room-summary.json) | [3.36](paired-wave-land-moving-summary.json) | — |
 | [Joined readback commands](join-fetch-ranges.md) | [4.43](paired-wave-spans-summary.json) | [3.59](paired-wave-spans-room-summary.json) | [3.41](paired-wave-spans-moving-summary.json) | — |
 | [Descriptor locks and texture mips](descriptor-locks-texture-mips.md) | [4.66](paired-wave-mips-summary.json) | [3.93](paired-wave-mips-room-summary.json) | [3.91](paired-wave-mips-moving-summary.json) | [2.76](paired-wave-mips-route-summary.json) |
+| [Lazy write-watch range preparation](buffer-refresh-and-hitches.md) | [4.25](paired-wave-journal-summary.json) | [3.56](paired-wave-journal-room-summary.json) | [3.57](paired-wave-journal-moving-summary.json) | — |

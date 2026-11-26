@@ -251,6 +251,42 @@
           "source": "paired-wave-mips-route-summary.json"
         }
       }
+    },
+    {
+      "build": "Lazy write-watch range preparation",
+      "report": "buffer-refresh-and-hitches.md",
+      "samples": {
+        "window": {
+          "fps": 4.245535792579504,
+          "p95_ms": 271.24,
+          "max_ms": 633.284,
+          "frames": 680,
+          "covered_seconds": 160.168241,
+          "mean_draw_calls": 4886.358823529412,
+          "frames_over_200ms": 617,
+          "source": "paired-wave-journal-summary.json"
+        },
+        "door": {
+          "fps": 3.5565690251720556,
+          "p95_ms": 327.056,
+          "max_ms": 572.753,
+          "frames": 215,
+          "covered_seconds": 60.451519,
+          "mean_draw_calls": 6938.274418604651,
+          "frames_over_200ms": 215,
+          "source": "paired-wave-journal-room-summary.json"
+        },
+        "movement": {
+          "fps": 3.56779380740518,
+          "p95_ms": 318.719,
+          "max_ms": 468.671,
+          "frames": 215,
+          "covered_seconds": 60.26133,
+          "mean_draw_calls": 6986.358139534884,
+          "frames_over_200ms": 215,
+          "source": "paired-wave-journal-moving-summary.json"
+        }
+      }
     }
   ]
 }
