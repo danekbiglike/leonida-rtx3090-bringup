@@ -2,6 +2,8 @@
 
 ## RTX 3090 gameplay reports
 
+Descriptor refresh measured **4.61 FPS facing the window, 3.43 facing the door and 3.22 during keyboard movement**. [Descriptor refresh measurements](reports/2026-11-26-rtx3090/descriptor-refresh.md)
+
 On the RTX 3090, the paired-wave build removes the large blocks on the sunlit shoulder at the prison window. With GPU memory tuning and our AVX2 write-merge patch, the window reached **4.45 FPS**, up from 2.58 FPS. Facing the door, the same build measured **3.58 FPS**. [Verified profile, patches and gameplay data](reports/2026-11-26-rtx3090/relay-merge-avx2.md#gameplay-on-the-same-rtx-3090-pc) [Reusable PowerShell profile](profiles/rtx3090-paired-avx2.ps1) The original texture test averaged 3.39 FPS before and 3.42 FPS after. Reports include matched screenshots, source pins, patches and per-frame data. [RTX 3090 gameplay report and patch](reports/2026-11-26-rtx3090/README.md) [RTX 3090 square lighting artifact tests and gameplay frame data](reports/2026-11-26-rtx3090/lighting-trial.md) [Paired-wave RTX 3090 gameplay comparison](reports/2026-11-26-rtx3090/paired-waves.md)
 
 
