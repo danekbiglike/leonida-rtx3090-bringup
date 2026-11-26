@@ -1,0 +1,263 @@
+{
+  "0": {
+    "start_seconds": 915,
+    "duration_seconds": 60,
+    "guard_seconds": 0,
+    "excluded": {
+      "frames": 5,
+      "seconds": 1.517179,
+      "fps": 3.2955900391450186,
+      "p50_ms": 297.807,
+      "p95_ms": 334.149,
+      "max_ms": 334.149,
+      "over_200ms": 5,
+      "mean_draws": 6996.6
+    },
+    "blocks": [
+      {
+        "mode": "changed_chunks",
+        "toggle_seconds": 900.573988,
+        "frames": 18,
+        "seconds": 5.211329,
+        "fps": 3.4540133620425806,
+        "p50_ms": 279.8445,
+        "p95_ms": 328.332,
+        "max_ms": 328.332,
+        "over_200ms": 18,
+        "mean_draws": 6973.5
+      },
+      {
+        "mode": "whole_ranges",
+        "toggle_seconds": 920.545691,
+        "frames": 68,
+        "seconds": 19.446138,
+        "fps": 3.4968382925185453,
+        "p50_ms": 279.841,
+        "p95_ms": 340.974,
+        "max_ms": 359.403,
+        "over_200ms": 68,
+        "mean_draws": 6978.720588235294
+      },
+      {
+        "mode": "changed_chunks",
+        "toggle_seconds": 940.556896,
+        "frames": 69,
+        "seconds": 19.747437,
+        "fps": 3.49412432610875,
+        "p50_ms": 282.65,
+        "p95_ms": 327.682,
+        "max_ms": 351.421,
+        "over_200ms": 69,
+        "mean_draws": 6989.521739130435
+      },
+      {
+        "mode": "whole_ranges",
+        "toggle_seconds": 960.587731,
+        "frames": 50,
+        "seconds": 14.333931,
+        "fps": 3.488226642084436,
+        "p50_ms": 282.2335,
+        "p95_ms": 325.587,
+        "max_ms": 353.373,
+        "over_200ms": 50,
+        "mean_draws": 6988.9
+      }
+    ],
+    "modes": {
+      "whole_ranges": {
+        "frames": 118,
+        "seconds": 33.780069,
+        "fps": 3.4931841021402295,
+        "p50_ms": 281.273,
+        "p95_ms": 340.974,
+        "max_ms": 359.403,
+        "over_200ms": 118,
+        "mean_draws": 6983.033898305085
+      },
+      "changed_chunks": {
+        "frames": 87,
+        "seconds": 24.958766,
+        "fps": 3.485749255391873,
+        "p50_ms": 281.923,
+        "p95_ms": 327.682,
+        "max_ms": 351.421,
+        "over_200ms": 87,
+        "mean_draws": 6986.206896551724
+      }
+    }
+  },
+  "1": {
+    "start_seconds": 915,
+    "duration_seconds": 60,
+    "guard_seconds": 1,
+    "excluded": {
+      "frames": 26,
+      "seconds": 7.567983,
+      "fps": 3.4355256876237696,
+      "p50_ms": 283.0415,
+      "p95_ms": 328.332,
+      "max_ms": 334.149,
+      "over_200ms": 26,
+      "mean_draws": 6985.576923076923
+    },
+    "blocks": [
+      {
+        "mode": "changed_chunks",
+        "toggle_seconds": 900.573988,
+        "frames": 14,
+        "seconds": 3.976166,
+        "fps": 3.520979757887372,
+        "p50_ms": 278.352,
+        "p95_ms": 320.244,
+        "max_ms": 320.244,
+        "over_200ms": 14,
+        "mean_draws": 6974.5
+      },
+      {
+        "mode": "whole_ranges",
+        "toggle_seconds": 920.545691,
+        "frames": 62,
+        "seconds": 17.696243,
+        "fps": 3.5035685258164686,
+        "p50_ms": 278.501,
+        "p95_ms": 340.974,
+        "max_ms": 359.403,
+        "over_200ms": 62,
+        "mean_draws": 6978.532258064516
+      },
+      {
+        "mode": "changed_chunks",
+        "toggle_seconds": 940.556896,
+        "frames": 62,
+        "seconds": 17.808016,
+        "fps": 3.4815781836674002,
+        "p50_ms": 286.6375,
+        "p95_ms": 327.682,
+        "max_ms": 351.421,
+        "over_200ms": 62,
+        "mean_draws": 6989.6612903225805
+      },
+      {
+        "mode": "whole_ranges",
+        "toggle_seconds": 960.587731,
+        "frames": 46,
+        "seconds": 13.207606,
+        "fps": 3.4828416292854283,
+        "p50_ms": 282.444,
+        "p95_ms": 325.522,
+        "max_ms": 353.373,
+        "over_200ms": 46,
+        "mean_draws": 6988.804347826087
+      }
+    ],
+    "modes": {
+      "whole_ranges": {
+        "frames": 108,
+        "seconds": 30.903849,
+        "fps": 3.4947103190932625,
+        "p50_ms": 280.763,
+        "p95_ms": 340.974,
+        "max_ms": 359.403,
+        "over_200ms": 108,
+        "mean_draws": 6982.907407407408
+      },
+      "changed_chunks": {
+        "frames": 76,
+        "seconds": 21.784182,
+        "fps": 3.488769970798077,
+        "p50_ms": 283.7605,
+        "p95_ms": 327.682,
+        "max_ms": 351.421,
+        "over_200ms": 76,
+        "mean_draws": 6986.868421052632
+      }
+    }
+  },
+  "2": {
+    "start_seconds": 915,
+    "duration_seconds": 60,
+    "guard_seconds": 2,
+    "excluded": {
+      "frames": 48,
+      "seconds": 13.830173,
+      "fps": 3.4706724203666868,
+      "p50_ms": 282.2355,
+      "p95_ms": 325.587,
+      "max_ms": 334.149,
+      "over_200ms": 48,
+      "mean_draws": 6985.791666666667
+    },
+    "blocks": [
+      {
+        "mode": "changed_chunks",
+        "toggle_seconds": 900.573988,
+        "frames": 11,
+        "seconds": 3.093785,
+        "fps": 3.555515331543724,
+        "p50_ms": 277.972,
+        "p95_ms": 313.521,
+        "max_ms": 313.521,
+        "over_200ms": 11,
+        "mean_draws": 6972.545454545455
+      },
+      {
+        "mode": "whole_ranges",
+        "toggle_seconds": 920.545691,
+        "frames": 55,
+        "seconds": 15.723706,
+        "fps": 3.4979031024874163,
+        "p50_ms": 277.814,
+        "p95_ms": 345.033,
+        "max_ms": 359.403,
+        "over_200ms": 55,
+        "mean_draws": 6977.545454545455
+      },
+      {
+        "mode": "changed_chunks",
+        "toggle_seconds": 940.556896,
+        "frames": 54,
+        "seconds": 15.567935,
+        "fps": 3.468668131001318,
+        "p50_ms": 287.148,
+        "p95_ms": 334.16,
+        "max_ms": 351.421,
+        "over_200ms": 54,
+        "mean_draws": 6990.166666666667
+      },
+      {
+        "mode": "whole_ranges",
+        "toggle_seconds": 960.587731,
+        "frames": 42,
+        "seconds": 12.040415,
+        "fps": 3.488251858428468,
+        "p50_ms": 282.2335,
+        "p95_ms": 325.522,
+        "max_ms": 353.373,
+        "over_200ms": 42,
+        "mean_draws": 6988.833333333333
+      }
+    ],
+    "modes": {
+      "whole_ranges": {
+        "frames": 97,
+        "seconds": 27.764121,
+        "fps": 3.4937176653278526,
+        "p50_ms": 280.255,
+        "p95_ms": 344.657,
+        "max_ms": 359.403,
+        "over_200ms": 97,
+        "mean_draws": 6982.432989690722
+      },
+      "changed_chunks": {
+        "frames": 65,
+        "seconds": 18.66172,
+        "fps": 3.483065869598301,
+        "p50_ms": 286.328,
+        "p95_ms": 327.682,
+        "max_ms": 351.421,
+        "over_200ms": 65,
+        "mean_draws": 6987.184615384615
+      }
+    }
+  }
+}
