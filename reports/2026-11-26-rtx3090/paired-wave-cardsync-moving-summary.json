@@ -1,0 +1,18 @@
+{
+  "start_seconds": 1184,
+  "requested_seconds": 60,
+  "covered_seconds": 60.327911,
+  "frames": 225,
+  "fps": 3.729616959552934,
+  "p50_ms": 229.692,
+  "p95_ms": 487.435,
+  "p99_ms": 766.655,
+  "max_ms": 804.117,
+  "frames_over_200ms": 211,
+  "all_frames_within_200ms": false,
+  "mean_draw_calls": 4389.568888888889,
+  "split_modes": [],
+  "joined_hash_modes": [],
+  "scene": "Room-to-corridor transition with eight timestamped movement key presses",
+  "clock": "Intervals between successful DXGI Present calls"
+}

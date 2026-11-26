@@ -1,0 +1,47 @@
+{
+  "clock": "Elapsed successful Present intervals bracketing delivery to the game window",
+  "start_seconds": 1184,
+  "duration_seconds": 60,
+  "inputs": [
+    {
+      "key": "W",
+      "before_seconds": 1189.246713,
+      "after_seconds": 1190.285464
+    },
+    {
+      "key": "A",
+      "before_seconds": 1195.253551,
+      "after_seconds": 1196.475453
+    },
+    {
+      "key": "D",
+      "before_seconds": 1201.290327,
+      "after_seconds": 1202.303661
+    },
+    {
+      "key": "W",
+      "before_seconds": 1208.844152,
+      "after_seconds": 1208.844152
+    },
+    {
+      "key": "A",
+      "before_seconds": 1215.701778,
+      "after_seconds": 1216.878905
+    },
+    {
+      "key": "D",
+      "before_seconds": 1223.18237,
+      "after_seconds": 1223.18237
+    },
+    {
+      "key": "W",
+      "before_seconds": 1229.71475,
+      "after_seconds": 1230.80594
+    },
+    {
+      "key": "W",
+      "before_seconds": 1236.533552,
+      "after_seconds": 1237.66089
+    }
+  ]
+}

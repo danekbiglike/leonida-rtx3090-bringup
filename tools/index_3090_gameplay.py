@@ -13,6 +13,7 @@ builds = [
     ("paired-wave-spans", "Joined readback commands", "join-fetch-ranges.md"),
     ("paired-wave-mips", "Descriptor locks and texture mips", "descriptor-locks-texture-mips.md"),
     ("paired-wave-journal", "Lazy write-watch range preparation", "buffer-refresh-and-hitches.md"),
+    ("paired-wave-cardsync", "Small buffers in GPU memory", "small-card-buffers.md"),
 ]
 scenes = [("window", ""), ("door", "-room"), ("movement", "-moving"), ("additional", "-route")]
 rows = []

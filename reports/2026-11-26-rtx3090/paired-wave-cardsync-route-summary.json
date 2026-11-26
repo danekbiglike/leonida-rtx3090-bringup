@@ -1,0 +1,18 @@
+{
+  "start_seconds": 1329,
+  "requested_seconds": 60,
+  "covered_seconds": 60.651805,
+  "frames": 176,
+  "fps": 2.9018097647712215,
+  "p50_ms": 270.311,
+  "p95_ms": 781.132,
+  "p99_ms": 1510.79,
+  "max_ms": 1999.812,
+  "frames_over_200ms": 176,
+  "all_frames_within_200ms": false,
+  "mean_draw_calls": 6197.039772727273,
+  "split_modes": [],
+  "joined_hash_modes": [],
+  "scene": "From the prison corridor to the common room phones with eight timestamped keypresses",
+  "clock": "Intervals between successful DXGI Present calls"
+}

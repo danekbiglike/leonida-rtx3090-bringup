@@ -287,6 +287,52 @@
           "source": "paired-wave-journal-moving-summary.json"
         }
       }
+    },
+    {
+      "build": "Small buffers in GPU memory",
+      "report": "small-card-buffers.md",
+      "samples": {
+        "window": {
+          "fps": 5.460057933878121,
+          "p95_ms": 207.933,
+          "max_ms": 261.751,
+          "frames": 492,
+          "covered_seconds": 90.108934,
+          "mean_draw_calls": 4857.849593495935,
+          "frames_over_200ms": 52,
+          "source": "paired-wave-cardsync-summary.json"
+        },
+        "door": {
+          "fps": 4.180932293599324,
+          "p95_ms": 276.228,
+          "max_ms": 517.251,
+          "frames": 251,
+          "covered_seconds": 60.034457,
+          "mean_draw_calls": 6976.250996015936,
+          "frames_over_200ms": 240,
+          "source": "paired-wave-cardsync-room-summary.json"
+        },
+        "movement": {
+          "fps": 3.729616959552934,
+          "p95_ms": 487.435,
+          "max_ms": 804.117,
+          "frames": 225,
+          "covered_seconds": 60.327911,
+          "mean_draw_calls": 4389.568888888889,
+          "frames_over_200ms": 211,
+          "source": "paired-wave-cardsync-moving-summary.json"
+        },
+        "additional": {
+          "fps": 2.9018097647712215,
+          "p95_ms": 781.132,
+          "max_ms": 1999.812,
+          "frames": 176,
+          "covered_seconds": 60.651805,
+          "mean_draw_calls": 6197.039772727273,
+          "frames_over_200ms": 176,
+          "source": "paired-wave-cardsync-route-summary.json"
+        }
+      }
     }
   ]
 }
