@@ -1,0 +1,78 @@
+{
+  "bits-exit": {
+    "start_seconds": 643.687962,
+    "requested_seconds": 60,
+    "covered_seconds": 61.226747,
+    "frames": 207,
+    "fps": 3.38087535501437,
+    "p50_ms": 277.565,
+    "p95_ms": 398.488,
+    "p99_ms": 594.147,
+    "max_ms": 1777.805,
+    "frames_over_200ms": 207,
+    "all_frames_within_200ms": false,
+    "mean_draw_calls": 4996.63768115942,
+    "split_modes": [],
+    "joined_hash_modes": [],
+    "five_second_counts": [
+      17,
+      15,
+      17,
+      16,
+      18,
+      17,
+      17,
+      17,
+      19,
+      17,
+      19,
+      17
+    ],
+    "input_pulses": 628,
+    "median_stage_ms": {
+      "prepare": 173.9,
+      "copies": 93.1,
+      "textures": 26.5,
+      "GPU wait": 99.5,
+      "copy-back": 92.3
+    }
+  },
+  "bits-gate": {
+    "start_seconds": 712.124493,
+    "requested_seconds": 60,
+    "covered_seconds": 60.232784,
+    "frames": 131,
+    "fps": 2.174895319465891,
+    "p50_ms": 379.848,
+    "p95_ms": 779.329,
+    "p99_ms": 2047.805,
+    "max_ms": 2912.34,
+    "frames_over_200ms": 131,
+    "all_frames_within_200ms": false,
+    "mean_draw_calls": 6049.496183206107,
+    "split_modes": [],
+    "joined_hash_modes": [],
+    "five_second_counts": [
+      6,
+      12,
+      5,
+      13,
+      14,
+      12,
+      10,
+      6,
+      15,
+      12,
+      12,
+      13
+    ],
+    "input_pulses": 666,
+    "median_stage_ms": {
+      "prepare": 236.85000000000002,
+      "copies": 85.44999999999999,
+      "textures": 88.2,
+      "GPU wait": 132.1,
+      "copy-back": 100.94999999999999
+    }
+  }
+}

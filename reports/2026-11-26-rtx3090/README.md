@@ -1,5 +1,7 @@
 # GTA VI gameplay on Windows with VIctory and RTX 3090
 
+[Doorway to gate A102 and the common area on the bitset build](slot-bitsets-escort.md), with input traces and paired live texture checks.
+
 [Buffer descriptor bitsets on a Ryzen 7 3700X](buffer-slot-bitsets.md) with paired CPU measurements and the adapted renderer patches.
 
 [Four-hour follow-up with one-second memory counters](long-session-memory.md) for the heap lifetime build.
