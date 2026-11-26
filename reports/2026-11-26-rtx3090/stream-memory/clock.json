@@ -1,0 +1,12 @@
+{
+  "present": {
+    "created_utc": "2026-11-26T05:10:43.983127+00:00",
+    "created_epoch": 1795669843.9831266,
+    "live_lag_seconds": 0.629
+  },
+  "memory": {
+    "created_utc": "2026-11-26T05:10:28.335138+00:00",
+    "created_epoch": 1795669828.3351378,
+    "live_lag_seconds": 0.39
+  }
+}

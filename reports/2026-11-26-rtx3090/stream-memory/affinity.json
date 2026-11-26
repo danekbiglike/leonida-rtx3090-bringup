@@ -1,0 +1,91 @@
+{
+  "start_seconds": 1319,
+  "interval_seconds": 24,
+  "restored_seconds": 1416.44881,
+  "events": [
+    {
+      "mode": "all",
+      "mask": 65535,
+      "applied_seconds": 1319.673265,
+      "sample": {
+        "start_seconds": 1329,
+        "requested_seconds": 12,
+        "covered_seconds": 12.578082,
+        "frames": 39,
+        "fps": 3.1006317179360097,
+        "p50_ms": 308.041,
+        "p95_ms": 434.756,
+        "p99_ms": 593.64,
+        "max_ms": 593.64,
+        "frames_over_200ms": 39,
+        "all_frames_within_200ms": false,
+        "mean_draw_calls": 2062.6923076923076,
+        "split_modes": [],
+        "joined_hash_modes": []
+      }
+    },
+    {
+      "mode": "physical",
+      "mask": 21845,
+      "applied_seconds": 1343.69674,
+      "sample": {
+        "start_seconds": 1353,
+        "requested_seconds": 12,
+        "covered_seconds": 12.356822,
+        "frames": 16,
+        "fps": 1.2948313085678502,
+        "p50_ms": 471.219,
+        "p95_ms": 3308.925,
+        "p99_ms": 3308.925,
+        "max_ms": 3308.925,
+        "frames_over_200ms": 16,
+        "all_frames_within_200ms": false,
+        "mean_draw_calls": 3454.1875,
+        "split_modes": [],
+        "joined_hash_modes": []
+      }
+    },
+    {
+      "mode": "physical",
+      "mask": 21845,
+      "applied_seconds": 1367.89216,
+      "sample": {
+        "start_seconds": 1377,
+        "requested_seconds": 12,
+        "covered_seconds": 12.242404,
+        "frames": 37,
+        "fps": 3.0222822249616987,
+        "p50_ms": 314.208,
+        "p95_ms": 604.228,
+        "p99_ms": 612.835,
+        "max_ms": 612.835,
+        "frames_over_200ms": 37,
+        "all_frames_within_200ms": false,
+        "mean_draw_calls": 3281.6216216216217,
+        "split_modes": [],
+        "joined_hash_modes": []
+      }
+    },
+    {
+      "mode": "all",
+      "mask": 65535,
+      "applied_seconds": 1391.816003,
+      "sample": {
+        "start_seconds": 1401,
+        "requested_seconds": 12,
+        "covered_seconds": 12.316451,
+        "frames": 36,
+        "fps": 2.9229199223055407,
+        "p50_ms": 306.847,
+        "p95_ms": 553.243,
+        "p99_ms": 953.049,
+        "max_ms": 953.049,
+        "frames_over_200ms": 36,
+        "all_frames_within_200ms": false,
+        "mean_draw_calls": 3127.6111111111113,
+        "split_modes": [],
+        "joined_hash_modes": []
+      }
+    }
+  ]
+}

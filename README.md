@@ -2,6 +2,8 @@
 
 ## RTX 3090 gameplay reports
 
+After the prison escort the process passed the old 34 GiB cap while Windows still had 7.63 GiB of commit headroom. The no-wait texture trial averaged 3.18 FPS in the corridor and 2.44 entering the common room. [Memory trace, frame times and limit notification test](reports/2026-11-26-rtx3090/stream-memory-walk.md)
+
 The short-hash trial reached **5.70 FPS at the prison window**, 4.04–4.17 with movement keys in the cell, and 2.76 when walking out. The session later ended on a failed 4 MiB allocation. [RTX 3090 results and GPU test](reports/2026-11-26-rtx3090/short-buffer-hashes.md)
 
 **RTX 3090 with small GPU buffers.** The controllable prison window averaged **5.46 FPS** for 90 seconds, with at least 26 presents every five seconds. Facing the door averaged 4.18 FPS. Leaving the cell and following the guard into the common room averaged 3.73 and 2.90 FPS. Bands remain in the hair. [Profile, source recipe and screenshots](reports/2026-11-26-rtx3090/small-card-buffers.md) · [Five-second counts](reports/2026-11-26-rtx3090/small-card-five-second-windows.json)

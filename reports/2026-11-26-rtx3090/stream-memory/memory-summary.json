@@ -1,0 +1,12 @@
+{
+  "samples": 1835,
+  "last_uptime_seconds": 1835.015,
+  "process_limit_gib": 41.86520767211914,
+  "process_peak_commit_gib": 34.2490234375,
+  "max_polled_private_gib": 34.19352722167969,
+  "min_free_system_commit_gib": 6.928428649902344,
+  "min_physical_available_gib": 0.1024627685546875,
+  "previous_cap_gib": 34,
+  "first_sample_above_previous_cap_s": 1781.984,
+  "system_commit_headroom_at_crossing_gib": 7.6331329345703125
+}
