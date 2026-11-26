@@ -1,5 +1,7 @@
 # GTA VI gameplay on Windows with VIctory and RTX 3090
 
+[Buffer descriptor bitsets on a Ryzen 7 3700X](buffer-slot-bitsets.md) with paired CPU measurements and the adapted renderer patches.
+
 [Four-hour follow-up with one-second memory counters](long-session-memory.md) for the heap lifetime build.
 
 The heap lifetime and texture queue build averaged 3.08 FPS in the corridor and 2.44 FPS entering the common room. [Source changes, gameplay and memory counters](heap-owner-escort.md)

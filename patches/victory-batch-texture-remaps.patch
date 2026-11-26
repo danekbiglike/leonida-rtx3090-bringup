@@ -1,0 +1,155 @@
+--- a/crates/victory-gpu/src/descriptor/host.rs
++++ b/crates/victory-gpu/src/descriptor/host.rs
+@@ -433,6 +433,43 @@
+             .collect()
+     }
+ 
++    // The result is consumed as a set. Repeated or touching remaps can
++    // share an index walk. A packed texture just before the start still
++    // counts if its full span covers that start, as in slots_in.
++    fn remap_slots(&self, ranges: &mut [(u64, u64)]) -> Vec<u32> {
++        if ranges.iter().any(|&(start, end)| start >= end) {
++            return self.remap_slots_individually(ranges);
++        }
++        ranges.sort_unstable();
++        let mut slots = Vec::new();
++        let mut iter = ranges.iter().copied();
++        let Some((mut start, mut end)) = iter.next() else { return slots };
++        let mut append = |start, end| {
++            if let Some((_, (limit, ids))) = self.by_start.range(..start).next_back()
++                && *limit > start
++            {
++                slots.extend(ids.iter().copied());
++            }
++            for (_, (_, ids)) in self.by_start.range(start..end) {
++                slots.extend(ids.iter().copied());
++            }
++        };
++        for (next, limit) in iter {
++            if next <= end {
++                end = end.max(limit);
++            } else {
++                append(start, end);
++                (start, end) = (next, limit);
++            }
++        }
++        append(start, end);
++        slots
++    }
++
++    fn remap_slots_individually(&self, ranges: &[(u64, u64)]) -> Vec<u32> {
++        ranges.iter().flat_map(|&(start, end)| self.slots_in(start, end)).collect()
++    }
++
+     /// The slots of the textures that hold bytes of `[start, end)`, for a
+     /// write there: as [`Spans::slots_in`], but when a texture starts at
+     /// `start` itself the one before it is left out (it ends where that
+@@ -453,6 +490,44 @@
+             .flat_map(|span| span.1.iter().copied())
+             .collect()
+     }
++}
++
++#[cfg(feature = "diagnostics")]
++fn remap_sample() -> Option<u64> {
++    use std::sync::{OnceLock, atomic::{AtomicU64, Ordering}};
++    static CHECK: OnceLock<bool> = OnceLock::new();
++    static BATCH: AtomicU64 = AtomicU64::new(0);
++    if !*CHECK.get_or_init(|| std::env::var_os("VICTORY_CHECK_REMAPS").is_some_and(|v| v == "1")) {
++        return None;
++    }
++    let batch = BATCH.fetch_add(1, Ordering::Relaxed);
++    (batch % 16 == 0).then_some(batch / 16)
++}
++
++#[cfg(feature = "diagnostics")]
++fn checked_remap_slots(placed: &Spans, ranges: &mut [(u64, u64)], sample: u64) -> Vec<u32> {
++    fn timed(f: impl FnOnce() -> Vec<u32>) -> (Vec<u32>, u128) {
++        let start = std::time::Instant::now();
++        let slots = f();
++        (slots, start.elapsed().as_nanos())
++    }
++    let original = ranges.to_vec();
++    let old = || placed.remap_slots_individually(&original);
++    let new = || placed.remap_slots(ranges);
++    let ((mut reference, old_ns), (mut slots, new_ns)) = if sample % 2 == 0 {
++        (timed(old), timed(new))
++    } else {
++        let result = timed(new);
++        (timed(old), result)
++    };
++    reference.sort_unstable();
++    reference.dedup();
++    slots.sort_unstable();
++    slots.dedup();
++    let matched = reference == slots;
++    tracing::info!(target: "victory_gpu::host", sample, ranges = original.len(), slots = slots.len(),
++        old_ns = old_ns as u64, new_ns = new_ns as u64, matched, "texture remap comparison");
++    if matched { slots } else { reference }
+ }
+ 
+ /// Title memory written behind the guards' back whose bytes are there
+@@ -1357,13 +1432,20 @@
+     pub(crate) fn texture_slots_remapped(&self, frame: u64) -> usize {
+         use std::sync::atomic::Ordering::Relaxed;
+         self.texture_slots_page_written(frame);
+-        let ranges = std::mem::take(&mut *REMAPPED.lock().unwrap_or_else(|e| e.into_inner()));
++        let mut ranges = std::mem::take(&mut *REMAPPED.lock().unwrap_or_else(|e| e.into_inner()));
+         if ranges.is_empty() {
+             return 0;
+         }
+-        let mut slots: Vec<u32> = {
++        let mut slots = {
+             let placed = self.placed.lock().unwrap_or_else(|e| e.into_inner());
+-            ranges.iter().flat_map(|&(start, end)| placed.slots_in(start, end)).collect()
++            #[cfg(feature = "diagnostics")]
++            if let Some(sample) = remap_sample() {
++                checked_remap_slots(&placed, &mut ranges, sample)
++            } else {
++                placed.remap_slots(&mut ranges)
++            }
++            #[cfg(not(feature = "diagnostics"))]
++            placed.remap_slots(&mut ranges)
+         };
+         slots.sort_unstable();
+         slots.dedup();
+@@ -3848,6 +3930,39 @@
+     /// range lies in (it ends where the next one starts), and the ones
+     /// that start inside the range.
+     #[test]
++    fn batched_remaps_match_individual_queries_for_packed_textures() {
++        let mut spans = Spans::default();
++        for slot in 0..128 {
++            let start = 0x10000 + u64::from(slot / 2) * 0x2000;
++            spans.note(slot, start, start + 0x18000, true);
++        }
++        let equivalent = |mut ranges: Vec<(u64, u64)>| {
++            let mut reference = spans.remap_slots_individually(&ranges);
++            let mut result = spans.remap_slots(&mut ranges);
++            reference.sort_unstable();
++            reference.dedup();
++            result.sort_unstable();
++            result.dedup();
++            assert_eq!(result, reference);
++        };
++        equivalent(vec![]);
++        equivalent(vec![(0x12000, 0x12000), (0x10000, 0x12000)]);
++        equivalent(vec![(0, u64::MAX), (u64::MAX - 2, u64::MAX)]);
++        let mut seed = 7261u32;
++        for _ in 0..256 {
++            let mut ranges = Vec::new();
++            for i in 0..64 {
++                seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
++                let start = u64::from(seed % 160) * 0x1000;
++                let end = start + 1 + u64::from((seed >> 16) % 16000);
++                ranges.push((start, end));
++                if i % 4 == 0 { ranges.extend([(start, end), (end, end + 4096)]); }
++            }
++            equivalent(ranges);
++        }
++    }
++
++    #[test]
+     fn memory_changed_under_packed_neighbours_names_the_ones_there() {
+         let mut spans = Spans::default();
+         let at = 0x7_0000_0000u64;
