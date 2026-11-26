@@ -1,0 +1,113 @@
+{
+  "owner-exit": {
+    "start_seconds": 949,
+    "requested_seconds": 60,
+    "covered_seconds": 60.337693,
+    "frames": 160,
+    "fps": 2.6517420876532354,
+    "p50_ms": 344.768,
+    "p95_ms": 583.306,
+    "p99_ms": 769.242,
+    "max_ms": 935.276,
+    "frames_over_200ms": 160,
+    "all_frames_within_200ms": false,
+    "mean_draw_calls": 5773.775,
+    "split_modes": [],
+    "joined_hash_modes": [],
+    "windows": {
+      "start_seconds": 949,
+      "stop_seconds": 1009,
+      "bin_seconds": 5,
+      "accepted_presents": [
+        18,
+        13,
+        10,
+        12,
+        14,
+        14,
+        17,
+        16,
+        9,
+        10,
+        11,
+        15
+      ],
+      "minimum_fps": 1.8,
+      "bins_at_least_5_fps": 0
+    }
+  },
+  "owner-corridor": {
+    "start_seconds": 1044,
+    "requested_seconds": 60,
+    "covered_seconds": 60.406377,
+    "frames": 186,
+    "fps": 3.079145104166734,
+    "p50_ms": 314.583,
+    "p95_ms": 425.284,
+    "p99_ms": 481.29,
+    "max_ms": 528.57,
+    "frames_over_200ms": 186,
+    "all_frames_within_200ms": false,
+    "mean_draw_calls": 4823.467741935484,
+    "split_modes": [],
+    "joined_hash_modes": [],
+    "windows": {
+      "start_seconds": 1044,
+      "stop_seconds": 1104,
+      "bin_seconds": 5,
+      "accepted_presents": [
+        17,
+        16,
+        14,
+        14,
+        15,
+        15,
+        16,
+        16,
+        14,
+        16,
+        14,
+        18
+      ],
+      "minimum_fps": 2.8,
+      "bins_at_least_5_fps": 0
+    }
+  },
+  "owner-common-room": {
+    "start_seconds": 1123,
+    "requested_seconds": 60,
+    "covered_seconds": 60.195447,
+    "frames": 147,
+    "fps": 2.442045159993579,
+    "p50_ms": 376.929,
+    "p95_ms": 638.565,
+    "p99_ms": 936.965,
+    "max_ms": 1245.003,
+    "frames_over_200ms": 147,
+    "all_frames_within_200ms": false,
+    "mean_draw_calls": 6023.136054421769,
+    "split_modes": [],
+    "joined_hash_modes": [],
+    "windows": {
+      "start_seconds": 1123,
+      "stop_seconds": 1183,
+      "bin_seconds": 5,
+      "accepted_presents": [
+        17,
+        11,
+        8,
+        11,
+        11,
+        13,
+        14,
+        11,
+        10,
+        12,
+        13,
+        15
+      ],
+      "minimum_fps": 1.6,
+      "bins_at_least_5_fps": 0
+    }
+  }
+}

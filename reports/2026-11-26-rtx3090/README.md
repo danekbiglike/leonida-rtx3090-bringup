@@ -1,5 +1,7 @@
 # GTA VI gameplay on Windows with VIctory and RTX 3090
 
+The heap lifetime and texture queue build averaged 3.08 FPS in the corridor and 2.44 FPS entering the common room. [Source changes, gameplay and memory counters](heap-owner-escort.md)
+
 The no-wait texture trial measured 3.18 FPS in the corridor and 2.44 entering the common room. The process later crossed the old 34 GiB limit. [Escort frame times and Windows memory measurements](stream-memory-walk.md)
 
 The short-hash trial reached **5.70 FPS at the prison window**, 4.04–4.17 with movement keys in the cell, and 2.76 when walking out. The session later ended on a failed 4 MiB allocation. [RTX 3090 results and GPU test](short-buffer-hashes.md)

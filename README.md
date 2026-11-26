@@ -2,6 +2,8 @@
 
 ## RTX 3090 gameplay reports
 
+The descriptor heap lifetime fix and the texture queue optimization passed thirty descriptor tests. The RTX 3090 measured **3.08 FPS walking along the prison corridor** and **2.44 FPS entering the common room**. [Source patch, escort screenshots and per-frame measurements](reports/2026-11-26-rtx3090/heap-owner-escort.md)
+
 After the prison escort the process passed the old 34 GiB cap while Windows still had 7.63 GiB of commit headroom. The no-wait texture trial averaged 3.18 FPS in the corridor and 2.44 entering the common room. [Memory trace, frame times and limit notification test](reports/2026-11-26-rtx3090/stream-memory-walk.md)
 
 The short-hash trial reached **5.70 FPS at the prison window**, 4.04–4.17 with movement keys in the cell, and 2.76 when walking out. The session later ended on a failed 4 MiB allocation. [RTX 3090 results and GPU test](reports/2026-11-26-rtx3090/short-buffer-hashes.md)
