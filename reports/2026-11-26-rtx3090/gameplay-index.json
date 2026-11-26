@@ -205,6 +205,52 @@
           "source": "paired-wave-spans-moving-summary.json"
         }
       }
+    },
+    {
+      "build": "Descriptor locks and texture mips",
+      "report": "descriptor-locks-texture-mips.md",
+      "samples": {
+        "window": {
+          "fps": 4.664074209519741,
+          "p95_ms": 245.595,
+          "max_ms": 277.328,
+          "frames": 421,
+          "covered_seconds": 90.26443,
+          "mean_draw_calls": 4611.579572446556,
+          "frames_over_200ms": 398,
+          "source": "paired-wave-mips-summary.json"
+        },
+        "door": {
+          "fps": 3.9265358723761192,
+          "p95_ms": 300.47,
+          "max_ms": 342.166,
+          "frames": 237,
+          "covered_seconds": 60.358547,
+          "mean_draw_calls": 6898.185654008439,
+          "frames_over_200ms": 235,
+          "source": "paired-wave-mips-room-summary.json"
+        },
+        "movement": {
+          "fps": 3.9108943821034012,
+          "p95_ms": 298.429,
+          "max_ms": 391.337,
+          "frames": 235,
+          "covered_seconds": 60.088557,
+          "mean_draw_calls": 6893.96170212766,
+          "frames_over_200ms": 235,
+          "source": "paired-wave-mips-moving-summary.json"
+        },
+        "additional": {
+          "fps": 2.756234457058423,
+          "p95_ms": 639.008,
+          "max_ms": 3380.487,
+          "frames": 166,
+          "covered_seconds": 60.227097,
+          "mean_draw_calls": 6601.433734939759,
+          "frames_over_200ms": 166,
+          "source": "paired-wave-mips-route-summary.json"
+        }
+      }
     }
   ]
 }

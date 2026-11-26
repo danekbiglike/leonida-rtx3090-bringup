@@ -13,7 +13,7 @@ builds = [
     ("paired-wave-spans", "Joined readback commands", "join-fetch-ranges.md"),
     ("paired-wave-mips", "Descriptor locks and texture mips", "descriptor-locks-texture-mips.md"),
 ]
-scenes = [("window", ""), ("door", "-room"), ("movement", "-moving")]
+scenes = [("window", ""), ("door", "-room"), ("movement", "-moving"), ("additional", "-route")]
 rows = []
 for stem, name, report in builds:
     samples = {}
@@ -36,8 +36,8 @@ lines = ["# RTX 3090 gameplay comparison", "",
          "Each number links to frame times, the 95th percentile and the number of frames over 200 ms. "
          "Movement routes and NPC positions can differ between runs. See each report for screenshots and controls. "
          "[Machine-readable index](gameplay-index.json)", "",
-         "| Renderer build | Facing window | Facing door | With movement keys |",
-         "| --- | ---: | ---: | ---: |"]
+         "| Renderer build | Facing window | Facing door | With movement keys | Additional minute |",
+         "| --- | ---: | ---: | ---: | ---: |"]
 for row in rows:
     cells = [f"[{row['build']}]({row['report']})"]
     for scene, _ in scenes:

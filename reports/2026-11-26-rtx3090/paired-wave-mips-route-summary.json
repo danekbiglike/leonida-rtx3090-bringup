@@ -1,0 +1,33 @@
+{
+  "start_seconds": 1590,
+  "requested_seconds": 60,
+  "covered_seconds": 60.227097,
+  "frames": 166,
+  "fps": 2.756234457058423,
+  "p50_ms": 285.559,
+  "p95_ms": 639.008,
+  "p99_ms": 2846.157,
+  "max_ms": 3380.487,
+  "frames_over_200ms": 166,
+  "all_frames_within_200ms": false,
+  "mean_draw_calls": 6601.433734939759,
+  "split_modes": [],
+  "joined_hash_modes": [],
+  "clock": "Accepted DXGI Present calls returning S_OK",
+  "scene": "Additional follow-the-guard interval; exact forward input count unverified",
+  "diagnostic_window_count": 10,
+  "diagnostic_interval_medians": {
+    "fps": 3.15,
+    "frame_ms": 319.35,
+    "prepare_ms": 175.95,
+    "buffer_copies_ms": 69.45,
+    "textures_ms": 14.3,
+    "gpu_wait_ms": 114.65,
+    "copy_back_ms": 98.1,
+    "draws": 6809.0,
+    "dropped_pipelines": 0.0,
+    "pipelines_compiling": 0.0,
+    "heap_pass_ms": 67.9
+  },
+  "input_delivery": "The independent present trace completed. The keyboard automation timed out before reporting the number of keys delivered."
+}
