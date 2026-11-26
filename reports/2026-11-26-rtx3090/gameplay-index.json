@@ -1,0 +1,210 @@
+{
+  "gpu": "GeForce RTX 3090",
+  "cpu": "Ryzen 7 3700X",
+  "profile": "Series X",
+  "clock": "Intervals between successful DXGI presents",
+  "builds": [
+    {
+      "build": "Paired shaders",
+      "report": "paired-waves.md",
+      "samples": {
+        "window": {
+          "fps": 2.578660916879964,
+          "p95_ms": 430.952,
+          "max_ms": 1212.75,
+          "frames": 233,
+          "covered_seconds": 90.356975,
+          "mean_draw_calls": 4884.296137339055,
+          "frames_over_200ms": 233,
+          "source": "paired-wave-summary.json"
+        }
+      }
+    },
+    {
+      "build": "Separate copy queue",
+      "report": "paired-waves.md",
+      "samples": {
+        "window": {
+          "fps": 3.156445010502711,
+          "p95_ms": 356.861,
+          "max_ms": 409.298,
+          "frames": 285,
+          "covered_seconds": 90.291451,
+          "mean_draw_calls": 4732.119298245614,
+          "frames_over_200ms": 285,
+          "source": "paired-wave-queue-summary.json"
+        },
+        "door": {
+          "fps": 2.588910746007576,
+          "p95_ms": 437.329,
+          "max_ms": 513.886,
+          "frames": 156,
+          "covered_seconds": 60.257002,
+          "mean_draw_calls": 6967.49358974359,
+          "frames_over_200ms": 156,
+          "source": "paired-wave-queue-room-summary.json"
+        }
+      }
+    },
+    {
+      "build": "16 KiB transfers",
+      "report": "paired-wave-pieces.md",
+      "samples": {
+        "window": {
+          "fps": 3.956401694550119,
+          "p95_ms": 283.406,
+          "max_ms": 309.513,
+          "frames": 357,
+          "covered_seconds": 90.233507,
+          "mean_draw_calls": 4869.955182072829,
+          "frames_over_200ms": 357,
+          "source": "paired-wave-pieces-summary.json"
+        },
+        "door": {
+          "fps": 2.9827526693906066,
+          "p95_ms": 385.303,
+          "max_ms": 620.019,
+          "frames": 181,
+          "covered_seconds": 60.682202,
+          "mean_draw_calls": 6860.005524861878,
+          "frames_over_200ms": 181,
+          "source": "paired-wave-pieces-room-summary.json"
+        }
+      }
+    },
+    {
+      "build": "Local AVX2 merge",
+      "report": "relay-merge-avx2.md",
+      "samples": {
+        "window": {
+          "fps": 4.449486900372138,
+          "p95_ms": 249.809,
+          "max_ms": 337.789,
+          "frames": 401,
+          "covered_seconds": 90.122751,
+          "mean_draw_calls": 4902.511221945138,
+          "frames_over_200ms": 370,
+          "source": "paired-wave-merge-summary.json"
+        },
+        "door": {
+          "fps": 3.57775168293279,
+          "p95_ms": 313.525,
+          "max_ms": 366.202,
+          "frames": 215,
+          "covered_seconds": 60.093606,
+          "mean_draw_calls": 6880.8093023255815,
+          "frames_over_200ms": 215,
+          "source": "paired-wave-merge-room-summary.json"
+        }
+      }
+    },
+    {
+      "build": "Descriptor refresh",
+      "report": "descriptor-refresh.md",
+      "samples": {
+        "window": {
+          "fps": 4.606960284192748,
+          "p95_ms": 242.516,
+          "max_ms": 255.984,
+          "frames": 416,
+          "covered_seconds": 90.298152,
+          "mean_draw_calls": 4850.233173076923,
+          "frames_over_200ms": 374,
+          "source": "paired-wave-heaps-summary.json"
+        },
+        "door": {
+          "fps": 3.430211737359326,
+          "p95_ms": 331.761,
+          "max_ms": 390.886,
+          "frames": 207,
+          "covered_seconds": 60.346129,
+          "mean_draw_calls": 7026.449275362319,
+          "frames_over_200ms": 207,
+          "source": "paired-wave-heaps-room-summary.json"
+        },
+        "movement": {
+          "fps": 3.223466252440784,
+          "p95_ms": 418.656,
+          "max_ms": 912.527,
+          "frames": 195,
+          "covered_seconds": 60.493886,
+          "mean_draw_calls": 6666.128205128205,
+          "frames_over_200ms": 195,
+          "source": "paired-wave-heaps-moving-summary.json"
+        }
+      }
+    },
+    {
+      "build": "Parallel copy-back",
+      "report": "parallel-relay.md",
+      "samples": {
+        "window": {
+          "fps": 4.336146890114342,
+          "p95_ms": 264.705,
+          "max_ms": 298.189,
+          "frames": 391,
+          "covered_seconds": 90.172222,
+          "mean_draw_calls": 4861.199488491048,
+          "frames_over_200ms": 349,
+          "source": "paired-wave-land-summary.json"
+        },
+        "door": {
+          "fps": 3.3645390183766812,
+          "p95_ms": 351.672,
+          "max_ms": 431.49,
+          "frames": 203,
+          "covered_seconds": 60.33516,
+          "mean_draw_calls": 6934.758620689655,
+          "frames_over_200ms": 203,
+          "source": "paired-wave-land-room-summary.json"
+        },
+        "movement": {
+          "fps": 3.3628287094659455,
+          "p95_ms": 338.325,
+          "max_ms": 379.561,
+          "frames": 203,
+          "covered_seconds": 60.365846,
+          "mean_draw_calls": 7456.0,
+          "frames_over_200ms": 203,
+          "source": "paired-wave-land-moving-summary.json"
+        }
+      }
+    },
+    {
+      "build": "Joined readback commands",
+      "report": "join-fetch-ranges.md",
+      "samples": {
+        "window": {
+          "fps": 4.428265334219341,
+          "p95_ms": 250.799,
+          "max_ms": 282.575,
+          "frames": 400,
+          "covered_seconds": 90.328824,
+          "mean_draw_calls": 4628.5525,
+          "frames_over_200ms": 370,
+          "source": "paired-wave-spans-summary.json"
+        },
+        "door": {
+          "fps": 3.5941612251869968,
+          "p95_ms": 329.043,
+          "max_ms": 344.534,
+          "frames": 216,
+          "covered_seconds": 60.097471,
+          "mean_draw_calls": 6845.810185185185,
+          "frames_over_200ms": 216,
+          "source": "paired-wave-spans-room-summary.json"
+        },
+        "movement": {
+          "fps": 3.4111749024853255,
+          "p95_ms": 336.677,
+          "max_ms": 610.144,
+          "frames": 205,
+          "covered_seconds": 60.096596,
+          "mean_draw_calls": 6975.726829268293,
+          "frames_over_200ms": 205,
+          "source": "paired-wave-spans-moving-summary.json"
+        }
+      }
+    }
+  ]
+}
