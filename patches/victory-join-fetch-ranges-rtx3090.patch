@@ -1,0 +1,117 @@
+--- a/crates/victory-gpu/src/host.rs
++++ b/crates/victory-gpu/src/host.rs
+@@ -1977,6 +1977,73 @@
+     *ON.get_or_init(|| std::env::var_os("VICTORY_WIDE_MERGE").is_some_and(|v| v == "1"))
+ }
+ 
++/// Record adjacent fetches from the same buffer as one D3D12 copy when
++/// both the source offsets and packed readback offsets are consecutive.
++/// The caller still compares and merges the individual pieces in plan order.
++fn for_each_fetch_range<T>(
++    pieces: &[(std::sync::Arc<T>, usize, usize, u64)],
++    join: bool,
++    mut record: impl FnMut(&T, usize, usize, u64),
++) -> usize {
++    let mut remaining = pieces;
++    let mut count = 0;
++    while let Some(((source, start, end, dest), tail)) = remaining.split_first() {
++        remaining = tail;
++        let mut end = *end;
++        if join {
++            while let Some(((next, lo, hi, offset), tail)) = remaining.split_first() {
++                if !std::sync::Arc::ptr_eq(source, next)
++                    || *lo != end
++                    || Some(*offset) != dest.checked_add((end - start) as u64)
++                {
++                    break;
++                }
++                end = *hi;
++                remaining = tail;
++            }
++        }
++        record(source, *start, end - start, *dest);
++        count += 1;
++    }
++    count
++}
++
++fn join_fetch_ranges() -> bool {
++    static ON: OnceLock<bool> = OnceLock::new();
++    *ON.get_or_init(|| std::env::var_os("VICTORY_JOIN_FETCH_RANGES").is_some_and(|v| v == "1"))
++}
++
++static FETCH_COMMANDS: [std::sync::atomic::AtomicU64; 2] =
++    [const { std::sync::atomic::AtomicU64::new(0) }; 2];
++
++#[cfg(test)]
++mod fetch_range_tests {
++    use super::for_each_fetch_range;
++    use std::sync::Arc;
++
++    #[test]
++    fn both_offsets_and_resource_identity_must_be_contiguous() {
++        let a = Arc::new(7);
++        let b = Arc::new(7);
++        let pieces = [(a.clone(), 0, 2, 1), (a.clone(), 2, 5, 3), (a.clone(), 6, 9, 6),
++                      (a.clone(), 9, 11, 10), (b, 11, 12, 12), (a, 11, 13, 13)];
++        for join in [false, true] {
++            let mut commands = Vec::new();
++            let mut bytes = Vec::new();
++            let count = for_each_fetch_range(&pieces, join, |source, offset, len, dest| {
++                commands.push((offset, len, dest));
++                bytes.extend((0..len).map(|i| (source as *const i32, offset+i, dest+i as u64)));
++            });
++            let expected: Vec<_> = pieces.iter().flat_map(|(source, lo, hi, dest)|
++                (*lo..*hi).map(move |at| (Arc::as_ptr(source), at, dest+(at-lo) as u64))).collect();
++            assert_eq!(bytes, expected);
++            assert_eq!(count, if join { 5 } else { 6 });
++            if join { assert_eq!(commands[0], (0, 5, 1)); }
++        }
++        assert_eq!(for_each_fetch_range::<i32>(&[], true, |_,_,_,_| panic!()), 0);
++    }
++}
++
+ /// The compare and the CPU scan both cut pieces at 64 KiB boundaries of
+ /// title memory. Two declarations can clip the same page differently, or
+ /// reach it through buffers with different bases. Keep their landing order.
+@@ -4845,9 +4912,11 @@
+                     // title's either way.
+                     let after = second.order_done();
+                     let copy = second.down.list()?;
+-                    for (shadow, lo, hi, at) in &pieces {
+-                        copy.1.CopyBufferRegion(&buffer, *at, &shadow.buffer, *lo as u64, (*hi - *lo) as u64);
+-                    }
++                    let count = for_each_fetch_range(&pieces, join_fetch_ranges(), |shadow, offset, bytes, dest| {
++                        copy.1.CopyBufferRegion(&buffer, dest, &shadow.buffer, offset as u64, bytes as u64);
++                    });
++                    FETCH_COMMANDS[0].fetch_add(pieces.len() as u64, Ordering::Relaxed);
++                    FETCH_COMMANDS[1].fetch_add(count as u64, Ordering::Relaxed);
+                     let job = second.down.send(copy, &[(&self.fence, behind)], total)?;
+                     second.down.wait(job, event)?;
+                     if beside {
+@@ -4865,9 +4934,11 @@
+                 }
+                 allocator.Reset()?;
+                 list.Reset(&allocator, None)?;
+-                for (shadow, lo, hi, at) in &pieces {
+-                    list.CopyBufferRegion(&buffer, *at, &shadow.buffer, *lo as u64, (*hi - *lo) as u64);
+-                }
++                let count = for_each_fetch_range(&pieces, join_fetch_ranges(), |shadow, offset, bytes, dest| {
++                    list.CopyBufferRegion(&buffer, dest, &shadow.buffer, offset as u64, bytes as u64);
++                });
++                FETCH_COMMANDS[0].fetch_add(pieces.len() as u64, Ordering::Relaxed);
++                FETCH_COMMANDS[1].fetch_add(count as u64, Ordering::Relaxed);
+                 list.Close()?;
+                 let lists = [Some(list.cast::<ID3D12CommandList>()?)];
+                 // In the order of the queue: the sends of title bytes so
+@@ -8302,6 +8373,10 @@
+                 );
+             }
+         }
++        let [pieces, commands] = [0, 1].map(|i| FETCH_COMMANDS[i].swap(0, Ordering::Relaxed) as f64 / frames);
++        if pieces > 0.0 {
++            tracing::info!("relay readback per frame: {pieces:.1} pieces in {commands:.1} D3D12 copy commands");
++        }
+         // Passes over the heap's buffer views for shaders that pick them by index.
+         let picked = crate::draw::HEAP_BUFFER_PASSES.swap(0, Ordering::Relaxed) as f64 / frames;
+         let picked_ms =

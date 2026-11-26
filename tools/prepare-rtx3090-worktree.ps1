@@ -2,7 +2,7 @@
 param(
     [Parameter(Mandatory)][string]$RendererRepo,
     [Parameter(Mandatory)][string]$Destination,
-    [ValidateSet('AVX2','Descriptors','Parallel')][string]$Variant = 'AVX2'
+    [ValidateSet('AVX2','Descriptors','Parallel','Joined')][string]$Variant = 'AVX2'
 )
 $ErrorActionPreference = 'Stop'
 $renderer = (Resolve-Path -LiteralPath $RendererRepo).Path
@@ -20,8 +20,9 @@ $patches = @(
     'victory-keyboard-movement-3090.patch',
     'victory-offline-store.patch'
 )
-if ($Variant -in @('Descriptors', 'Parallel')) { $patches += 'victory-descriptor-refresh-rtx3090.patch' }
-if ($Variant -eq 'Parallel') { $patches += 'victory-parallel-relay-rtx3090.patch' }
+if ($Variant -in @('Descriptors', 'Parallel', 'Joined')) { $patches += 'victory-descriptor-refresh-rtx3090.patch' }
+if ($Variant -in @('Parallel', 'Joined')) { $patches += 'victory-parallel-relay-rtx3090.patch' }
+if ($Variant -eq 'Joined') { $patches += 'victory-join-fetch-ranges-rtx3090.patch' }
 foreach ($patch in $patches) {
     if (!(Test-Path -LiteralPath (Join-Path $patchRoot $patch) -PathType Leaf)) { throw "Missing patch $patch" }
 }
