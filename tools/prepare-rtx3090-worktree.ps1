@@ -2,7 +2,7 @@
 param(
     [Parameter(Mandatory)][string]$RendererRepo,
     [Parameter(Mandatory)][string]$Destination,
-    [ValidateSet('AVX2','Descriptors','Parallel','Joined','TextureLOD','Journal')][string]$Variant = 'AVX2'
+    [ValidateSet('AVX2','Descriptors','Parallel','Joined','TextureLOD','Journal','Upload4K')][string]$Variant = 'AVX2'
 )
 $ErrorActionPreference = 'Stop'
 $renderer = (Resolve-Path -LiteralPath $RendererRepo).Path
@@ -20,13 +20,16 @@ $patches = @(
     'victory-keyboard-movement-3090.patch',
     'victory-offline-store.patch'
 )
-if ($Variant -in @('Descriptors', 'Parallel', 'Joined', 'TextureLOD', 'Journal')) { $patches += 'victory-descriptor-refresh-rtx3090.patch' }
-if ($Variant -in @('Parallel', 'Joined', 'TextureLOD', 'Journal')) { $patches += 'victory-parallel-relay-rtx3090.patch' }
-if ($Variant -in @('Joined', 'TextureLOD', 'Journal')) { $patches += 'victory-join-fetch-ranges-rtx3090.patch' }
-if ($Variant -in @('TextureLOD', 'Journal')) {
+if ($Variant -in @('Descriptors', 'Parallel', 'Joined', 'TextureLOD', 'Journal', 'Upload4K')) { $patches += 'victory-descriptor-refresh-rtx3090.patch' }
+if ($Variant -in @('Parallel', 'Joined', 'TextureLOD', 'Journal', 'Upload4K')) { $patches += 'victory-parallel-relay-rtx3090.patch' }
+if ($Variant -in @('Joined', 'TextureLOD', 'Journal', 'Upload4K')) { $patches += 'victory-join-fetch-ranges-rtx3090.patch' }
+if ($Variant -in @('TextureLOD', 'Journal', 'Upload4K')) {
     $patches += 'upstream-pr1210-resource-min-lod.patch', 'victory-recording-locks-rtx3090.patch'
 }
-if ($Variant -eq 'Journal') { $patches += 'victory-lazy-refresh-journal.patch' }
+if ($Variant -in @('Journal', 'Upload4K')) { $patches += 'victory-lazy-refresh-journal.patch' }
+if ($Variant -eq 'Upload4K') {
+    $patches += 'victory-upload-chunk-size.patch', 'victory-staged-texture-hash-395.patch', 'victory-batch-card-sync-1227.patch'
+}
 foreach ($patch in $patches) {
     if (!(Test-Path -LiteralPath (Join-Path $patchRoot $patch) -PathType Leaf)) { throw "Missing patch $patch" }
 }

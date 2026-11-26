@@ -1,0 +1,62 @@
+--- a/crates/victory-gpu/src/shadow.rs
++++ b/crates/victory-gpu/src/shadow.rs
+@@ -2086,6 +2086,19 @@
+ /// leaves them alone, and `Shadow::copy_stale` is given whole pages).
+ const COPY_CHANGED_CHUNK: usize = 256;
+ 
++/// Coarser blocks trade some upload bandwidth for fewer dirty ranges and
++/// comparisons. Only a refresh outside pending shader writes uses this size.
++fn upload_chunk(bytes: Option<&str>) -> usize {
++    bytes.and_then(|value| value.parse::<usize>().ok())
++        .filter(|n| n.is_power_of_two() && (256..=16384).contains(n))
++        .unwrap_or(COPY_CHANGED_CHUNK)
++}
++
++fn upload_chunk_size() -> usize {
++    static BYTES: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
++    *BYTES.get_or_init(|| upload_chunk(std::env::var("VICTORY_UPLOAD_CHUNK_BYTES").ok().as_deref()))
++}
++
+ /// The stretches of `now` that differ from `was` (of one length), in
+ /// whole chunks of `chunk` bytes (the last one shorter), as (offset,
+ /// bytes) in order, chunks side by side made one stretch.
+@@ -2336,6 +2349,30 @@
+             }
+             for samples in &mut timings { samples.sort_unstable(); }
+             eprintln!("stride={stride} reference_us={} avx2_us={}", timings[0][8], timings[1][8]);
++        }
++    }
++
++    #[test]
++    fn upload_chunks_preserve_changed_edges_and_partial_tail() {
++        use super::upload_chunk;
++
++        assert_eq!(upload_chunk(None), 256);
++        for unsupported in ["0", "5120", "32768", ""] {
++            assert_eq!(upload_chunk(Some(unsupported)), 256);
++        }
++        let at = [3, 4095, 4096, 16384, 16402];
++        for size in ["256", "512", "1024", "2048", "4096", "8192", "16384"] {
++            let step = upload_chunk(Some(size));
++            assert_eq!(step.to_string(), size);
++            let mut gpu = vec![0x47; 16403];
++            let mut title = gpu.clone();
++            for i in at {
++                title[i] ^= 0xa9;
++            }
++            for (offset, len) in changed_chunks(&title, &gpu, step) {
++                gpu[offset..offset + len].copy_from_slice(&title[offset..offset + len]);
++            }
++            assert_eq!(title, gpu);
+         }
+     }
+ 
+@@ -3849,7 +3886,7 @@
+             // the buffer); nothing else writes the CPU side of these bytes
+             // while a refresh has them (a refresh is one thread's).
+             let held = unsafe { std::slice::from_raw_parts(self.data.add(from - start).cast_const(), n) };
+-            let stretches = changed_chunks(&now[..n], held, COPY_CHANGED_CHUNK);
++            let stretches = changed_chunks(&now[..n], held, upload_chunk_size());
+             let mut sent = 0;
+             for &(at, len) in &stretches {
+                 // SAFETY: as above; the stretch lies inside both.
