@@ -2,6 +2,8 @@
 
 ## RTX 3090 gameplay reports
 
+The short-hash trial reached **5.70 FPS at the prison window**, 4.04–4.17 with movement keys in the cell, and 2.76 when walking out. The session later ended on a failed 4 MiB allocation. [RTX 3090 results and GPU test](reports/2026-11-26-rtx3090/short-buffer-hashes.md)
+
 **RTX 3090 with small GPU buffers.** The controllable prison window averaged **5.46 FPS** for 90 seconds, with at least 26 presents every five seconds. Facing the door averaged 4.18 FPS. Leaving the cell and following the guard into the common room averaged 3.73 and 2.90 FPS. Bands remain in the hair. [Profile, source recipe and screenshots](reports/2026-11-26-rtx3090/small-card-buffers.md) · [Five-second counts](reports/2026-11-26-rtx3090/small-card-five-second-windows.json)
 
 The buffer-refresh experiment on the RTX 3090 cut traffic by 81% while FPS stayed at 4.33. The report includes a reusable interval analyzer and a separate Rust patch for redundant CPU work. [Frame times, source and reproduction](reports/2026-11-26-rtx3090/buffer-refresh-and-hitches.md)

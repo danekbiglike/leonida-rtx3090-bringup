@@ -1,5 +1,7 @@
 # GTA VI gameplay on Windows with VIctory and RTX 3090
 
+The short-hash trial reached **5.70 FPS at the prison window**, 4.04–4.17 with movement keys in the cell, and 2.76 when walking out. The session later ended on a failed 4 MiB allocation. [RTX 3090 results and GPU test](short-buffer-hashes.md)
+
 **RTX 3090 with small GPU buffers.** The controllable prison window averaged **5.46 FPS** for 90 seconds, with at least 26 presents every five seconds. Facing the door averaged 4.18 FPS. Leaving the cell and following the guard into the common room averaged 3.73 and 2.90 FPS. Bands remain in the hair. [Profile, source recipe and screenshots](small-card-buffers.md) · [Five-second counts](small-card-five-second-windows.json)
 
 Sending only changed 256-byte chunks cut median uploads from 117 MB to 23 MB per frame. Both modes delivered 4.33 FPS at the prison window. [RTX 3090 A/B test, raw data and local buffer patch](buffer-refresh-and-hitches.md)

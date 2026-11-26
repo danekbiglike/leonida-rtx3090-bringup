@@ -1,0 +1,19 @@
+{
+  "start_seconds": 680,
+  "requested_seconds": 90,
+  "covered_seconds": 90.151324,
+  "frames": 514,
+  "fps": 5.701524694190847,
+  "p50_ms": 175.759,
+  "p95_ms": 199.796,
+  "p99_ms": 225.264,
+  "max_ms": 261.881,
+  "frames_over_200ms": 25,
+  "all_frames_within_200ms": false,
+  "mean_draw_calls": 4647.8910505836575,
+  "split_modes": [],
+  "joined_hash_modes": [],
+  "scene": "At the prison window",
+  "clock": "Intervals between successful DXGI Present calls",
+  "source": "short-hash-frames.csv"
+}

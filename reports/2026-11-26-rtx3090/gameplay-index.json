@@ -333,6 +333,52 @@
           "source": "paired-wave-cardsync-route-summary.json"
         }
       }
+    },
+    {
+      "build": "Small buffers with shorter GPU hashes",
+      "report": "short-buffer-hashes.md",
+      "samples": {
+        "window": {
+          "fps": 5.701524694190847,
+          "p95_ms": 199.796,
+          "max_ms": 261.881,
+          "frames": 514,
+          "covered_seconds": 90.151324,
+          "mean_draw_calls": 4647.8910505836575,
+          "frames_over_200ms": 25,
+          "source": "paired-wave-shorthash-summary.json"
+        },
+        "door": {
+          "fps": 4.235569415003084,
+          "p95_ms": 268.179,
+          "max_ms": 335.821,
+          "frames": 255,
+          "covered_seconds": 60.20442,
+          "mean_draw_calls": 6885.317647058823,
+          "frames_over_200ms": 247,
+          "source": "paired-wave-shorthash-room-summary.json"
+        },
+        "movement": {
+          "fps": 4.037098643863804,
+          "p95_ms": 290.659,
+          "max_ms": 411.058,
+          "frames": 243,
+          "covered_seconds": 60.191742,
+          "mean_draw_calls": 7161.802469135802,
+          "frames_over_200ms": 241,
+          "source": "paired-wave-shorthash-moving-summary.json"
+        },
+        "additional": {
+          "fps": 4.173293224493846,
+          "p95_ms": 290.802,
+          "max_ms": 539.023,
+          "frames": 251,
+          "covered_seconds": 60.144348,
+          "mean_draw_calls": 7283.9681274900395,
+          "frames_over_200ms": 231,
+          "source": "paired-wave-shorthash-route-summary.json"
+        }
+      }
     }
   ]
 }

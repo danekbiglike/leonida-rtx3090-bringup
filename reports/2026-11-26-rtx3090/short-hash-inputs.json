@@ -1,0 +1,125 @@
+{
+  "turn": {
+    "key": "S",
+    "before_seconds": 776.758084,
+    "after_seconds": 778.145306
+  },
+  "movement": {
+    "start_seconds": 920,
+    "duration_seconds": 60,
+    "inputs": [
+      {
+        "key": "W",
+        "before_seconds": 925.410297,
+        "after_seconds": 926.679226
+      },
+      {
+        "key": "A",
+        "before_seconds": 939.24301,
+        "after_seconds": 939.24301
+      },
+      {
+        "key": "D",
+        "before_seconds": 951.724443,
+        "after_seconds": 951.724443
+      },
+      {
+        "key": "W",
+        "before_seconds": 965.114343,
+        "after_seconds": 965.114343
+      }
+    ]
+  },
+  "route": {
+    "start_seconds": 1020,
+    "duration_seconds": 60,
+    "inputs": [
+      {
+        "key": "W",
+        "before_seconds": 1024.346982,
+        "after_seconds": 1024.346982
+      },
+      {
+        "key": "A",
+        "before_seconds": 1030.379011,
+        "after_seconds": 1031.486074
+      },
+      {
+        "key": "D",
+        "before_seconds": 1037.734495,
+        "after_seconds": 1038.963037
+      },
+      {
+        "key": "W",
+        "before_seconds": 1044.863156,
+        "after_seconds": 1044.863156
+      },
+      {
+        "key": "A",
+        "before_seconds": 1052.029213,
+        "after_seconds": 1052.029213
+      },
+      {
+        "key": "D",
+        "before_seconds": 1058.313028,
+        "after_seconds": 1059.317744
+      },
+      {
+        "key": "W",
+        "before_seconds": 1066.039033,
+        "after_seconds": 1067.27792
+      },
+      {
+        "key": "W",
+        "before_seconds": 1073.086352,
+        "after_seconds": 1073.086352
+      }
+    ]
+  },
+  "hall": {
+    "start_seconds": 1184,
+    "duration_seconds": 60,
+    "inputs": [
+      {
+        "key": "W",
+        "before_seconds": 1188.075369,
+        "after_seconds": 1188.075369
+      },
+      {
+        "key": "A",
+        "before_seconds": 1194.972906,
+        "after_seconds": 1194.972906
+      },
+      {
+        "key": "D",
+        "before_seconds": 1201.089927,
+        "after_seconds": 1202.295255
+      },
+      {
+        "key": "W",
+        "before_seconds": 1208.043197,
+        "after_seconds": 1208.043197
+      },
+      {
+        "key": "A",
+        "before_seconds": 1216.559595,
+        "after_seconds": 1217.701621
+      },
+      {
+        "key": "D",
+        "before_seconds": 1225.958001,
+        "after_seconds": 1232.528421
+      },
+      {
+        "key": "W",
+        "before_seconds": 1234.847422,
+        "after_seconds": 1237.406315
+      },
+      {
+        "key": "W",
+        "before_seconds": 1238.582981,
+        "after_seconds": 1239.7604
+      }
+    ]
+  }
+}

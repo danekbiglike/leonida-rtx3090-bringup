@@ -14,6 +14,7 @@ builds = [
     ("paired-wave-mips", "Descriptor locks and texture mips", "descriptor-locks-texture-mips.md"),
     ("paired-wave-journal", "Lazy write-watch range preparation", "buffer-refresh-and-hitches.md"),
     ("paired-wave-cardsync", "Small buffers in GPU memory", "small-card-buffers.md"),
+    ("paired-wave-shorthash", "Small buffers with shorter GPU hashes", "short-buffer-hashes.md"),
 ]
 scenes = [("window", ""), ("door", "-room"), ("movement", "-moving"), ("additional", "-route")]
 rows = []

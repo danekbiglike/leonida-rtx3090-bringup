@@ -1,0 +1,19 @@
+{
+  "start_seconds": 1020,
+  "requested_seconds": 60,
+  "covered_seconds": 60.144348,
+  "frames": 251,
+  "fps": 4.173293224493846,
+  "p50_ms": 234.336,
+  "p95_ms": 290.802,
+  "p99_ms": 338.851,
+  "max_ms": 539.023,
+  "frames_over_200ms": 231,
+  "all_frames_within_200ms": false,
+  "mean_draw_calls": 7283.9681274900395,
+  "split_modes": [],
+  "joined_hash_modes": [],
+  "scene": "Eight additional key presses on the prison route",
+  "clock": "Intervals between successful DXGI Present calls",
+  "source": "short-hash-frames.csv"
+}

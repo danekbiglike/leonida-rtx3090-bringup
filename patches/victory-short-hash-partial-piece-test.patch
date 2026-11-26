@@ -1,0 +1,53 @@
+--- a/crates/victory-gpu/src/host.rs
++++ b/crates/victory-gpu/src/host.rs
+@@ -767,12 +767,25 @@
+     #[test]
+     #[ignore = "requires a D3D12 adapter and the card hash pipeline; run alone"]
+     fn two_dirty_card_buffers_reach_readback_in_the_same_submission() {
++        check_dirty_card_buffers(1 << 20);
++    }
++
++    /// A 28-byte final piece crosses a 16-byte hash step. The second dword
++    /// written in each buffer is in that short piece. Run in a fresh process
++    /// with VICTORY_CARD_BUFFERS_MIN_KB=64 and VICTORY_CARD_HASH_LEN=1.
++    #[test]
++    #[ignore = "requires a D3D12 adapter and the short card-hash profile; run alone"]
++    fn batched_card_hash_preserves_a_partial_final_piece() {
++        check_dirty_card_buffers(crate::shadow::card_piece_bytes() + 28);
++    }
++
++    fn check_dirty_card_buffers(bytes: usize) {
+         use windows_sys::Win32::System::Memory::{
+             MEM_COMMIT, MEM_RELEASE, MEM_RESERVE, PAGE_READWRITE, VirtualAlloc, VirtualFree,
+         };
+         const MEM_WRITE_WATCH: u32 = 0x20_0000;
+         const MIB: usize = 1 << 20;
+-        const PIECE: usize = 64 << 10;
++        let piece_bytes = crate::shadow::card_piece_bytes();
+         let host = super::host().expect("a D3D12 device");
+         assert!(host.card_ready(), "the card hash pipeline must be available");
+         // SAFETY: a private allocation held through the fenced submissions.
+@@ -782,9 +795,12 @@
+         assert!(!allocation.is_null());
+         let bases = [allocation as usize, allocation as usize + MIB];
+         let shadows = bases.map(|base| {
+-            crate::shadow::register(base, base as u64, MIB as u64);
+-            let copy = crate::shadow::find(base as u64, MIB as u64).unwrap();
++            crate::shadow::register(base, base as u64, bytes as u64);
++            let copy = crate::shadow::find(base as u64, bytes as u64).unwrap();
+             assert!(copy.carded(), "both title buffers must have a card copy");
++            if bytes % piece_bytes != 0 {
++                assert_eq!(copy.card_hashed(), Some(bytes.next_multiple_of(16) as u64));
++            }
+             copy
+         });
+         let readback = host.read_back_buffer(16).unwrap();
+@@ -794,7 +810,7 @@
+             let list = host.new_list().unwrap();
+             let mut expected = [0u32; 4];
+             for (i, (shadow, &base)) in shadows.iter().zip(&bases).enumerate() {
+-                for (j, offset) in [32, PIECE + 20].into_iter().enumerate() {
++                for (j, offset) in [32, piece_bytes + 20].into_iter().enumerate() {
+                     let k = 2 * i + j;
+                     expected[k] = round * 0x0101_0101 + k as u32;
+                     // SAFETY: aligned dword in the private allocation.

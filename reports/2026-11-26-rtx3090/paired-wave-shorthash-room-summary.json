@@ -1,0 +1,19 @@
+{
+  "start_seconds": 850,
+  "requested_seconds": 60,
+  "covered_seconds": 60.20442,
+  "frames": 255,
+  "fps": 4.235569415003084,
+  "p50_ms": 235.458,
+  "p95_ms": 268.179,
+  "p99_ms": 280.869,
+  "max_ms": 335.821,
+  "frames_over_200ms": 247,
+  "all_frames_within_200ms": false,
+  "mean_draw_calls": 6885.317647058823,
+  "split_modes": [],
+  "joined_hash_modes": [],
+  "scene": "In the cell after pressing S",
+  "clock": "Intervals between successful DXGI Present calls",
+  "source": "short-hash-frames.csv"
+}

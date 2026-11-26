@@ -1,0 +1,19 @@
+{
+  "start_seconds": 920,
+  "requested_seconds": 60,
+  "covered_seconds": 60.191742,
+  "frames": 243,
+  "fps": 4.037098643863804,
+  "p50_ms": 243.908,
+  "p95_ms": 290.659,
+  "p99_ms": 348.725,
+  "max_ms": 411.058,
+  "frames_over_200ms": 241,
+  "all_frames_within_200ms": false,
+  "mean_draw_calls": 7161.802469135802,
+  "split_modes": [],
+  "joined_hash_modes": [],
+  "scene": "Four key presses in the prison",
+  "clock": "Intervals between successful DXGI Present calls",
+  "source": "short-hash-frames.csv"
+}

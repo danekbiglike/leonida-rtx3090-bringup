@@ -1,0 +1,113 @@
+{
+  "window": {
+    "start_seconds": 680,
+    "stop_seconds": 770,
+    "bin_seconds": 5,
+    "accepted_presents": [
+      28,
+      28,
+      29,
+      29,
+      28,
+      29,
+      28,
+      29,
+      28,
+      29,
+      28,
+      29,
+      29,
+      29,
+      28,
+      29,
+      28,
+      28
+    ],
+    "minimum_fps": 5.6,
+    "bins_at_least_5_fps": 18
+  },
+  "door": {
+    "start_seconds": 850,
+    "stop_seconds": 910,
+    "bin_seconds": 5,
+    "accepted_presents": [
+      21,
+      21,
+      22,
+      21,
+      21,
+      21,
+      21,
+      20,
+      22,
+      21,
+      21,
+      22
+    ],
+    "minimum_fps": 4.0,
+    "bins_at_least_5_fps": 0
+  },
+  "movement": {
+    "start_seconds": 920,
+    "stop_seconds": 980,
+    "bin_seconds": 5,
+    "accepted_presents": [
+      21,
+      20,
+      21,
+      19,
+      20,
+      20,
+      20,
+      21,
+      18,
+      20,
+      21,
+      21
+    ],
+    "minimum_fps": 3.6,
+    "bins_at_least_5_fps": 0
+  },
+  "route": {
+    "start_seconds": 1020,
+    "stop_seconds": 1080,
+    "bin_seconds": 5,
+    "accepted_presents": [
+      20,
+      21,
+      19,
+      20,
+      21,
+      20,
+      21,
+      22,
+      21,
+      20,
+      22,
+      23
+    ],
+    "minimum_fps": 3.8,
+    "bins_at_least_5_fps": 0
+  },
+  "hall": {
+    "start_seconds": 1184,
+    "stop_seconds": 1244,
+    "bin_seconds": 5,
+    "accepted_presents": [
+      15,
+      11,
+      14,
+      10,
+      14,
+      9,
+      16,
+      16,
+      18,
+      11,
+      16,
+      16
+    ],
+    "minimum_fps": 1.8,
+    "bins_at_least_5_fps": 0
+  }
+}

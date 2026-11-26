@@ -1,0 +1,19 @@
+{
+  "start_seconds": 1184,
+  "requested_seconds": 60,
+  "covered_seconds": 60.486451,
+  "frames": 167,
+  "fps": 2.7609488941581315,
+  "p50_ms": 256.255,
+  "p95_ms": 737.441,
+  "p99_ms": 1787.84,
+  "max_ms": 3491.478,
+  "frames_over_200ms": 156,
+  "all_frames_within_200ms": false,
+  "mean_draw_calls": 4445.898203592815,
+  "split_modes": [],
+  "joined_hash_modes": [],
+  "scene": "Leaving the cell and entering the corridor behind the guard",
+  "clock": "Intervals between successful DXGI Present calls",
+  "source": "short-hash-frames.csv"
+}
