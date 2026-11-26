@@ -1,5 +1,7 @@
 # GTA VI gameplay on Windows with VIctory and RTX 3090
 
+[Dedicated texture worker on the RTX 3090, paired prison escort runs](texture-worker-escort/README.md).
+
 [Standalone buffer bitsets and three minutes walking on the RTX 3090](bitsets-only-escort.md).
 
 [Doorway to gate A102 and the common area on the bitset build](slot-bitsets-escort.md), with input traces and paired live texture checks.

@@ -1,0 +1,67 @@
+diff --git a/crates/victory-gpu/src/host.rs b/crates/victory-gpu/src/host.rs
+index 475c034..10b04bd 100644
+--- a/crates/victory-gpu/src/host.rs
++++ b/crates/victory-gpu/src/host.rs
+@@ -8432,7 +8432,7 @@ impl Meter {
+                 use std::io::Write;
+                 let file = std::fs::File::create_new(path).ok()?;
+                 let mut out = std::io::BufWriter::new(file);
+-                writeln!(out, "present_interval_us,draw_calls").ok()?;
++                writeln!(out, "present_interval_us,draw_calls,utc_us").ok()?;
+                 Some((out, now, crate::draw::drawn()))
+             }),
+             frames: 0,
+@@ -8451,7 +8451,8 @@ impl Meter {
+             let now = std::time::Instant::now();
+             let draws = crate::draw::drawn();
+             let duration = now.duration_since(*last).as_micros();
+-            let result = writeln!(out, "{duration},{}", draws.saturating_sub(*previous_draws));
++            let utc_us = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_micros();
++            let result = writeln!(out, "{duration},{},{utc_us}", draws.saturating_sub(*previous_draws));
+             *last = now;
+             *previous_draws = draws;
+             if result.is_err() || (self.since.elapsed().as_secs() >= 1 && out.flush().is_err()) {
+diff --git a/crates/victory-hle/src/modules/gameinput.rs b/crates/victory-hle/src/modules/gameinput.rs
+index 11f999c..a9d248d 100644
+--- a/crates/victory-hle/src/modules/gameinput.rs
++++ b/crates/victory-hle/src/modules/gameinput.rs
+@@ -1284,6 +1284,10 @@ mod host {
+         fn keys(&mut self) -> Vec<KeyState> {
+             #[cfg(feature = "diagnostics")]
+             let mut down = scripted();
++            #[cfg(feature = "diagnostics")]
++            if escort_walk_down() && !down.contains(&b'W') {
++                down.push(b'W');
++            }
+             #[cfg(not(feature = "diagnostics"))]
+             let mut down = Vec::new();
+             if focused() {
+@@ -1359,6 +1363,28 @@ mod host {
+             .collect()
+     }
+ 
++    /// Replay a corridor walk after an observer marks the starting position. The
++    /// file holds a UTC millisecond timestamp. Both arms use the same pulse train.
++    #[cfg(feature = "diagnostics")]
++    fn escort_walk_down() -> bool {
++        use std::sync::Mutex;
++        use std::time::{SystemTime, UNIX_EPOCH};
++        static MARK: LazyLock<Option<std::path::PathBuf>> = LazyLock::new(|| {
++            std::env::var_os("VICTORY_ESCORT_MARK").map(std::path::PathBuf::from)
++        });
++        let Some(path) = MARK.as_ref() else { return false };
++        static TIMING: Mutex<(Option<Instant>, Option<u64>)> = Mutex::new((None, None));
++        let mut timing = TIMING.lock().unwrap_or_else(|e| e.into_inner());
++        if timing.1.is_none() && timing.0.is_none_or(|t| t.elapsed() >= Duration::from_millis(250)) {
++            timing.0 = Some(Instant::now());
++            timing.1 = std::fs::read_to_string(path).ok().and_then(|v| v.trim().parse().ok());
++        }
++        let Some(start) = timing.1 else { return false };
++        let Ok(now) = SystemTime::now().duration_since(UNIX_EPOCH) else { return false };
++        let Some(t) = (now.as_millis() as u64).checked_sub(start) else { return false };
++        t < 120_000 && t % 550 < 350
++    }
++
+     /// The foreground window is one of ours (the title's or our fallback).
+     fn focused() -> bool {
+         let mut process = 0;
