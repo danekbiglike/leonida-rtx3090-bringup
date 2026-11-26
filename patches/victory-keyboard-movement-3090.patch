@@ -1,0 +1,91 @@
+--- a/crates/victory-hle/src/modules/gameinput.rs
++++ b/crates/victory-hle/src/modules/gameinput.rs
+@@ -135,6 +135,42 @@
+         right_x: on(b'L') - on(b'J'),
+         right_y: on(b'I') - on(b'K'),
+     }
++}
++
++/// Combine keyboard controls with an attached pad, keeping untouched axes.
++fn merge_keyboard_pad(pad: &mut PadState, keyboard: &PadState) {
++    pad.buttons |= keyboard.buttons;
++    pad.left_trigger = pad.left_trigger.max(keyboard.left_trigger);
++    pad.right_trigger = pad.right_trigger.max(keyboard.right_trigger);
++    if keyboard.left_x != 0.0 {
++        pad.left_x = keyboard.left_x;
++    }
++    if keyboard.left_y != 0.0 {
++        pad.left_y = keyboard.left_y;
++    }
++    if keyboard.right_x != 0.0 {
++        pad.right_x = keyboard.right_x;
++    }
++    if keyboard.right_y != 0.0 {
++        pad.right_y = keyboard.right_y;
++    }
++}
++
++#[test]
++fn keyboard_axes_merge_with_attached_pad() {
++    let mut pad = PadState { buttons: B, left_x: 0.5, right_y: -0.5, ..Default::default() };
++    let keyboard = fallback(&[
++        KeyState { virtual_key: b'W', ..Default::default() },
++        KeyState { virtual_key: b'L', ..Default::default() },
++        KeyState { virtual_key: b'Z', ..Default::default() },
++    ]);
++    merge_keyboard_pad(&mut pad, &keyboard);
++    assert_eq!(pad.buttons, B);
++    assert_eq!(pad.left_x, 0.5);
++    assert_eq!(pad.left_y, 1.0);
++    assert_eq!(pad.right_x, 1.0);
++    assert_eq!(pad.right_y, -0.5);
++    assert_eq!(pad.left_trigger, 1.0);
+ }
+ 
+ #[repr(C)]
+@@ -459,7 +495,7 @@
+         });
+         let mut pads = pads;
+         if *KEYBOARD_PAD && let Some(active) = pads.iter_mut().flatten().next() {
+-            active.buttons |= fallback(&keys).buttons;
++            merge_keyboard_pad(active, &fallback(&keys));
+         }
+         let any_pad = pads.iter().any(Option::is_some);
+         for (slot, pad) in pads.into_iter().enumerate() {
+@@ -1084,12 +1120,14 @@
+ 
+ impl WindowTaps {
+     fn change(&mut self, key: u8, down: bool, at: Instant) {
+-        if !FALLBACK_BUTTONS.iter().any(|&(vk, _)| vk == key) {
++        if !FALLBACK_BUTTONS.iter().any(|&(vk, _)| vk == key)
++            && !b"WASDIJKLZC".contains(&key)
++        {
+             return;
+         }
+         if down {
+             self.0.retain(|&(vk, _, _)| vk != key);
+-            self.0.push((key, at + Duration::from_millis(65), true));
++            self.0.push((key, at + Duration::from_millis(500), true));
+         } else if let Some(entry) = self.0.iter_mut().find(|entry| entry.0 == key) {
+             entry.2 = false;
+         }
+@@ -1122,14 +1160,16 @@
+     taps.change(0x0d, true, now);
+     taps.change(0x0d, false, now);
+     taps.change(b'P', true, now);
++    taps.change(b'W', true, now);
++    taps.change(b'W', false, now);
+     let mut down = vec![0x0d];
+     taps.add_active(now, &mut down);
+-    assert_eq!(down, [0x0d]);
++    assert_eq!(down, [0x0d, b'W']);
+     down.clear();
+     taps.add_active(now + Duration::from_millis(33), &mut down);
+-    assert_eq!(down, [0x0d]);
++    assert_eq!(down, [0x0d, b'W']);
+     down.clear();
+-    let later = now + Duration::from_millis(66);
++    let later = now + Duration::from_millis(501);
+     taps.add_active(later, &mut down);
+     assert!(down.is_empty());
+     taps.change(0x28, true, now);

@@ -1,0 +1,32 @@
+{
+  "start_seconds": 1080,
+  "requested_seconds": 60,
+  "covered_seconds": 60.365846,
+  "frames": 203,
+  "fps": 3.3628287094659455,
+  "p50_ms": 292.934,
+  "p95_ms": 338.325,
+  "p99_ms": 375.489,
+  "max_ms": 379.561,
+  "frames_over_200ms": 203,
+  "all_frames_within_200ms": false,
+  "mean_draw_calls": 7456.0,
+  "split_modes": [],
+  "joined_hash_modes": [],
+  "clock": "Accepted DXGI Present calls returning S_OK",
+  "scene": "Prison gameplay during scripted physical movement inputs",
+  "diagnostic_window_count": 10,
+  "diagnostic_interval_medians": {
+    "fps": 3.45,
+    "frame_ms": 290.0,
+    "prepare_ms": 133.1,
+    "buffer_copies_ms": 55.7,
+    "textures_ms": 9.3,
+    "gpu_wait_ms": 139.65,
+    "copy_back_ms": 98.5,
+    "draws": 7442.5,
+    "dropped_pipelines": 0.0,
+    "pipelines_compiling": 0.0,
+    "heap_pass_ms": 42.05
+  }
+}
