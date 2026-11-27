@@ -1,0 +1,12 @@
+{
+  "id": "danekbiglike/rtx3090-20261127-interactive-oom",
+  "job_limit_bytes": 44624371712,
+  "peak_job_bytes": 44624150528,
+  "unused_bytes_at_peak": 221184,
+  "limit_event": {
+    "uptime_ms": "824453",
+    "job_message": "9"
+  },
+  "system_commit_room_near_event_bytes": 925499392,
+  "last_sample_uptime_ms": 1289828
+}
