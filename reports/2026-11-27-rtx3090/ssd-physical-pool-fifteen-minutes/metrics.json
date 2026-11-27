@@ -1,0 +1,11 @@
+{
+  "report_id": "danekbiglike/rtx3090-20261127-ssd-physical-pool-15min",
+  "minutes": 15,
+  "boot_utc_us": 1795809490727753,
+  "peak_job_bytes": 36382035968,
+  "process_limit_bytes": 45097156608,
+  "limit_events": 0,
+  "minimum_system_commit_room_bytes": 15739428864,
+  "final_minute_fps": 5.9,
+  "final_minute_median_draws": 2862.5
+}
