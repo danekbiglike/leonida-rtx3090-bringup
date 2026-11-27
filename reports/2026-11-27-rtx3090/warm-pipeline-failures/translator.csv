@@ -1,0 +1,9 @@
+stage,shader_hash,instruction_offset,translator_reason
+compute,002e93a6cc2aa355,0x1d30,a lane-read VGPR written without a dword value is not supported
+compute,07c93bfb77fecebb,0x2070,a descriptor read only as data is not supported
+compute,0e64f14fae060d04,0x1dd8,a lane-read VGPR written without a dword value is not supported
+compute,39321a95223001ed,0x23c,a first-lane read where not every lane runs is not supported
+compute,77360df21e12ea43,0x23c,a first-lane read where not every lane runs is not supported
+compute,96ccb14ef981fd85,0x1e30,a lane-read VGPR written without a dword value is not supported
+compute,9fc111d3be79364f,0x258,a first-lane read where not every lane runs is not supported
+compute,dbdbf36298727135,0x1df0,a lane-read VGPR written without a dword value is not supported
