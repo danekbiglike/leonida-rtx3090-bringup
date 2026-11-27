@@ -1,0 +1,32 @@
+[
+  {
+    "profile": "all",
+    "mask": "0xffff",
+    "start_us": 1795811016663321,
+    "end_us": 1795811046663264
+  },
+  {
+    "profile": "one_per_core",
+    "mask": "0x5555",
+    "start_us": 1795811051663753,
+    "end_us": 1795811081665282
+  },
+  {
+    "profile": "all",
+    "mask": "0xffff",
+    "start_us": 1795811086665706,
+    "end_us": 1795811116666209
+  },
+  {
+    "profile": "one_per_core",
+    "mask": "0x5555",
+    "start_us": 1795811121666499,
+    "end_us": 1795811151667136
+  },
+  {
+    "profile": "all",
+    "mask": "0xffff",
+    "start_us": 1795811156669182,
+    "end_us": 1795811186669187
+  }
+]
