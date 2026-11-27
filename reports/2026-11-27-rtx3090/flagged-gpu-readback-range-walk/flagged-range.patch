@@ -1,0 +1,55 @@
+--- a/crates/victory-gpu/src/host.rs
++++ b/crates/victory-gpu/src/host.rs
+@@ -2688,6 +2688,20 @@
+     pieces
+ }
+ 
++/// Relative offsets flagged anywhere in this plan for this copy and range.
++/// The input is the sorted, deduplicated output of `flagged_pieces`.
++/// Provenance: danekbiglike/rtx3090-20261127-flagged-range.
++fn flagged_in_range(pieces: &[(usize, u32)], copy: usize, first: u32, count: u32) -> impl Iterator<Item = u32> + '_ {
++    let begin = pieces.partition_point(|&piece| piece < (copy, first));
++    pieces[begin..].iter().map_while(move |&(owner, piece)| {
++        if owner != copy {
++            return None;
++        }
++        let offset = piece - first;
++        (offset < count).then_some(offset)
++    })
++}
++
+ /// Whether compares read only the declared pieces found changed lately
+ /// ([`heat`], `VICTORY_CARD_COMPARE_HOT=<D>`; off by default). Only with
+ /// [`relay`], whose landing thread holds back the flights that owe pieces.
+@@ -2814,7 +2828,18 @@
+ 
+ #[cfg(test)]
+ mod relay_tests {
+-    use super::{flagged_pieces, landable};
++    use super::{flagged_in_range, flagged_pieces, landable};
++
++    #[test]
++    fn range_lookup_preserves_overlapping_declarations_and_copy_boundaries() {
++        let flags = flagged_pieces(&[(1, 3, false), (2, 3, true), (1, 3, true), (1, 5, true), (3, u32::MAX, true)]);
++        let offsets = |copy, first, count| flagged_in_range(&flags, copy, first, count).collect::<Vec<_>>();
++        assert_eq!(offsets(1, 2, 4), [1, 3]);
++        assert_eq!(offsets(1, 3, 2), [0]);
++        assert_eq!(offsets(2, 3, 0), []);
++        assert_eq!(offsets(2, 4, 2), []);
++        assert_eq!(offsets(3, u32::MAX - 1, 2), [1]);
++    }
+ 
+     /// Two flights and what follows each: nothing of the second lands
+     /// before the card has run it, and nothing behind a flight lands
+@@ -5454,10 +5479,7 @@
+                     if upcheck::on() {
+                         upcheck::declared(r.shadow.id(), r.span.from as usize, r.span.to as usize);
+                     }
+-                    for p in 0..r.span.pieces {
+-                        if fetched.binary_search(&(copy, r.span.first + p)).is_err() {
+-                            continue;
+-                        }
++                    for p in flagged_in_range(&fetched, copy, r.span.first, r.span.pieces) {
+                         let (lo, hi) = r.shadow.card_piece(&r.span, p);
+                         if lo < hi && !seen.contains(&(copy, lo, hi)) {
+                             let key = (r.shadow.id(), r.shadow.span().0 as usize + lo, hi - lo);
