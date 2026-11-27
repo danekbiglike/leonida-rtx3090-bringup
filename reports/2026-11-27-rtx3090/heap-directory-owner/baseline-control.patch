@@ -1,0 +1,86 @@
+diff --git a/crates/victory-gpu/src/memory.rs b/crates/victory-gpu/src/memory.rs
+index b030094..6b0867c 100644
+--- a/crates/victory-gpu/src/memory.rs
++++ b/crates/victory-gpu/src/memory.rs
+@@ -296,6 +296,28 @@ impl Memory {
+         ours
+     }
+ 
++    fn bind_views(&mut self, heap: &HostHeap) -> Option<u32> {
++        let key = std::ptr::from_ref(heap) as usize;
++        let (base, made) = match self.heaps.get(&key) {
++            Some(&run) => run,
++            None => {
++                // Held for the heap's life: not given back with a list's slots.
++                let base = heap.dynamic(COPIES + 1)?;
++                // Every slot of the run: a number shows no view of another kind.
++                for n in 0..=COPIES {
++                    heap.null_raw_uav_at(base + n);
++                }
++                (base, 0)
++            }
++        };
++        for (n, shadow) in self.copies.iter().enumerate().skip(made as usize) {
++            let (_, len) = shadow.span();
++            heap.raw_uav_at(base + 1 + n as u32, &shadow.buffer, 0, len);
++        }
++        self.heaps.insert(key, (base, self.copies.len() as u32));
++        Some(base)
++    }
++
+     /// Gives a copy a number, if one is left.
+     fn number(&mut self, shadow: Arc<Shadow>) -> Option<usize> {
+         let key = Arc::as_ptr(&shadow) as usize;
+@@ -1025,24 +1047,7 @@ pub(crate) fn ready(
+     for (sum, n) in m.stats.came.iter_mut().zip(came) {
+         *sum += n;
+     }
+-    let key = std::ptr::from_ref(heap) as usize;
+-    let (base, made) = match m.heaps.get(&key) {
+-        Some(&run) => run,
+-        None => {
+-            // Held for the heap's life: not given back with a list's slots.
+-            let base = heap.dynamic(COPIES + 1)?;
+-            // Every slot of the run: a number shows no view of another kind.
+-            for n in 0..=COPIES {
+-                heap.null_raw_uav_at(base + n);
+-            }
+-            (base, 0)
+-        }
+-    };
+-    for (n, shadow) in m.copies.iter().enumerate().skip(made as usize) {
+-        let (_, len) = shadow.span();
+-        heap.raw_uav_at(base + 1 + n as u32, &shadow.buffer, 0, len);
+-    }
+-    m.heaps.insert(key, (base, m.copies.len() as u32));
++    let base = m.bind_views(heap)?;
+     // Every copy by every list that has come to by-address memory, whoever
+     // numbered it: an arena another list made while this one was being
+     // recorded was brought up to date by that list's submission alone, which
+@@ -1277,6 +1282,26 @@ mod dump {
+ mod tests {
+     use super::*;
+ 
++    #[test]
++    fn a_replacement_heap_owns_its_title_memory_view_slots() {
++        let mut memory = Memory::new().expect("D3D12 memory directory");
++        let new_heap = || HostHeap::new(false, 64).expect("shader-visible view heap");
++        let mut heap = Box::new(new_heap());
++        let first = memory.bind_views(&heap).expect("first view run");
++        assert_eq!(memory.bind_views(&heap), Some(first));
++
++        // Replace the heap in exactly the same Rust allocation. Its previous
++        // range now belongs to other descriptors in the new D3D12 heap.
++        *heap = new_heap();
++        let size = COPIES + 1;
++        let occupied = heap.dynamic(size).expect("unrelated descriptors");
++        assert_eq!(occupied, first, "control must cover the old run");
++        let second = memory.bind_views(&heap).expect("replacement view run");
++        assert!(second >= occupied + size || occupied >= second + size,
++                "the replacement returned another allocation's descriptor slots");
++        assert_eq!(memory.bind_views(&heap), Some(second));
++    }
++
+     #[test]
+     fn a_piece_takes_what_changed() {
+         let mut title = [7u8; PIECE];

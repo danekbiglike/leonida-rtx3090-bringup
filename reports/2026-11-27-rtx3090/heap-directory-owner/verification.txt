@@ -1,0 +1,18 @@
+danekbiglike/rtx3090-20261127-heap-directory-owner
+Target 2954325320735fa8b56a15e7f3e9654965e3462e
+Windows, D3D12 WARP, diagnostics
+
+Control, replacement test
+the replacement returned another allocation's descriptor slots
+test memory::tests::a_replacement_heap_owns_its_title_memory_view_slots ... FAILED
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 465 filtered out; finished in 0.26s
+
+Fix, memory module
+test memory::tests::a_replacement_heap_owns_its_title_memory_view_slots ... ok
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 463 filtered out; finished in 0.20s
+
+Fix, host descriptors
+test result: ok. 38 passed; 0 failed; 0 ignored; 0 measured; 428 filtered out; finished in 0.63s
+
+86b0e0125703e7052652bac6cd024342997126b379cd0ea812d94165c5722a16  baseline-control.patch
+adc32fd7a78daf4799a0887cf9effbad13d0321b7324860562740b787d1a7715  heap-directory-owner.patch

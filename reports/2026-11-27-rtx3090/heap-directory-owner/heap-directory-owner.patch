@@ -1,0 +1,129 @@
+diff --git a/crates/victory-gpu/src/descriptor/host.rs b/crates/victory-gpu/src/descriptor/host.rs
+index e2190a5..0a86558 100644
+--- a/crates/victory-gpu/src/descriptor/host.rs
++++ b/crates/victory-gpu/src/descriptor/host.rs
+@@ -158,6 +158,9 @@ pub(crate) struct HostHeap {
+     /// Where the search for free dynamic slots starts, and which are taken
+     /// (by lists not yet reset).
+     next: Mutex<(u32, Vec<bool>)>,
++    /// First slot and populated copy count of this heap's by-address memory views.
++    /// A new heap may occupy the same Rust address and starts with no reserved run.
++    pub(crate) memory_views: Mutex<Option<(u32, u32)>>,
+     /// How many dynamic slots are free (changed under `next`'s lock): with
+     /// fewer than a table needs, the search is not made. Once the world
+     /// had taken them all, every later table of the frame searched every
+@@ -1660,6 +1663,7 @@ impl HostHeap {
+             away: Mutex::default(),
+             kept: (0..count + extra).map(|_| Mutex::new(None)).collect(),
+             next: Mutex::new((0, vec![false; extra as usize])),
++            memory_views: Mutex::new(None),
+             free: std::sync::atomic::AtomicU32::new(extra),
+             too_long: std::sync::atomic::AtomicU32::new(u32::MAX),
+             strides,
+diff --git a/crates/victory-gpu/src/memory.rs b/crates/victory-gpu/src/memory.rs
+index b030094..423f614 100644
+--- a/crates/victory-gpu/src/memory.rs
++++ b/crates/victory-gpu/src/memory.rs
+@@ -171,9 +171,6 @@ struct Memory {
+     open: std::collections::HashSet<usize>,
+     /// Pages taken from faults.
+     faulted: usize,
+-    /// Per host view heap (by address): the first slot of its run, and how
+-    /// many copies have their view there.
+-    heaps: HashMap<usize, (u32, u32)>,
+     /// The frame the faults were last read in.
+     frame: u64,
+     /// Pages asked for this frame that are not the title's memory.
+@@ -250,7 +247,6 @@ impl Memory {
+             free: Vec::new(),
+             open: Default::default(),
+             faulted: 0,
+-            heaps: HashMap::new(),
+             frame: u64::MAX,
+             refused: Default::default(),
+             stats: Stats::default(),
+@@ -296,6 +292,28 @@ impl Memory {
+         ours
+     }
+ 
++    fn bind_views(&self, heap: &HostHeap) -> Option<u32> {
++        let mut run = heap.memory_views.lock().unwrap_or_else(|e| e.into_inner());
++        let (base, made) = match *run {
++            Some(bound) => bound,
++            None => {
++                // Held for the heap's life: not given back with a list's slots.
++                let base = heap.dynamic(COPIES + 1)?;
++                // Every slot of the run: a number shows no view of another kind.
++                for n in 0..=COPIES {
++                    heap.null_raw_uav_at(base + n);
++                }
++                (base, 0)
++            }
++        };
++        for (n, shadow) in self.copies.iter().enumerate().skip(made as usize) {
++            let (_, len) = shadow.span();
++            heap.raw_uav_at(base + 1 + n as u32, &shadow.buffer, 0, len);
++        }
++        *run = Some((base, self.copies.len() as u32));
++        Some(base)
++    }
++
+     /// Gives a copy a number, if one is left.
+     fn number(&mut self, shadow: Arc<Shadow>) -> Option<usize> {
+         let key = Arc::as_ptr(&shadow) as usize;
+@@ -1025,24 +1043,7 @@ pub(crate) fn ready(
+     for (sum, n) in m.stats.came.iter_mut().zip(came) {
+         *sum += n;
+     }
+-    let key = std::ptr::from_ref(heap) as usize;
+-    let (base, made) = match m.heaps.get(&key) {
+-        Some(&run) => run,
+-        None => {
+-            // Held for the heap's life: not given back with a list's slots.
+-            let base = heap.dynamic(COPIES + 1)?;
+-            // Every slot of the run: a number shows no view of another kind.
+-            for n in 0..=COPIES {
+-                heap.null_raw_uav_at(base + n);
+-            }
+-            (base, 0)
+-        }
+-    };
+-    for (n, shadow) in m.copies.iter().enumerate().skip(made as usize) {
+-        let (_, len) = shadow.span();
+-        heap.raw_uav_at(base + 1 + n as u32, &shadow.buffer, 0, len);
+-    }
+-    m.heaps.insert(key, (base, m.copies.len() as u32));
++    let base = m.bind_views(heap)?;
+     // Every copy by every list that has come to by-address memory, whoever
+     // numbered it: an arena another list made while this one was being
+     // recorded was brought up to date by that list's submission alone, which
+@@ -1277,6 +1278,29 @@ mod dump {
+ mod tests {
+     use super::*;
+ 
++    // Regression origin: danekbiglike/rtx3090-20261127-heap-directory-owner.
++    #[test]
++    fn a_replacement_heap_owns_its_title_memory_view_slots() {
++        let memory = Memory::new().expect("D3D12 memory directory");
++        let new_heap = || HostHeap::new(false, 64).expect("shader-visible view heap");
++        let mut heap = Box::new(new_heap());
++        let first = memory.bind_views(&heap).expect("first view run");
++        assert_eq!(memory.bind_views(&heap), Some(first));
++
++        // Replace the heap in exactly the same Rust allocation. Its previous
++        // range now belongs to other descriptors in the new D3D12 heap.
++        *heap = new_heap();
++        let size = COPIES + 1;
++        let occupied = heap.dynamic(size).expect("unrelated descriptors");
++        assert_eq!(occupied, first, "control must cover the old run");
++        let second = memory.bind_views(&heap).expect("replacement view run");
++        assert!(
++            second >= occupied + size || occupied >= second + size,
++            "the replacement returned another allocation's descriptor slots"
++        );
++        assert_eq!(memory.bind_views(&heap), Some(second));
++    }
++
+     #[test]
+     fn a_piece_takes_what_changed() {
+         let mut title = [7u8; PIECE];
