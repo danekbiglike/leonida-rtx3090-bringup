@@ -1,0 +1,17 @@
+diff --git a/crates/victory-gpu/src/host/card_steps.rs b/crates/victory-gpu/src/host/card_steps.rs
+--- a/crates/victory-gpu/src/host/card_steps.rs
++++ b/crates/victory-gpu/src/host/card_steps.rs
+@@ -273,6 +273,13 @@
+             _ => {}
+         }
+     }
++    // Only fills are pending, and no title copy can depend on them.
++    // They all read title memory and can be prepared at level zero.
++    if !does.iter().any(|step| matches!(step, Does::Copy {..} | Does::Placed {..})) {
++        for &i in &more { takes(&does[i])?; }
++        if more.len() > MOST { return Err("too many steps depend on it"); }
++        return Ok(more.into_iter().map(|i| (i, 0)).collect());
++    }
+     while !more.is_empty() {
+         // (Joined once for the round: one by one the 2,800 fills of a frame
+         // sorted the ranges each time, 16 ms of the submitting thread.)
