@@ -1,0 +1,186 @@
+diff --git a/crates/victory-gpu/src/lib.rs b/crates/victory-gpu/src/lib.rs
+--- a/crates/victory-gpu/src/lib.rs
++++ b/crates/victory-gpu/src/lib.rs
+@@ -54,6 +54,8 @@
+ pub mod pipeline;
+ #[cfg(windows)]
+ mod picked;
++#[cfg(all(windows, feature = "diagnostics"))]
++mod placed_filler;
+ #[cfg(windows)]
+ mod pool;
+ #[cfg(all(windows, feature = "diagnostics"))]
+diff --git a/crates/victory-gpu/src/resource.rs b/crates/victory-gpu/src/resource.rs
+--- a/crates/victory-gpu/src/resource.rs
++++ b/crates/victory-gpu/src/resource.rs
+@@ -3088,24 +3088,6 @@
+ static PLACED_TEXTURES: std::sync::Mutex<std::collections::BTreeMap<(u64, [u32; 14]), usize>> =
+     std::sync::Mutex::new(std::collections::BTreeMap::new());
+ 
+-/// The placed textures asked for with filler words set, as asked
+-/// (address and description): for [`PLACED_TWINS`].
+-#[cfg(windows)]
+-static PLACED_RAW: std::sync::Mutex<std::collections::BTreeSet<(u64, [u32; 14])>> =
+-    std::sync::Mutex::new(std::collections::BTreeSet::new());
+-
+-/// Placed textures asked for a second time with other filler words in
+-/// their description: each was a second resource and host copy before the
+-/// filler was left out of the key ([`texture_at`]).
+-#[cfg(windows)]
+-static PLACED_TWINS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+-
+-/// See [`PLACED_TWINS`] (for the memory line of `copystat`).
+-#[cfg(all(windows, feature = "diagnostics"))]
+-pub(crate) fn placed_filler_twins() -> u64 {
+-    PLACED_TWINS.load(std::sync::atomic::Ordering::Relaxed)
+-}
+-
+ /// Width, height and format of texture `this` (`None` for a buffer), for
+ /// `crate::texback`'s kinds.
+ #[cfg(windows)]
+@@ -3183,30 +3165,15 @@
+     // that fills at world entry. They are not part of what a texture is.
+     // `VICTORY_PLACED_FILLER=1`: kept in the key, as before.
+     static KEPT: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+-    let raw = *desc;
+     let mut key = *desc;
+     if !*KEPT.get_or_init(|| std::env::var_os("VICTORY_PLACED_FILLER").is_some_and(|v| v == "1")) {
+         key[1] = 0;
+         key[13] = 0;
+     }
++    #[cfg(feature = "diagnostics")]
++    crate::placed_filler::record(address, &key, desc);
+     let desc = &key;
+     let mut map = PLACED_TEXTURES.lock().unwrap_or_else(|e| e.into_inner());
+-    // How many resources the filler alone would have added (a count for
+-    // the log: `placed_filler_twins`).
+-    if raw != key {
+-        let mut seen = PLACED_RAW.lock().unwrap_or_else(|e| e.into_inner());
+-        if seen.insert((address, raw)) {
+-            let others = seen.range((address, [0; 14])..=(address, [u32::MAX; 14])).filter(|(_, r)| {
+-                let mut blank = *r;
+-                blank[1] = 0;
+-                blank[13] = 0;
+-                blank == key
+-            });
+-            if others.count() > 1 {
+-                PLACED_TWINS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+-            }
+-        }
+-    }
+     if let Some(&r) = map.get(&(address, *desc)) {
+         return Some(r as This);
+     }
+diff --git a/crates/victory-gpu/src/copystat.rs b/crates/victory-gpu/src/copystat.rs
+--- a/crates/victory-gpu/src/copystat.rs
++++ b/crates/victory-gpu/src/copystat.rs
+@@ -908,10 +908,12 @@
+         made[4],
+         mb(made[5]),
+     );
+-    tracing::info!(
+-        "memory, placed textures: {} of them were asked for again with other filler words in their description          (one resource and host copy each since the filler left the key; VICTORY_PLACED_FILLER=1 keeps it)",
+-        crate::resource::placed_filler_twins()
+-    );
++    if let Some((keys, twins)) = crate::placed_filler::snapshot() {
++        tracing::info!(
++            "memory, placed textures: {twins} duplicate filler variants among {keys} distinct nonzero-filler descriptors; counting stops at {} descriptors [danekbiglike/rtx3090-20261127-placed-filler]",
++            crate::placed_filler::MAX_KEYS
++        );
++    }
+     // What the line above leaves open: what is alive of the buffers "made
+     // so far", what the windows hold and what holds them, and what our own
+     // code has allocated.
+diff --git a/crates/victory-gpu/src/placed_filler.rs b/crates/victory-gpu/src/placed_filler.rs
+new file mode 100644
+--- /dev/null
++++ b/crates/victory-gpu/src/placed_filler.rs
+@@ -0,0 +1,88 @@
++//! Optional census of filler-only variants in placed texture descriptors.
++//! Set VICTORY_PLACED_FILLER_STATS=1 for a diagnostic run.
++//! Provenance: danekbiglike/rtx3090-20261127-placed-filler.
++
++use std::collections::BTreeSet;
++use std::sync::{Mutex, OnceLock};
++
++pub(crate) const MAX_KEYS: usize = 16_384;
++
++#[derive(Default)]
++struct History {
++    // Order by normalized texture first, then by the two discarded words.
++    keys: BTreeSet<(u64, [u32; 14], [u32; 2])>,
++    twins: usize,
++}
++
++impl History {
++    fn record(&mut self, address: u64, normalized: &[u32; 14], raw: &[u32; 14]) {
++        if self.keys.len() == MAX_KEYS || normalized == raw {
++            return;
++        }
++        let filler = [raw[1], raw[13]];
++        let group = (address, *normalized, [0; 2])..=(address, *normalized, [u32::MAX; 2]);
++        let has_variant = self.keys.range(group).next().is_some();
++        if self.keys.insert((address, *normalized, filler)) && has_variant {
++            self.twins += 1;
++        }
++    }
++}
++
++fn tracker() -> Option<&'static Mutex<History>> {
++    static TRACKER: OnceLock<Option<Mutex<History>>> = OnceLock::new();
++    TRACKER
++        .get_or_init(|| {
++            std::env::var_os("VICTORY_PLACED_FILLER_STATS")
++                .is_some_and(|value| value == "1")
++                .then(|| Mutex::new(History::default()))
++        })
++        .as_ref()
++}
++
++pub(crate) fn record(address: u64, normalized: &[u32; 14], raw: &[u32; 14]) {
++    if let Some(tracker) = tracker() {
++        tracker.lock().unwrap_or_else(|e| e.into_inner()).record(address, normalized, raw);
++    }
++}
++
++pub(crate) fn snapshot() -> Option<(usize, usize)> {
++    let history = tracker()?.lock().unwrap_or_else(|e| e.into_inner());
++    Some((history.keys.len(), history.twins))
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    #[test]
++    fn only_new_filler_variants_of_the_same_texture_count() {
++        let mut history = History::default();
++        let mut raw = [0; 14];
++        let mut normalized = raw;
++        history.record(0, &normalized, &raw);
++        raw[1] = 1;
++        history.record(0, &normalized, &raw);
++        history.record(0, &normalized, &raw);
++        history.record(1, &normalized, &raw);
++        raw[13] = 1;
++        history.record(0, &normalized, &raw);
++        normalized[3] = 512;
++        raw[3] = 512;
++        history.record(0, &normalized, &raw);
++        // The compatibility switch that keeps filler produces identical keys.
++        history.record(0, &raw, &raw);
++        assert_eq!((history.keys.len(), history.twins), (4, 1));
++    }
++
++    #[test]
++    fn the_sample_freezes_at_its_declared_limit() {
++        let mut history = History::default();
++        let normalized = [0; 14];
++        let mut raw = normalized;
++        for value in 1..=(MAX_KEYS + 8) {
++            raw[1] = value as u32;
++            history.record(0, &normalized, &raw);
++        }
++        assert_eq!((history.keys.len(), history.twins), (MAX_KEYS, MAX_KEYS - 1));
++    }
++}
