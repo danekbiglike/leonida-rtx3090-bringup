@@ -1,0 +1,22 @@
+Windows x64, rustc 1.98.1, D3D12 WARP, sequential tests.
+Same test names and assertions on the pre-fix control and fixed build.
+
+Test                                         Control    Fixed
+a_full_table_skips_new_arenas_and_still_resolves_known_copies  FAIL  PASS
+an_unpublished_arena_releases_its_commit                       FAIL  PASS
+an_unpublished_directory_releases_its_commit                   FAIL  PASS
+a_packed_structure_is_known_by_its_header                      PASS  PASS
+a_piece_takes_what_changed                                     PASS  PASS
+a_replacement_heap_owns_its_title_memory_view_slots            PASS  PASS
+
+The control called the new arena builder even when no slot was free.
+VirtualQuery observed MEM_COMMIT (4096) after both injected failures.
+After the fix, the address state was MEM_FREE (65536) in both tests.
+The saturated table preserved the known copy and skipped arena construction.
+
+Fixed test command, with VICTORY_D3D12_WARP=1
+cargo test --offline --locked --release --config "profile.release.package.victory-gpu.opt-level=0" --config "profile.release.package.victory-gpu.debug=0" -j 1 -p victory-gpu --lib --features diagnostics -- memory::tests:: --test-threads=1
+
+Control 3 passed, 3 failed, 463 filtered out.
+Fixed   6 passed, 0 failed, 463 filtered out.
+Regression ID danekbiglike/rtx3090-20261127-title-memory-rollback.
