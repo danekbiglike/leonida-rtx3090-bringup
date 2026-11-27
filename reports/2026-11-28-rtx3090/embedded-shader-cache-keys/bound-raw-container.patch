@@ -1,0 +1,48 @@
+diff --git a/apps/victory/src/shader.rs b/apps/victory/src/shader.rs
+index 1c20285..fc3b163 100644
+--- a/apps/victory/src/shader.rs
++++ b/apps/victory/src/shader.rs
+@@ -43,15 +43,39 @@ pub(crate) fn sources(data: &[u8]) -> Vec<Source<'_>> {
+         out.extend(sgd5::records(data).map(Source::Packed));
+     }
+     let raw = memchr::memmem::find_iter(data, b"DXBC")
+-        .filter(|&offset| Container::parse(&data[offset..]).is_ok())
+-        .map(|offset| Source::Raw {
+-            offset,
+-            data: &data[offset..],
++        .filter_map(|offset| {
++            let tail = &data[offset..];
++            let declared = u32::from_le_bytes(tail.get(0x18..0x1c)?.try_into().ok()?) as usize;
++            let bytes = tail.get(..declared)?;
++            Container::parse(bytes).ok()?;
++            Some(Source::Raw { offset, data: bytes })
+         });
+     out.extend(raw);
+     out
+ }
+ 
++#[cfg(test)]
++mod raw_container_tests {
++    use super::sources;
++
++    #[test]
++    fn embedded_container_hashes_match_standalone_inputs() {
++        let mut a = [0u8; 32];
++        a[..4].copy_from_slice(b"DXBC");
++        a[0x18..0x1c].copy_from_slice(&32u32.to_le_bytes());
++        let mut b = a;
++        b[4] = 1;
++        let archive = [&a[..], b"padding", &b, b"trailer", b"DXBC"].concat();
++        let set = sources(&archive);
++        assert_eq!(set.len(), 2);
++        for (found, standalone) in set.iter().zip([&a, &b]) {
++            let bytes = found.bytes().unwrap();
++            assert_eq!(blake3::hash(&bytes), blake3::hash(standalone));
++            assert_eq!(bytes.len(), 32);
++        }
++    }
++}
++
+ #[derive(Default)]
+ struct Totals {
+     containers: usize,
