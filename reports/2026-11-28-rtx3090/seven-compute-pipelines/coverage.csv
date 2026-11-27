@@ -1,0 +1,9 @@
+shader_hash,stable_ssd_build,fxceless_2eade68,pilotecode_pr994
+002e93a6cc2aa355,at 0x1d30  emit: a lane-read VGPR written without a dword value,at 0x1d70  emit: a descriptor read only as data,DXIL validated and PSO created
+07c93bfb77fecebb,at 0x2070  emit: a descriptor read only as data,at 0x2070  emit: a descriptor read only as data,DXIL validated and PSO created
+0e64f14fae060d04,at 0x1dd8  emit: a lane-read VGPR written without a dword value,at 0x1e18  emit: a descriptor read only as data,DXIL validated and PSO created
+39321a95223001ed,at 0x23c  emit: a first-lane read where not every lane runs,DXIL validated,DXIL validated and PSO created
+77360df21e12ea43,at 0x23c  emit: a first-lane read where not every lane runs,DXIL validated,DXIL validated and PSO created
+96ccb14ef981fd85,at 0x1e30  emit: a lane-read VGPR written without a dword value,at 0x1e70  emit: a descriptor read only as data,DXIL validated and PSO created
+9fc111d3be79364f,at 0x258  emit: a first-lane read where not every lane runs,DXIL validated,DXIL validated and PSO created
+dbdbf36298727135,at 0x1df0  emit: a lane-read VGPR written without a dword value,at 0x1e48  emit: a descriptor read only as data,at 0xae80  emit: a lane mask holding lanes elsewhere read as data
