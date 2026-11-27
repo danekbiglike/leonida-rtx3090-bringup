@@ -1,0 +1,81 @@
+--- a/crates/victory-gpu/src/memory.rs
++++ b/crates/victory-gpu/src/memory.rs
+@@ -153,6 +153,8 @@
+     numbers: HashMap<usize, usize>,
+     /// Arenas: place in `copies`, address.
+     arenas: Vec<(usize, usize)>,
++    /// The last frame whose speculative request for spare pages failed.
++    spare_failed_frame: Option<u64>,
+     /// By title page.
+     pages: HashMap<u64, Held>,
+     /// Their numbers in the order they came, and where the sweep is.
+@@ -244,6 +246,7 @@
+             copies: Vec::new(),
+             numbers: HashMap::new(),
+             arenas: Vec::new(),
++            spare_failed_frame: None,
+             pages: HashMap::new(),
+             order: Vec::new(),
+             sweep: 0,
+@@ -429,6 +432,24 @@
+     /// Another arena's pages.
+     fn another(&mut self) -> bool {
+         self.another_with(crate::shadow::by_address)
++    }
++
++    // VIctory-NVIDIA #88 observed thousands of failed searches per frame.
++    // Local adaptation: danekbiglike/rtx3090-20261128-spare-refill.
++    // Only the spare-page refill backs off. A request for a page in use can
++    // still retry immediately if another thread has freed address space.
++    fn refill_with(&mut self, make_copy: impl FnOnce(u64, u64) -> Option<Arc<Shadow>>) -> bool {
++        if self.spare_failed_frame == Some(self.frame) {
++            return false;
++        }
++        let added = self.another_with(make_copy);
++        if !added {
++            if self.spare_failed_frame.is_none() {
++                tracing::warn!(frame = self.frame, "first failed spare arena refill; retries resume next frame");
++            }
++            self.spare_failed_frame = Some(self.frame);
++        }
++        added
+     }
+ 
+     fn another_with(&mut self, make_copy: impl FnOnce(u64, u64) -> Option<Arc<Shadow>>) -> bool {
+@@ -977,7 +998,11 @@
+     if builds && sizes_wait() && asks_size(written, constants, threads) {
+         list.first_use(SIZES);
+     }
+-    while builds && m.free.len() < SPARE && m.pages.len() + m.free.len() < MOST && m.another() {}
++    while builds && m.free.len() < SPARE && m.pages.len() + m.free.len() < MOST {
++        if !m.refill_with(crate::shadow::by_address) {
++            break;
++        }
++    }
+     m.stats.uses[usize::from(builds)] += 1;
+     // Once per list and page named: the builder dispatches hundreds of times
+     // a frame with the same arguments.
+@@ -1353,6 +1378,23 @@
+     }
+ 
+     #[test]
++    fn failed_spare_refill_preserves_demand_retries_and_resumes_next_frame() {
++        let mut memory = Memory::new().expect("D3D12 memory directory");
++        let mut attempts = 0;
++        let mut fail = |_, _| {
++            attempts += 1;
++            None
++        };
++        assert!(!memory.refill_with(&mut fail));
++        assert!(!memory.refill_with(&mut fail));
++        assert!(!memory.another_with(&mut fail));
++        memory.frame = memory.frame.wrapping_add(1);
++        assert!(!memory.refill_with(&mut fail));
++        assert_eq!(attempts, 3);
++        assert!(memory.arenas.is_empty() && memory.free.is_empty());
++    }
++
++    #[test]
+     fn a_full_table_skips_new_arenas_and_still_resolves_known_copies() {
+         let mut memory = Memory::new().expect("D3D12 memory directory");
+         let known = memory.directory.1.clone();

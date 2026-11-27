@@ -1,0 +1,9 @@
+running 7 tests
+test memory::tests::a_full_table_skips_new_arenas_and_still_resolves_known_copies ... ok
+test memory::tests::a_packed_structure_is_known_by_its_header ... ok
+test memory::tests::a_piece_takes_what_changed ... ok
+test memory::tests::a_replacement_heap_owns_its_title_memory_view_slots ... ok
+test memory::tests::an_unpublished_arena_releases_its_commit ... ok
+test memory::tests::an_unpublished_directory_releases_its_commit ... ok
+test memory::tests::failed_spare_refill_preserves_demand_retries_and_resumes_next_frame ... ok
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 419 filtered out; finished in 0.78s
