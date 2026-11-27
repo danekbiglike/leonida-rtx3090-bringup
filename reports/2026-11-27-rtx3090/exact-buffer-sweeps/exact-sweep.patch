@@ -1,0 +1,184 @@
+diff --git a/crates/victory-gpu/src/shadow.rs b/crates/victory-gpu/src/shadow.rs
+--- a/crates/victory-gpu/src/shadow.rs
++++ b/crates/victory-gpu/src/shadow.rs
+@@ -5483,10 +5483,20 @@
+     Some(shadow)
+ }
+ 
+-/// Copies of single buffer views' own bytes ([`exact`]), by (start,
+-/// bytes), each with the asking that last took it; and the askings so far.
+-#[allow(clippy::type_complexity)]
+-static EXACT: Mutex<(u64, BTreeMap<(u64, u64), (Arc<Shadow>, u64)>)> = Mutex::new((0, BTreeMap::new()));
++mod exact_sweep;
++
++struct ExactCache {
++    tick: u64,
++    /// Copies by (start, bytes), each with its last request.
++    entries: BTreeMap<(u64, u64), (Arc<Shadow>, u64)>,
++    sweep: exact_sweep::Schedule,
++}
++
++static EXACT: Mutex<ExactCache> = Mutex::new(ExactCache {
++    tick: 0,
++    entries: BTreeMap::new(),
++    sweep: exact_sweep::Schedule::new(),
++});
+ 
+ /// Since the last frame line: askings for such copies, and copies made.
+ static EXACT_STATS: [AtomicU64; 2] = [const { AtomicU64::new(0) }; 2];
+@@ -5508,10 +5518,6 @@
+ /// those not asked for lately go once there are many (ring positions
+ /// change every frame).
+ pub(crate) fn exact(address: u64, len: u64) -> Option<Arc<Shadow>> {
+-    /// Copies kept before the idle ones are looked for, and the askings an
+-    /// idle one stays for.
+-    const MANY: usize = 256;
+-    const LATELY: u64 = 512;
+     /// The largest, and no view the title made on purpose: off its dwords.
+     const MOST: u64 = 64 << 20;
+     if len == 0 || len > MOST || !address.is_multiple_of(4) {
+@@ -5519,22 +5525,23 @@
+     }
+     EXACT_STATS[0].fetch_add(1, Ordering::Relaxed);
+     let mut guard = EXACT.lock().unwrap_or_else(|e| e.into_inner());
+-    let (tick, map) = &mut *guard;
+-    *tick += 1;
++    let ExactCache { tick, entries: map, sweep } = &mut *guard;
++    *tick = tick.wrapping_add(1);
+     let now = *tick;
+     if let Some((shadow, used)) = map.get_mut(&(address, len)) {
+         *used = now;
+         shadow.used.store(crate::host::moment(), Ordering::Relaxed);
+         return Some(shadow.clone());
+     }
+-    if map.len() >= MANY {
+-        // Held by the map alone (no list), its buffer by the copy alone (no
+-        // slot shows it), and not asked for lately.
+-        map.retain(|_, (shadow, used)| {
+-            Arc::strong_count(shadow) > 1 || crate::host::references(&shadow.buffer) > 1 || *used + LATELY > now
+-        });
+-    }
+-    let (buffer, data) = host()?.shared_buffer(len.next_multiple_of(256))?;
++    let held = |shadow: &Arc<Shadow>| Arc::strong_count(shadow) > 1 || crate::host::references(&shadow.buffer) > 1;
++    sweep.prune(map, now, false, held);
++    let device = host()?;
++    let bytes = len.next_multiple_of(256);
++    let (buffer, data) = match device.shared_buffer(bytes) {
++        Some(buffer) => buffer,
++        None if sweep.prune(map, now, true, held) > 0 => device.shared_buffer(bytes)?,
++        None => return None,
++    };
+     crate::host::name(&buffer, || format!("title view {address:#x}+{len:#x}"));
+     // SAFETY: a live buffer.
+     let gpu = unsafe { buffer.GetGPUVirtualAddress() };
+@@ -5556,7 +5563,7 @@
+     if asked == 0 {
+         return;
+     }
+-    let kept = EXACT.lock().unwrap_or_else(|e| e.into_inner()).1.len();
++    let kept = EXACT.lock().unwrap_or_else(|e| e.into_inner()).entries.len();
+     tracing::info!(
+         "buffer views off their copy's elements (they were refused and read zeros; VICTORY_VIEW_BYTES=0 refuses them again): \
+          {:.1} asked for per frame, {:.1} copies of their own bytes made per frame, {kept} kept",
+diff --git a/crates/victory-gpu/src/shadow/exact_sweep.rs b/crates/victory-gpu/src/shadow/exact_sweep.rs
+new file mode 100644
+--- /dev/null
++++ b/crates/victory-gpu/src/shadow/exact_sweep.rs
+@@ -0,0 +1,97 @@
++//! Idle eviction of exact buffer views. Keep the existing 512-request lifetime.
++//! Provenance: danekbiglike/rtx3090-20261127-exact-sweep.
++
++use std::collections::BTreeMap;
++
++const MIN_ENTRIES: usize = 256;
++const RECENT: u64 = 512;
++
++pub(super) struct Schedule {
++    checked_at: u64,
++    skip_for: u64,
++}
++
++impl Schedule {
++    pub(super) const fn new() -> Self {
++        Self { checked_at: 0, skip_for: 0 }
++    }
++
++    pub(super) fn prune<K, V>(
++        &mut self,
++        map: &mut BTreeMap<K, (V, u64)>,
++        now: u64,
++        allocation_failed: bool,
++        mut held_elsewhere: impl FnMut(&V) -> bool,
++    ) -> usize
++    where
++        K: Ord,
++    {
++        if !allocation_failed && (map.len() < MIN_ENTRIES || now.wrapping_sub(self.checked_at) < self.skip_for) {
++            return 0;
++        }
++        let before = map.len();
++        let mut until_eligible = RECENT;
++        map.retain(|_, (value, used)| {
++            let age = now.wrapping_sub(*used);
++            if age < RECENT {
++                until_eligible = until_eligible.min(RECENT - age);
++                return true;
++            }
++            let held = held_elsewhere(value);
++            if held {
++                // A list or slot can drop its reference at any time.
++                until_eligible = 0;
++            }
++            held
++        });
++        // Any later insertion or hit is newer than every entry inspected here.
++        self.checked_at = now;
++        self.skip_for = until_eligible;
++        before - map.len()
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    #[test]
++    fn recent_entries_keep_their_full_lifetime_without_an_owner_probe() {
++        let mut map: BTreeMap<_, _> = (0..256).map(|i| (i, ((), i))).collect();
++        let mut schedule = Schedule::new();
++        let never = |_: &()| panic!("a recent buffer was probed");
++        assert_eq!(schedule.prune(&mut map, 256, false, never), 0);
++        assert_eq!(schedule.skip_for, 256);
++        assert_eq!(schedule.prune(&mut map, 511, false, never), 0);
++        assert_eq!(schedule.prune(&mut map, 512, false, |_| false), 1);
++        assert!(!map.contains_key(&0));
++    }
++
++    #[test]
++    fn an_old_held_resource_is_checked_again_on_the_next_miss() {
++        let mut map: BTreeMap<_, _> = (0..256).map(|i| (i, (i, 900))).collect();
++        map.insert(0, (0, 0));
++        let mut schedule = Schedule::new();
++        let mut probed = vec![];
++        assert_eq!(schedule.prune(&mut map, 1000, false, |i| { probed.push(*i); true }), 0);
++        assert_eq!(schedule.prune(&mut map, 1001, false, |i| { probed.push(*i); false }), 1);
++        assert_eq!(probed, [0, 0]);
++    }
++
++    #[test]
++    fn allocation_failure_can_free_an_old_unheld_entry_in_a_small_cache() {
++        let mut map = BTreeMap::from([(1, (false, 0)), (2, (true, 0)), (3, (false, 511))]);
++        let mut schedule = Schedule::new();
++        assert_eq!(schedule.prune(&mut map, 512, false, |_| false), 0);
++        assert_eq!(schedule.prune(&mut map, 512, true, |held| *held), 1);
++        assert_eq!(map.keys().copied().collect::<Vec<_>>(), [2, 3]);
++    }
++
++    #[test]
++    fn the_recent_window_crosses_counter_wrap() {
++        let mut map = BTreeMap::from([(1, ((), u64::MAX - 255))]);
++        let mut schedule = Schedule::new();
++        assert_eq!(schedule.prune(&mut map, 255, true, |_| false), 0);
++        assert_eq!(schedule.prune(&mut map, 256, true, |_| false), 1);
++    }
++}

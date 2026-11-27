@@ -1,0 +1,3 @@
+report_id,model,seed_entries,old_com_owned,misses,final_entries,eager_arc_probes,patched_arc_probes,eager_com_pairs,patched_com_pairs
+danekbiglike/rtx3090-20261127-exact-sweep,recent,256,0,128,384,40896,0,40896,0
+danekbiglike/rtx3090-20261127-exact-sweep,large_pinned,4454,3942,716,4454,3189064,2823188,3189064,2823188
