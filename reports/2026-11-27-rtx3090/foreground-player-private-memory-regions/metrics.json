@@ -1,0 +1,11 @@
+{
+  "report_id": "danekbiglike/rtx3090-20261128-personal-memory",
+  "minutes": 20,
+  "boot_utc_us": 1795814808902783,
+  "peak_job_bytes": 39471652864,
+  "process_limit_bytes": 45097156608,
+  "limit_events": 0,
+  "minimum_system_commit_room_bytes": 11464892416,
+  "final_minute_fps": 2.4,
+  "final_minute_median_draws": 2849.5
+}
