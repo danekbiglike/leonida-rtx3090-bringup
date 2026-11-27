@@ -1,0 +1,156 @@
+diff --git a/crates/victory-gpu/src/draw.rs b/crates/victory-gpu/src/draw.rs
+index b6047a4..ab85961 100644
+--- a/crates/victory-gpu/src/draw.rs
++++ b/crates/victory-gpu/src/draw.rs
+@@ -562,14 +562,14 @@ pub(crate) struct State {
+     host_roots: [usize; 2],
+     host_heaps: [usize; 2],
+     host_heaps_set: bool,
+-    /// Tables made afresh in this list: (table, slot count, contents) → first
++    /// Tables made afresh in this list: (table, slot count, contents) РІвЂ вЂ™ first
+     /// dynamic slot.
+     fresh_tables: std::collections::HashMap<(u64, u32, u64), FreshTable, std::hash::BuildHasherDefault<crate::host::AddressHash>>,
+     /// The dynamic slots the list holds: title heap, host heap id, first,
+     /// count; given back when the list has run, is reset or released.
+     dynamic: Vec<(usize, u64, u32, u32)>,
+     /// Root SRVs bound as one-view tables in this list: (title heap, title
+-    /// address; 0 for none) → dynamic slot, and the host copy the slot
++    /// address; 0 for none) РІвЂ вЂ™ dynamic slot, and the host copy the slot
+     /// shows: later draws of the list bring that one up to date, whatever
+     /// copy the address would find by then (`shadow.rs` `tails`).
+     root_srv_slots: std::collections::HashMap<(usize, u64), RootSlot>,
+@@ -739,15 +739,15 @@ fn heap_spread() -> bool {
+ /// The host copy and range the buffer view of each of a heap's slots reads
+ /// ([`State::heap_buffers`]), by slot.
+ struct HeapRanges<T> {
+-    /// Index into `dense` per slot (`u32::MAX` = empty).
++    /// Index into the slot's stripe (`u32::MAX` = empty).
+     index: Vec<u32>,
+-    /// Tightly packed `(slot, (T, from, to))` for active slots only.
+-    dense: Vec<(u32, (T, u64, u64))>,
++    /// Active slots grouped by the same stripe the periodic refresh visits.
++    stripes: [Vec<(u32, (T, u64, u64))>; HEAP_ROUND as usize],
+ }
+ 
+ impl<T> Default for HeapRanges<T> {
+     fn default() -> Self {
+-        Self { index: Vec::new(), dense: Vec::new() }
++        Self { index: Vec::new(), stripes: std::array::from_fn(|_| Vec::new()) }
+     }
+ }
+ 
+@@ -774,7 +774,7 @@ impl Default for BufferSweep {
+ impl<T> HeapRanges<T> {
+     fn clear(&mut self) {
+         self.index.fill(u32::MAX);
+-        self.dense.clear();
++        for stripe in &mut self.stripes { stripe.clear(); }
+     }
+ 
+     fn remove(&mut self, slot: usize) {
+@@ -787,8 +787,9 @@ impl<T> HeapRanges<T> {
+         }
+         self.index[slot] = u32::MAX;
+         let idx = idx as usize;
+-        self.dense.swap_remove(idx);
+-        if let Some((moved_slot, _)) = self.dense.get(idx) {
++        let stripe = &mut self.stripes[slot % HEAP_ROUND as usize];
++        stripe.swap_remove(idx);
++        if let Some((moved_slot, _)) = stripe.get(idx) {
+             self.index[*moved_slot as usize] = idx as u32;
+         }
+     }
+@@ -803,27 +804,24 @@ impl<T> HeapRanges<T> {
+             self.index.resize(slot_idx + 1, u32::MAX);
+         }
+         let idx = self.index[slot_idx];
++        let stripe = &mut self.stripes[slot_idx % HEAP_ROUND as usize];
+         if idx == u32::MAX {
+-            self.index[slot_idx] = self.dense.len() as u32;
+-            self.dense.push((slot, range));
++            self.index[slot_idx] = stripe.len() as u32;
++            stripe.push((slot, range));
+         } else {
+-            self.dense[idx as usize].1 = range;
++            stripe[idx as usize].1 = range;
+         }
+     }
+ 
+-    /// Forgets the slots of one of `parts` parts
+-    /// (`HostHeap::buffer_slots_of`).
+-    fn forget_part(&mut self, part: u32, parts: u32) {
+-        let mut slot = part as usize;
+-        let step = parts as usize;
+-        while slot < self.index.len() {
+-            self.remove(slot);
+-            slot += step;
++    /// Removes only the active slots in this pass's stripe.
++    fn forget_part(&mut self, part: u32) {
++        for (slot, _) in self.stripes[part as usize].drain(..) {
++            self.index[slot as usize] = u32::MAX;
+         }
+     }
+ 
+     fn ranges(&self) -> impl Iterator<Item = &(T, u64, u64)> {
+-        self.dense.iter().map(|(_, r)| r)
++        self.stripes.iter().flatten().map(|(_, range)| range)
+     }
+ 
+     #[cfg(test)]
+@@ -836,6 +834,38 @@ impl<T> HeapRanges<T> {
+ mod heap_range_tests {
+     use super::{HEAP_ROUND, HeapRanges};
+ 
++    #[test]
++    fn stripe_updates_match_slot_contents_through_reuse() {
++        use std::collections::BTreeMap;
++        let mut expected = BTreeMap::new();
++        let mut ranges = HeapRanges::default();
++        let mut rng = 53261_u32;
++        for frame in 0..97_u32 {
++            let stripe = frame % HEAP_ROUND as u32;
++            ranges.forget_part(stripe);
++            expected.retain(|slot, _| slot % HEAP_ROUND as u32 != stripe);
++            for _ in 0..256 {
++                rng = rng.wrapping_mul(1664525).wrapping_add(1013904223);
++                let slot = ((rng >> 12) % 4096) * 17;
++                if rng & 3 == 0 {
++                    ranges.set(slot, None);
++                    expected.remove(&slot);
++                } else {
++                    let span = (slot, u64::from(frame), u64::from(rng));
++                    ranges.set(slot, Some(span));
++                    expected.insert(slot, span);
++                }
++            }
++            let actual: BTreeMap<_, _> = ranges.ranges().copied().map(|span| (span.0, span)).collect();
++            assert_eq!(actual, expected);
++            assert_eq!(ranges.ranges().count(), expected.len());
++            if frame == 48 {
++                ranges.clear();
++                expected.clear();
++            }
++        }
++    }
++
+     /// Round by round every slot is looked at again once, whatever was
+     /// written between, and what a slot holds is what was found last.
+     #[test]
+@@ -850,7 +880,7 @@ mod heap_range_tests {
+         let parts = HEAP_ROUND as u32;
+         for pass in 1..=HEAP_ROUND {
+             let part = (pass % HEAP_ROUND) as u32;
+-            ranges.forget_part(part, parts);
++            ranges.forget_part(part);
+             for slot in (0..SLOTS).step_by(3).filter(|slot| slot % parts == part) {
+                 assert!(ranges.is_none(slot), "slot {slot} not forgotten");
+                 ranges.set(slot, Some(((), pass, pass)));
+@@ -1255,7 +1285,7 @@ fn heap_buffer_pass(heap: &crate::descriptor::Heap, host: &crate::descriptor::ho
+     } else if heap_spread() {
+         // The written ones, and this pass's part of the others.
+         let (part, parts) = ((*passes % HEAP_ROUND) as u32, HEAP_ROUND as u32);
+-        ranges.forget_part(part, parts);
++        ranges.forget_part(part);
+         let mut slots = host.buffer_slots_of(part, parts);
+         slots.extend(changed);
+         slots
