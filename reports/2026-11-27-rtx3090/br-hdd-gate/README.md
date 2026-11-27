@@ -12,7 +12,7 @@ The 95th-percentile present interval was 134.71 ms, the 99th percentile was 190.
 
 ![Captured game window during the first minute and after the timed input ended](gate-sample.png)
 
-The captures were saved about 52 seconds after input started and 24 seconds after it ended. The Series X profile kept its original game settings and the BVH builder enabled. Several materials remained dark, and the walls showed rectangular lighting artifacts. Some graphics pipelines were still being compiled or omitted during initial loading. These captures do not establish visual parity with the previous build.
+The captures were saved about 52 seconds after input started and 24 seconds after it ended. The Series X profile kept its original game settings and the BVH builder enabled. Several materials remained dark, and the walls showed rectangular lighting artifacts. During timed input, 23 performance reports recorded **418–471 omitted draw calls per frame** because a host graphics pipeline was unavailable. Between 836 and 1,060 pipelines were still being built. The rendered workload was incomplete. [Pipeline observations](pipelines.csv)
 
 ## Memory and disk activity
 
