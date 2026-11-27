@@ -1,0 +1,29 @@
+{
+  "report_id": "danekbiglike/rtx3090-20261127-br-hdd-gate",
+  "console": "series-x",
+  "environment": {
+    "VICTORY_THIN": "1",
+    "VICTORY_THIN_THREADS": "8",
+    "VICTORY_THIN_BAKE": "2",
+    "VICTORY_RELAY": "2",
+    "VICTORY_RELAY_COPY": "1",
+    "VICTORY_ASYNC_SUBMIT": "1",
+    "VICTORY_PORT_CONSTANTS": "0",
+    "VICTORY_CARD_COMPARE_EVERY": "0",
+    "VICTORY_PORT_GUARD": "1",
+    "VICTORY_PORT_JOURNAL": "1",
+    "VICTORY_CARD_TOUCHED": "1",
+    "VICTORY_CARD_REHASH_RUNS": "1",
+    "VICTORY_JOIN_COPIES": "1",
+    "VICTORY_JOIN_PARTS": "8",
+    "VICTORY_INDIRECT_WINDOW": "1",
+    "VICTORY_CARD_BUFFERS_MIN_KB": "64",
+    "VICTORY_CARD_BUFFERS_MB": "1280",
+    "VICTORY_CARD_WINDOWS_MB": "2048",
+    "VICTORY_BVH_BUILDER": "1",
+    "VICTORY_SKIP_PIPELINES": "none",
+    "VICTORY_PIPELINE_BOOK": "1",
+    "VICTORY_TITLE_PRIORITIES": "0",
+    "VICTORY_LOG": "warn,victory_gpu::host=info,victory_gpu::list::thin=info"
+  }
+}

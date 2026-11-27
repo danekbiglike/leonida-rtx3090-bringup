@@ -1,0 +1,10 @@
+report_id,phase_s,role,observed_start_s,observed_end_s,samples,physical_read_mib_s,physical_write_mib_s,system_hard_fault_read_mib_s,system_available_mib_min
+danekbiglike/rtx3090-20261127-br-hdd-gate,0-60,game_hdd,0.897,57.582,12,16.69,0.0,24.33,1006
+danekbiglike/rtx3090-20261127-br-hdd-gate,0-60,game_ssd,0.897,57.582,12,0.06,15.55,24.33,1006
+danekbiglike/rtx3090-20261127-br-hdd-gate,0-60,paging_hdd,0.897,57.582,12,3.59,0.05,24.33,1006
+danekbiglike/rtx3090-20261127-br-hdd-gate,60-120,game_hdd,57.582,118.656,13,9.1,0.0,22.42,2618
+danekbiglike/rtx3090-20261127-br-hdd-gate,60-120,game_ssd,57.582,118.656,13,0.0,8.24,22.42,2618
+danekbiglike/rtx3090-20261127-br-hdd-gate,60-120,paging_hdd,57.582,118.656,13,3.42,0.11,22.42,2618
+danekbiglike/rtx3090-20261127-br-hdd-gate,0-120,game_hdd,0.897,118.656,24,12.75,0.0,23.34,1006
+danekbiglike/rtx3090-20261127-br-hdd-gate,0-120,game_ssd,0.897,118.656,24,0.03,11.76,23.34,1006
+danekbiglike/rtx3090-20261127-br-hdd-gate,0-120,paging_hdd,0.897,118.656,24,3.5,0.08,23.34,1006

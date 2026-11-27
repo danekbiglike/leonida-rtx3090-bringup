@@ -1,0 +1,84 @@
+diff --git a/crates/victory-gpu/src/host.rs b/crates/victory-gpu/src/host.rs
+index f9a3d36..77431ef 100644
+--- a/crates/victory-gpu/src/host.rs
++++ b/crates/victory-gpu/src/host.rs
+@@ -10036,6 +10036,7 @@ struct Presenter {
+ /// every few seconds.
+ struct Meter {
+     since: std::time::Instant,
++    present_log: Option<(std::io::BufWriter<std::fs::File>, std::time::Instant, u64)>,
+     frames: u32,
+     #[cfg(feature = "diagnostics")]
+     copy_stats_frames: u64,
+@@ -10050,6 +10051,12 @@ impl Meter {
+         let now = std::time::Instant::now();
+         Meter {
+             since: now,
++            present_log: std::env::var_os("VICTORY_FRAME_CSV").and_then(|path| {
++                use std::io::Write;
++                let mut out = std::io::BufWriter::new(std::fs::File::create_new(path).ok()?);
++                writeln!(out, "present_interval_us,draw_calls,utc_us").ok()?;
++                Some((out, now, crate::draw::drawn()))
++            }),
+             frames: 0,
+             #[cfg(feature = "diagnostics")]
+             copy_stats_frames: 0,
+@@ -10067,6 +10074,19 @@ impl Meter {
+ 
+     /// Counts a presented frame.
+     fn frame(&mut self, hwnd: HWND) {
++        if let Some((out, last, previous_draws)) = &mut self.present_log {
++            use std::io::Write;
++            let now = std::time::Instant::now();
++            let interval = now.duration_since(*last).as_micros();
++            let draws = crate::draw::drawn();
++            let utc = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_micros();
++            let written = writeln!(out, "{interval},{},{utc}", draws.saturating_sub(*previous_draws));
++            *last = now;
++            *previous_draws = draws;
++            if written.is_err() || (self.since.elapsed().as_secs() >= 1 && out.flush().is_err()) {
++                self.present_log = None;
++            }
++        }
+         #[cfg(feature = "diagnostics")]
+         tracing::debug!(target: "victory_gpu::frame", token = crate::frame::current(), "present");
+         #[cfg(feature = "diagnostics")]
+diff --git a/crates/victory-hle/src/modules/gameinput.rs b/crates/victory-hle/src/modules/gameinput.rs
+index ef38e43..f112f03 100644
+--- a/crates/victory-hle/src/modules/gameinput.rs
++++ b/crates/victory-hle/src/modules/gameinput.rs
+@@ -1220,6 +1220,9 @@ mod host {
+             let mut down = scripted();
+             #[cfg(not(feature = "diagnostics"))]
+             let mut down = Vec::new();
++            if escort_walk_down() && !down.contains(&b'W') {
++                down.push(b'W');
++            }
+             for vk in from_file() {
+                 if !down.contains(&vk) {
+                     down.push(vk);
+@@ -1299,6 +1302,24 @@ mod host {
+             .collect()
+     }
+ 
++    // Replay the same two-minute key sequence used in the RTX 3090 escort benchmark.
++    fn escort_walk_down() -> bool {
++        use std::time::{SystemTime, UNIX_EPOCH};
++        static PATH: LazyLock<Option<std::path::PathBuf>> =
++            LazyLock::new(|| std::env::var_os("VICTORY_ESCORT_MARK").map(Into::into));
++        let Some(path) = PATH.as_ref() else { return false };
++        static TIMING: Mutex<(Option<Instant>, Option<u64>)> = Mutex::new((None, None));
++        let mut timing = TIMING.lock().unwrap_or_else(PoisonError::into_inner);
++        if timing.1.is_none() && timing.0.is_none_or(|t| t.elapsed() >= Duration::from_millis(250)) {
++            timing.0 = Some(Instant::now());
++            timing.1 = std::fs::read_to_string(path).ok().and_then(|v| v.trim().parse().ok());
++        }
++        let Some(start) = timing.1 else { return false };
++        let Ok(now) = SystemTime::now().duration_since(UNIX_EPOCH) else { return false };
++        let Some(t) = (now.as_millis() as u64).checked_sub(start) else { return false };
++        t < 120_000 && t % 550 < 350
++    }
++
+     /// A key named ([`key_code`]) in the file `VICTORY_KEYS_FILE` names is
+     /// held for 0.2 s, with or without focus, and the file is removed: a
+     /// tool that drives the title's menus (its terms, its account screen)
