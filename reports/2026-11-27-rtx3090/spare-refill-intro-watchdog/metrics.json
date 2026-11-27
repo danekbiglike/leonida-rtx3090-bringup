@@ -1,0 +1,13 @@
+{
+  "report_id": "danekbiglike/rtx3090-20261128-spare-startup",
+  "renderer_sha256": "db373f4354c854f33965c3802b6908a29c9100e597f057fc066f1459420ef664",
+  "seconds_to_last_present": 331.944,
+  "presents": 6164,
+  "seconds_without_present_at_last_memory_sample": 12.378,
+  "peak_job_bytes": 29725433856,
+  "limit_bytes": 45097156608,
+  "limit_events": 0,
+  "first_spare_failure_messages": 0,
+  "unhandled_exception": "0xc0000005",
+  "title_offset": "0x23cf683"
+}
