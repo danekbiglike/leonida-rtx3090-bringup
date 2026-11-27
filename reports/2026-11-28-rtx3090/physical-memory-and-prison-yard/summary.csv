@@ -1,0 +1,4 @@
+profile,renderer_sha256,seconds,min_available_bytes,peak_private_bytes,peak_working_set_bytes,min_system_commit_headroom_bytes,exit
+stable-tuned,18db49a1c8e09e6a33296457d550dea2e797a73f35db9eaa4d7c4c03f74b3e27,182.11,2228293632,28571758592,21652205568,23310987264,physical memory below 3 GiB for eight samples
+stable-slots,c694ddbc85675b1ef5e7c6cc43d43e37a62818d84d80eaa1096b4ac5a4488fec,586.391,3519115264,33531666432,17104343040,18842619904,guest watchdog
+nvidia-paired,8e1bd880ce89228f6a05f8baaa0b15ecd772c64299f58e7b9293077b57f7c0b3,171.109,6105907200,24975458304,17680486400,26983071744,guest watchdog
