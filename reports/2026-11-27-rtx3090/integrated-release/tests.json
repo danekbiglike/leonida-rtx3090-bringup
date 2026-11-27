@@ -1,0 +1,64 @@
+{
+  "report_id": "danekbiglike/rtx3090-20261127-integrated-release",
+  "target": "x86_64-pc-windows-msvc",
+  "crate": "victory-gpu",
+  "profile": "release",
+  "features": [
+    "diagnostics"
+  ],
+  "test_crate_overrides": {
+    "debug": 0,
+    "opt-level": 0
+  },
+  "adapter": "D3D12 WARP",
+  "groups": [
+    {
+      "filter": "shadow::merge_tests::relay_merge_dispatch_matches_the_scalar_for_unequal_lengths",
+      "merge_avx2": "0",
+      "passed": 1,
+      "failed": 0
+    },
+    {
+      "filter": "shadow::merge_tests::relay_merge_dispatch_matches_the_scalar_for_unequal_lengths",
+      "merge_avx2": "1",
+      "passed": 1,
+      "failed": 0
+    },
+    {
+      "filter": "shadow::merge_tests::avx2_merge_preserves_cpu_writes_and_updates_the_reference",
+      "merge_avx2": "1",
+      "passed": 1,
+      "failed": 0
+    },
+    {
+      "filter": "shadow::relay_tests::",
+      "merge_avx2": "1",
+      "passed": 5,
+      "failed": 0
+    },
+    {
+      "filter": "shadow::exact_sweep::tests::",
+      "merge_avx2": "1",
+      "passed": 4,
+      "failed": 0
+    },
+    {
+      "filter": "placed_filler::tests::",
+      "merge_avx2": "1",
+      "passed": 2,
+      "failed": 0
+    },
+    {
+      "filter": "memory::tests::",
+      "merge_avx2": "1",
+      "passed": 3,
+      "failed": 0
+    },
+    {
+      "filter": "descriptor::host::tests::",
+      "merge_avx2": "1",
+      "passed": 38,
+      "failed": 0
+    }
+  ]
+}

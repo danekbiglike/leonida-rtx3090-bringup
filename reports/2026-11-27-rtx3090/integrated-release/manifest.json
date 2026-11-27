@@ -1,0 +1,103 @@
+{
+  "report_id": "danekbiglike/rtx3090-20261127-integrated-release",
+  "upstream": "https://github.com/edsuuu/VI-BR-PORT/tree/2954325320735fa8b56a15e7f3e9654965e3462e",
+  "patches_in_apply_order": [
+    {
+      "file": "escort-meter-input.patch",
+      "sha256": "32918673dea574ebcd3abdb67a5e5268e3dbaa8210d175e62c98395251c69e93",
+      "source": "https://github.com/danekbiglike/leonida-rtx3090-bringup/blob/177d772bf5ef96145f416c0e07075f84e560117f/reports/2026-11-27-rtx3090/br-hdd-gate/escort-meter-input.patch"
+    },
+    {
+      "file": "escort-split-game-dir.patch",
+      "sha256": "2d329689fd89e0c99c6cf2fd07e4d02849c474c0a0cc18e2675feaecf0ac4b7d",
+      "source": "https://github.com/danekbiglike/leonida-rtx3090-bringup/blob/177d772bf5ef96145f416c0e07075f84e560117f/reports/2026-11-27-rtx3090/br-hdd-gate/escort-split-game-dir.patch"
+    },
+    {
+      "file": "placed-filler-stats.patch",
+      "sha256": "57c345bbc893ba896d551235235c9afaba33ed6f40f5e3628cf44ada55af5b0f",
+      "source": "https://github.com/danekbiglike/leonida-rtx3090-bringup/blob/177d772bf5ef96145f416c0e07075f84e560117f/reports/2026-11-27-rtx3090/placed-texture-history/placed-filler-stats.patch"
+    },
+    {
+      "file": "vi-br-relay-avx2.patch",
+      "sha256": "96a6ef29684510233909d6a49a4a899a765fe924147181f14fa0f33e6a7734e8",
+      "source": "https://github.com/danekbiglike/leonida-rtx3090-bringup/blob/177d772bf5ef96145f416c0e07075f84e560117f/reports/2026-11-27-rtx3090/relay-merge-vi-br/vi-br-relay-avx2.patch"
+    },
+    {
+      "file": "exact-sweep.patch",
+      "sha256": "06ee21b133e810c4bc495f213c193663150d1a21492f3121a1e743b5c6475dc0",
+      "source": "https://github.com/danekbiglike/leonida-rtx3090-bringup/blob/177d772bf5ef96145f416c0e07075f84e560117f/reports/2026-11-27-rtx3090/exact-buffer-sweeps/exact-sweep.patch"
+    },
+    {
+      "file": "heap-directory-owner.patch",
+      "sha256": "adc32fd7a78daf4799a0887cf9effbad13d0321b7324860562740b787d1a7715",
+      "source": "https://github.com/danekbiglike/leonida-rtx3090-bringup/blob/177d772bf5ef96145f416c0e07075f84e560117f/reports/2026-11-27-rtx3090/heap-directory-owner/heap-directory-owner.patch"
+    }
+  ],
+  "modified_source_sha256": {
+    "apps/victory/src/run.rs": "f952b1d72feb14d0fb56f3dc93e8baec4ddf8e5dbfd38603efb3eb8fce392de0",
+    "crates/victory-gpu/src/copystat.rs": "86a89dd98584ff35145c3578d59a603ea2fa0550ffb336e59be783b9752c69ca",
+    "crates/victory-gpu/src/descriptor/host.rs": "2f0782f59257cd626d6e0a79103861c3778b0b98975b73a835e3e361ad83ac76",
+    "crates/victory-gpu/src/host.rs": "836d32840f8717e498facbe8629765775e2a62697f8c0d1ca3232f0684780040",
+    "crates/victory-gpu/src/lib.rs": "a136d9206e836f307ae4441f2ee2ac2af438de54c907d6f02ab4e6d6f7dc68b3",
+    "crates/victory-gpu/src/memory.rs": "8404891f0369bd52af201fe05fbb87bef6b7734b396e59f00092400bc0d4cb6e",
+    "crates/victory-gpu/src/placed_filler.rs": "a8ea741086b5bf0dd099dc320e58b2e89561e65933c05f2bdf127e6f71590f6a",
+    "crates/victory-gpu/src/resource.rs": "30eed65c2db96c97995d6f384a5f5fade339337c781ee320dcafc08751977d8b",
+    "crates/victory-gpu/src/shadow.rs": "9abdd051efcd3ba39b9674a0d7d8c5804f2e1267f4a7e2e02ee77029bfb9bb0e",
+    "crates/victory-gpu/src/shadow/exact_sweep.rs": "ff10dcc80d7b2aa9937eda81817b9280cb5f6a88d6cc271016d1b1f60ce76f3a",
+    "crates/victory-hle/src/modules/gameinput.rs": "84aca5b6581cc5b3702f44cd5787a832237e6731ae32f7dea9bac7ce0fdae190"
+  },
+  "build": {
+    "toolchain": "rustc 1.98.1 (48a229cea 2026-09-01), x86_64-pc-windows-msvc",
+    "command": "cargo build --release --locked --offline -p victory --bin victory -j 2",
+    "cargo_features": [],
+    "rustflags": [],
+    "cargo_lock_sha256": "5678486bb03416bff8b4216843a09b17e9688942e4943f238f85bfa364150599",
+    "executable": {
+      "file": "victory.exe",
+      "sha256": "992f77220e422073b470ce1d21c5b3277d764cb0eafd4af70a407f7bbcc07f0f",
+      "bytes": 12061184,
+      "machine": "AMD64"
+    },
+    "companion": {
+      "file": "dxil.dll",
+      "sha256": "fda4dde92222ddb8564c3173ce48faa56f7e1c7b46b0b67dada1182ee07a4123"
+    }
+  },
+  "planned_run": {
+    "console": "series-x",
+    "environment_common": {
+      "VICTORY_THIN": "1",
+      "VICTORY_THIN_THREADS": "8",
+      "VICTORY_THIN_BAKE": "2",
+      "VICTORY_RELAY": "2",
+      "VICTORY_RELAY_COPY": "1",
+      "VICTORY_ASYNC_SUBMIT": "1",
+      "VICTORY_PORT_CONSTANTS": "0",
+      "VICTORY_CARD_COMPARE_EVERY": "0",
+      "VICTORY_PORT_GUARD": "1",
+      "VICTORY_PORT_JOURNAL": "1",
+      "VICTORY_CARD_TOUCHED": "1",
+      "VICTORY_CARD_REHASH_RUNS": "1",
+      "VICTORY_JOIN_COPIES": "1",
+      "VICTORY_JOIN_PARTS": "8",
+      "VICTORY_INDIRECT_WINDOW": "1",
+      "VICTORY_CARD_BUFFERS_MIN_KB": "64",
+      "VICTORY_CARD_BUFFERS_MB": "1280",
+      "VICTORY_CARD_WINDOWS_MB": "2048",
+      "VICTORY_BVH_BUILDER": "1",
+      "VICTORY_SKIP_PIPELINES": "none",
+      "VICTORY_PIPELINE_BOOK": "1",
+      "VICTORY_TITLE_PRIORITIES": "0",
+      "VICTORY_LOG": "warn,victory_gpu::host=info,victory_gpu::list::thin=info,victory_gpu::shadow=info",
+      "VICTORY_MERGE_AVX2": "1"
+    },
+    "only_arm_difference": {
+      "VICTORY_CARD_STEPS": [
+        "0",
+        "1"
+      ]
+    },
+    "control_profile": "https://github.com/danekbiglike/leonida-rtx3090-bringup/blob/177d772bf5ef96145f416c0e07075f84e560117f/reports/2026-11-27-rtx3090/br-hdd-gate/profile.json",
+    "control_renderer_sha256": "2f195fbc9556aafcbdf7e2408494cfb2001ac73f421053b9810af76e95af5542"
+  }
+}
