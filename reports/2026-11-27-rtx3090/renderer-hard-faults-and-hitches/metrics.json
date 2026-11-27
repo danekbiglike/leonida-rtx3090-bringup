@@ -1,0 +1,26 @@
+{
+  "report_id": "danekbiglike/rtx3090-20261127-process-hard-faults",
+  "matched_intervals": 161,
+  "at_least_half_in_long_frames": {
+    "intervals": 53,
+    "median_process_hard_faults_s": 35.02,
+    "mean_process_hard_faults_s": 288.474,
+    "median_paging_disk_read_mib_s": 0.18,
+    "mean_paging_disk_read_mib_s": 1.399,
+    "median_game_disk_read_mib_s": 5.471,
+    "mean_game_disk_read_mib_s": 17.134,
+    "median_available_physical_mib": 1439.0,
+    "mean_available_physical_mib": 1431.377
+  },
+  "no_long_frames": {
+    "intervals": 94,
+    "median_process_hard_faults_s": 4.485,
+    "mean_process_hard_faults_s": 79.929,
+    "median_paging_disk_read_mib_s": 0.13,
+    "mean_paging_disk_read_mib_s": 0.707,
+    "median_game_disk_read_mib_s": 2.095,
+    "mean_game_disk_read_mib_s": 3.248,
+    "median_available_physical_mib": 1286.5,
+    "mean_available_physical_mib": 1307.766
+  }
+}
