@@ -1,0 +1,160 @@
+diff --git a/crates/victory-gpu/src/shadow.rs b/crates/victory-gpu/src/shadow.rs
+--- a/crates/victory-gpu/src/shadow.rs
++++ b/crates/victory-gpu/src/shadow.rs
+@@ -1071,7 +1071,53 @@
+ /// later flight at this moment, and a store there, even of the value just
+ /// read, could undo that write. (The merge of a waited-for submission
+ /// stores every byte of a differing stretch back into the copy.)
++// Provenance: danekbiglike/rtx3090-20261127-relay-avx2.
+ fn merge_piece(now: &[u8], held: &mut [u8], title: &mut [u8]) -> bool {
++    let len = now.len().min(held.len()).min(title.len());
++    #[cfg(target_arch = "x86_64")]
++    if len >= 64 && merge_piece_avx2_enabled() {
++        // SAFETY: AVX2 is present and all three slices cover len bytes.
++        return unsafe { merge_avx2(&now[..len], &mut held[..len], &mut title[..len]) };
++    }
++    merge_piece_scalar(now, held, title)
++}
++
++#[cfg(target_arch = "x86_64")]
++#[target_feature(enable = "avx2")]
++unsafe fn merge_avx2(now: &[u8], held: &mut [u8], title: &mut [u8]) -> bool {
++    use std::arch::x86_64::*;
++    let end = now.len() & !31;
++    let mut changes = _mm256_setzero_si256();
++    for i in (0..end).step_by(32) {
++        // SAFETY: i + 32 is inside each slice; the load and store accept unaligned addresses.
++        unsafe {
++            let n = _mm256_loadu_si256(now.as_ptr().add(i).cast());
++            let h = _mm256_loadu_si256(held.as_ptr().add(i).cast());
++            let equal = _mm256_cmpeq_epi8(n, h);
++            if _mm256_movemask_epi8(equal) == -1 {
++                continue;
++            }
++            let t = _mm256_loadu_si256(title.as_ptr().add(i).cast());
++            let value = _mm256_blendv_epi8(n, t, equal);
++            changes = _mm256_or_si256(changes, _mm256_xor_si256(value, t));
++            _mm256_storeu_si256(title.as_mut_ptr().add(i).cast(), value);
++            _mm256_storeu_si256(held.as_mut_ptr().add(i).cast(), n);
++        }
++    }
++    let remaining_changed = merge_piece_scalar(&now[end..], &mut held[end..], &mut title[end..]);
++    remaining_changed || _mm256_testz_si256(changes, changes) == 0
++}
++
++#[cfg(target_arch = "x86_64")]
++fn merge_piece_avx2_enabled() -> bool {
++    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
++    *ENABLED.get_or_init(|| {
++        std::env::var_os("VICTORY_MERGE_AVX2").is_some_and(|value| value == "1")
++            && std::is_x86_feature_detected!("avx2")
++    })
++}
++
++fn merge_piece_scalar(now: &[u8], held: &mut [u8], title: &mut [u8]) -> bool {
+     let mut differs = 0u8;
+     for ((n, h), t) in now.iter().zip(held.iter_mut()).zip(title.iter_mut()) {
+         let wrote = if *n != *h { 0xffu8 } else { 0 };
+@@ -2322,6 +2368,102 @@
+ #[cfg(test)]
+ mod merge_tests {
+     use super::{PIECE, back_piece, changed_runs, dword_runs, put_changed, word_runs};
++
++    #[cfg(target_arch = "x86_64")]
++    #[test]
++    fn avx2_merge_preserves_cpu_writes_and_updates_the_reference() {
++        if !std::is_x86_feature_detected!("avx2") {
++            return;
++        }
++        for len in [0, 1, 31, 32, 33, 63, 64, 65, 127, 259, 4093] {
++            for stride in [1, 3, 19, 73, 128] {
++                let original: Vec<u8> = (0..len + 16).map(|i| (i * 13 + i / 7) as u8).collect();
++                let mut gpu = vec![0x7b; len + 5];
++                gpu[3..3 + len].copy_from_slice(&original[5..5 + len]);
++                for i in (0..len).step_by(stride) {
++                    gpu[3 + i] ^= 0x61;
++                }
++                for title_already_matches in [true, false] {
++                    let mut initial_title = original.clone();
++                    if title_already_matches {
++                        initial_title[1..1 + len].copy_from_slice(&gpu[3..3 + len]);
++                    }
++                    let mut held = original.clone();
++                    let mut title = initial_title.clone();
++                    let mut reference_held = original.clone();
++                    let mut reference_title = initial_title;
++                    let expected = super::merge_piece_scalar(&gpu[3..3 + len],
++                        &mut reference_held[5..5 + len], &mut reference_title[1..1 + len]);
++                    // SAFETY: CPU feature checked above, slices are equal in length.
++                    let changed = unsafe { super::merge_avx2(&gpu[3..3 + len],
++                        &mut held[5..5 + len], &mut title[1..1 + len]) };
++                    assert_eq!(changed, expected);
++                    assert_eq!(held, reference_held);
++                    assert_eq!(title, reference_title);
++                }
++            }
++        }
++    }
++
++    #[cfg(target_arch = "x86_64")]
++    #[test]
++    #[ignore = "CPU timings on 4 MiB of 16 KiB pieces"]
++    fn time_relay_merge_for_sparse_and_dense_changes() {
++        use std::hint::black_box;
++        use std::time::Instant;
++        if !std::is_x86_feature_detected!("avx2") {
++            return;
++        }
++        const LEN: usize = 4 << 20;
++        const PIECE_BYTES: usize = 16 << 10;
++        let now: Vec<u8> = (0..LEN).map(|i| (i * 71 + i / 5) as u8).collect();
++        for stride in [0, 1, 4, 16, 64, 512, 4096] {
++            let mut original = now.clone();
++            if stride > 0 {
++                for i in (0..LEN).step_by(stride) { original[i] ^= 19; }
++            }
++            let initial_title: Vec<u8> = original.iter().enumerate()
++                .map(|(i, value)| if i % 11 == 0 { value ^ 81 } else { *value }).collect();
++            let mut held = original.clone();
++            let mut title = initial_title.clone();
++            let mut timings = [Vec::new(), Vec::new()];
++            for pass in 0..17 {
++                for mode in [pass % 2, 1 - pass % 2] {
++                    held.copy_from_slice(&original);
++                    title.copy_from_slice(&initial_title);
++                    let start = Instant::now();
++                    for ((n, h), t) in now.chunks(PIECE_BYTES)
++                        .zip(held.chunks_mut(PIECE_BYTES)).zip(title.chunks_mut(PIECE_BYTES)) {
++                        let changed = if mode == 0 {
++                            super::merge_piece_scalar(black_box(n), h, t)
++                        } else {
++                            // SAFETY: CPU checked above and the three chunks have equal lengths.
++                            unsafe { super::merge_avx2(black_box(n), h, t) }
++                        };
++                        black_box(changed);
++                    }
++                    timings[mode].push(start.elapsed().as_micros());
++                    black_box((&held, &title));
++                }
++            }
++            for samples in &mut timings { samples.sort_unstable(); }
++            eprintln!("stride={stride} reference_us={} avx2_us={}", timings[0][8], timings[1][8]);
++        }
++    }
++
++    #[test]
++    fn relay_merge_dispatch_matches_the_scalar_for_unequal_lengths() {
++        let now: Vec<u8> = (0..300).map(|i| (i * 17) as u8).collect();
++        for (n, h, t) in [(73, 192, 249), (200, 31, 67), (123, 269, 58), (257, 83, 119)] {
++            let mut held = vec![3; 300];
++            let mut title = vec![7; 300];
++            let mut reference_held = held.clone();
++            let mut reference_title = title.clone();
++            let expected = super::merge_piece_scalar(&now[..n], &mut reference_held[..h], &mut reference_title[..t]);
++            let observed = super::merge_piece(&now[..n], &mut held[..h], &mut title[..t]);
++            assert_eq!((observed, held, title), (expected, reference_held, reference_title));
++        }
++    }
+ 
+     /// A piece put back takes the GPU's bytes where the copy changed and
+     /// the title's everywhere else, reads and writes title memory only from

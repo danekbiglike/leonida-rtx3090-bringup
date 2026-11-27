@@ -1,0 +1,3 @@
+report_id,worker,wait_reports,median_title_read_wait_ms,median_copy_waits_per_frame,median_fill_waits_per_frame,copyback_reports,median_copyback_ms,median_copyback_mb,median_copy_commands,median_joinable_copies,fill_checks_delta,changed_fills_delta,copy_checks_delta,changed_copy_sources_delta,changed_copy_destinations_delta,source_sha256
+danekbiglike/rtx3090-20261127-relay-avx2,off,103,105.1,1.2,1.0,21,89.4,93.1,26.0,0.0,308,0,504,330,0,781eaa4d8b44791febabe8d21522654db1ad2701a5a73bdd64203760de69da2e
+danekbiglike/rtx3090-20261127-relay-avx2,on,105,84.1,1.0,1.0,21,80.9,94.1,26.0,0.0,404,0,457,320,0,23bf27ea023cd567f8924e4ee131f803d5328b8e2e4a09d4fe08e52c04e8f514
