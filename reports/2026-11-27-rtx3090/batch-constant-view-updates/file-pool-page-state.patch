@@ -1,0 +1,20 @@
+diff --git a/crates/victory-hle/src/modules/xmem.rs b/crates/victory-hle/src/modules/xmem.rs
+--- a/crates/victory-hle/src/modules/xmem.rs
++++ b/crates/victory-hle/src/modules/xmem.rs
+@@ -708,12 +708,15 @@
+     // For the GPU side's in-place census: only a committed section can be
+     // opened as a host heap.
+     victory_gpu::title_memory_section(handle as usize, size as u64, backing.is_none() && on_wine());
++    // File-backed pages already have storage. Keep the optional low-address
++    // page rearranger from treating a slice with existing data as unused.
++    let initial_commit = if backing.is_some() { u64::MAX } else { 0 };
+     let section = Arc::new(Section {
+         handle,
+         backing,
+         pages: n,
+         window: std::sync::OnceLock::new(),
+-        committed: (0..n.div_ceil(64)).map(|_| std::sync::atomic::AtomicU64::new(0)).collect(),
++        committed: (0..n.div_ceil(64)).map(|_| AtomicU64::new(initial_commit)).collect(),
+     });
+     let mut table = page_table_mut();
+     let first = table.next_page;

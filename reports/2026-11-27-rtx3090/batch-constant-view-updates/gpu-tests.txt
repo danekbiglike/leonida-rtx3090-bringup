@@ -1,0 +1,24 @@
+running 9 tests
+test host::card_steps::tests::a_copy_behind_a_flight_reads_what_the_flight_wrote ... ignored, wants VICTORY_RELAY=2 VICTORY_CARD_STEPS=2 and a process of its own
+test host::card_steps::tests::a_refresh_of_another_host_copy_is_seen ... ok
+test host::card_steps::tests::copies_at_their_place_stand_in_the_way_of_what_is_behind_them ... ok
+test host::card_steps::tests::levels_do_what_the_order_does ... ok
+test host::card_steps::tests::steps_apart_from_one_another_are_taken ... ok
+test host::card_steps::tests::steps_in_the_way_are_refused ... ok
+test host::card_steps::tests::steps_that_depend_on_one_another_are_taken_in_order ... ok
+test host::card_steps::tests::the_card_copies_what_is_recorded ... ok
+test host::card_steps::tests::what_no_host_copy_holds_is_refused ... ok
+
+test result: ok. 8 passed; 0 failed; 1 ignored; 0 measured; 415 filtered out; finished in 0.35s
+
+
+running 1 test
+test host::card_steps::tests::a_copy_behind_a_flight_reads_what_the_flight_wrote ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 423 filtered out; finished in 0.63s
+
+
+running 1 test
+test descriptor::host::tests::an_oversized_constant_buffer_view_leaves_the_device_alive ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 423 filtered out; finished in 0.35s

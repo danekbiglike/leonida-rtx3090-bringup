@@ -1,0 +1,118 @@
+diff --git a/crates/victory-gpu/src/host/card_steps.rs b/crates/victory-gpu/src/host/card_steps.rs
+--- a/crates/victory-gpu/src/host/card_steps.rs
++++ b/crates/victory-gpu/src/host/card_steps.rs
+@@ -838,15 +838,19 @@
+         // several threads, a slot always on the same one, in the steps'
+         // order.)
+         let parts = if ops.len() < 256 { 1 } else { 8 };
++        let mut slots: [Vec<crate::descriptor::ConstantSlot>; 8] = std::array::from_fn(|_| Vec::new());
++        for op in &ops {
++            if let To::Slot(heap, index) = &op.to {
++                slots[*index as usize / 4 % parts].push(crate::descriptor::ConstantSlot {
++                    heap: *heap,
++                    index: *index,
++                    offset: op.at,
++                    size: op.len as u32,
++                });
++            }
++        }
+         crate::land::each_under(parts, &|part| {
+-            for op in &ops {
+-                if let To::Slot(heap, index) = &op.to
+-                    && *index as usize / 4 % parts == part
+-                {
+-                    // (A heap that is gone: nothing can read the slot.)
+-                    crate::descriptor::constant_slot(*heap, *index, &own.between, gpu + op.at, op.len as u32);
+-                }
+-            }
++            crate::descriptor::constant_slots(&own.between, gpu, &slots[part]);
+         });
+         let copies = ops.iter().filter(|op| matches!(op.to, To::Copy(..))).count();
+         DONE[0].fetch_add((ops.len() - copies) as u64, Ordering::Relaxed);
+diff --git a/crates/victory-gpu/src/descriptor.rs b/crates/victory-gpu/src/descriptor.rs
+--- a/crates/victory-gpu/src/descriptor.rs
++++ b/crates/victory-gpu/src/descriptor.rs
+@@ -712,23 +712,33 @@
+     Some(f(host))
+ }
+ 
+-/// Makes dynamic slot `index` of the host heap behind the title heap at
+-/// `heap`, if that heap still exists, the constant buffer view of `size`
+-/// bytes of `buffer` at `gpu`.
+-#[cfg(windows)]
+-pub(crate) fn constant_slot(
+-    heap: usize,
+-    index: u32,
++/// One constant view into the intermediate buffer of a submission.
++#[cfg(windows)]
++pub(crate) struct ConstantSlot {
++    pub heap: usize,
++    pub index: u32,
++    pub offset: u64,
++    pub size: u32,
++}
++
++/// Keep heap registrations live while writing an ordered group of views.
++/// Release the registry between chunks so heap destruction can make progress.
++#[cfg(windows)]
++pub(crate) fn constant_slots(
+     buffer: &windows::Win32::Graphics::Direct3D12::ID3D12Resource,
+-    gpu: u64,
+-    size: u32,
++    gpu_base: u64,
++    slots: &[ConstantSlot],
+ ) {
+-    let heaps = SHADER_HEAPS.read().unwrap_or_else(|e| e.into_inner());
+-    if heaps.iter().any(|&(_, _, h)| h == heap)
+-        // SAFETY: registered heaps are live (removed when dropped).
+-        && let Some(Some(host)) = unsafe { &*(heap as *const Heap) }.host.get()
+-    {
+-        host.constant_at(index, buffer, gpu, size);
++    for chunk in slots.chunks(64) {
++        for group in chunk.chunk_by(|a, b| a.heap == b.heap) {
++            with_heap(group[0].heap, |heap| {
++                if let Some(Some(host)) = heap.host.get() {
++                    for slot in group {
++                        host.constant_at_offset(slot.index, buffer, gpu_base + slot.offset, slot.size, Some(slot.offset));
++                    }
++                }
++            });
++        }
+     }
+ }
+ 
+diff --git a/crates/victory-gpu/src/descriptor/host.rs b/crates/victory-gpu/src/descriptor/host.rs
+--- a/crates/victory-gpu/src/descriptor/host.rs
++++ b/crates/victory-gpu/src/descriptor/host.rs
+@@ -3122,6 +3122,11 @@
+     /// lost the device to a page fault in the memory of three freed ones.
+     /// `VICTORY_SLOT_HOLDS=0`: only the list holds it, as before.
+     pub(crate) fn constant_at(&self, index: u32, buffer: &ID3D12Resource, gpu: u64, size: u32) {
++        self.constant_at_offset(index, buffer, gpu, size, None);
++    }
++
++    /// A batched caller already knows the offset of this view from the resource base.
++    pub(crate) fn constant_at_offset(&self, index: u32, buffer: &ID3D12Resource, gpu: u64, size: u32, offset: Option<u64>) {
+         static HOLDS: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+         let holds = *HOLDS.get_or_init(|| std::env::var_os("VICTORY_SLOT_HOLDS").is_none_or(|v| v != "0"));
+         let Some(host) = host() else { return };
+@@ -3139,7 +3144,7 @@
+         let twin = self.twin(index).filter(|_| desc.SizeInBytes > 0);
+         if let Some(twin) = twin {
+             // SAFETY: a live buffer that holds the range.
+-            let first = (gpu - unsafe { buffer.GetGPUVirtualAddress() }) / 4;
++            let first = offset.unwrap_or_else(|| gpu - unsafe { buffer.GetGPUVirtualAddress() }) / 4;
+             let raw = D3D12_SHADER_RESOURCE_VIEW_DESC {
+                 Format: DXGI_FORMAT_R32_TYPELESS,
+                 ViewDimension: D3D12_SRV_DIMENSION_BUFFER,
+@@ -5603,7 +5608,9 @@
+             assert!(alive(), "a view of {size} bytes");
+         }
+         // SAFETY: a live upload buffer.
+-        heap.constant_at(1, &buffer, unsafe { buffer.GetGPUVirtualAddress() }, 969_472);
++        let base = unsafe { buffer.GetGPUVirtualAddress() };
++        heap.constant_at(1, &buffer, base, 969_472);
++        heap.constant_at_offset(2, &buffer, base + 512, 480, Some(512));
+         assert!(alive(), "a view of the list's own memory");
+         assert_eq!(constant_bytes(480), 512);
+         assert_eq!(constant_bytes(64 << 10), 64 << 10);
