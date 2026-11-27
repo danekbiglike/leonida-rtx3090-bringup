@@ -1,0 +1,9 @@
+# Replay the 4K escort with the same renderer and a route-trained D3D12 library
+
+The only intentional change to the starting renderer cache was host-pipelines.bin, captured after this same Zen 2 executable had run the escort. The initial 25,765-file cache manifest matched the standard input by relative path and size before substituting that file. The replacement was 500,138,978 bytes. Input SHA-256 hashes are in cache-input.json. The shader inputs, cloned save, Series X 3840 × 2160 graphics settings, controller replay and SSD-backed page pool were the same. Both runs started at the open cell door and reached the common area. Their paths and streaming transitions differ slightly, as the contact sheets show.
+
+In the first run, 22 sampled reports contained 736 to 960 pending host pipelines, median 906. With the route-trained library the range fell to 0–1, median zero. The replay produced 1,066 frames in 120 seconds, 8.88 FPS versus 8.77. The worst five-second interval fell from 0.8 FPS to 0.2 FPS, and the longest present interval increased from 3.613 to 5.101 seconds. The two minutes averaged 7.58 and 10.18 FPS. No five-second interval reached 25 FPS. The median GPU clock was 780 MHz in each run. No external compiler was running in either timed interval. A compiler and file staging were active during preparation before the second replay.
+
+Median sample times were 62.0 ms of preparation, 17.1 ms of buffer copies and 0.6 ms of texture preparation per frame. The separate GPU copy-back worker recorded 42.5 ms. Near-eliminating the reported backlog did not solve the multi-second stalls on this route. The queue figures cannot exclude driver-side work or other sources of delay.
+
+Measured by danekbiglike with ChatGPT on 27 November 2026. Source and replay provenance danekbiglike/rtx3090-20261127-ssd-hot4k. Executable SHA-256 2b6bd0b92f20d0c56799fbade510908077eaff5fdc0fd00b2997ccf161d70e40.
