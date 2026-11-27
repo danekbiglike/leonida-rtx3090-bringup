@@ -1,0 +1,5 @@
+# Ten hours of frame output on the RTX 3090
+
+The worker-off control from the [previous paired prison escort](../2026-11-26-rtx3090/texture-worker-escort/README.md) kept presenting frames after the measured walk ended. Its first ten hours contained 121,595 completed presents. During hour ten it averaged 3.19 FPS, with a median of 6,155 draw calls per frame. There is no synchronized route or input record for the overnight portion. The controlled worker-on escort measured 3.72 FPS over two minutes.
+
+[Hourly counts and timings](control-session-ten-hours.csv) start with the first captured present at 2026-11-26 18:18:00 UTC. The last full hour ends at 2026-11-27 04:18:00 UTC. Frame counts use half-open 3,600-second wall-clock intervals. The first bin includes startup. Peak sampled private memory across the first ten hours of process uptime was 35.86 GiB. The memory columns use the launcher's separate uptime clock, which starts before the first present. The host was a Ryzen 7 3700X with an RTX 3090, running the Series X graphics profile.
