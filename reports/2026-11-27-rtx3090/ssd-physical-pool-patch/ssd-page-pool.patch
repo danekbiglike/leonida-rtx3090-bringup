@@ -1,0 +1,238 @@
+diff --git a/crates/victory-hle/src/modules/xmem.rs b/crates/victory-hle/src/modules/xmem.rs
+--- a/crates/victory-hle/src/modules/xmem.rs
++++ b/crates/victory-hle/src/modules/xmem.rs
+@@ -31,6 +31,7 @@
+ use windows_sys::core::BOOL;
+ 
+ use crate::{HleModule, hle_export};
++mod ssd_pool;
+ 
+ const MIB: usize = 1 << 20;
+ 
+@@ -403,6 +404,7 @@
+ 
+ struct Section {
+     handle: HANDLE,
++    backing: Option<ssd_pool::Backing>,
+     pages: usize,
+     /// A view of the whole section, kept ([`Section::window`]); 0 if the
+     /// host gave none.
+@@ -437,6 +439,9 @@
+         if base == 0 {
+             return None;
+         }
++        if self.backing.is_some() {
++            return Some(base + index * PAGE);
++        }
+         let missing = |page: usize| self.committed[page / 64].load(Ordering::Acquire) >> (page % 64) & 1 == 0;
+         let mut page = index;
+         while page < index + n {
+@@ -465,6 +470,9 @@
+     /// all of them are ([`lean`]): committed for one view is for all.
+     fn commit_shown(&self, index: usize, base: usize, len: usize) -> bool {
+         use std::sync::atomic::Ordering;
++        if self.backing.is_some() {
++            return true;
++        }
+         let pages = index..(index + len / PAGE).min(self.pages);
+         let bit = |p: usize| (&self.committed[p / 64], 1 << (p % 64));
+         let done = || {
+@@ -665,20 +673,25 @@
+     // A pagefile-backed section of `size` bytes, its pages committed when
+     // first mapped or written (`commit`): the title asks for 6.1
+     // GiB at once, which a busy host often cannot commit (error 1450).
+-    // SAFETY: plain section creation.
+-    let handle = unsafe {
+-        CreateFileMappingW(
+-            INVALID_HANDLE_VALUE,
+-            std::ptr::null(),
+-            // Under Wine a committed section is a sparse file, free until
+-            // touched, and committing a reserved one page by page costs a
+-            // wineserver request each that scans every range committed so
+-            // far: commit it whole there.
+-            PAGE_READWRITE | if on_wine() { SEC_COMMIT } else { SEC_RESERVE },
+-            (size as u64 >> 32) as u32,
+-            size as u32,
+-            std::ptr::null(),
+-        )
++    let (handle, backing) = if let Some((handle, file)) = ssd_pool::Backing::for_pool(size) {
++        (handle, Some(file))
++    } else {
++        // SAFETY: unnamed section managed by the kernel.
++        let handle = unsafe {
++            CreateFileMappingW(
++                INVALID_HANDLE_VALUE,
++                std::ptr::null(),
++                // Under Wine a committed section is a sparse file, free until
++                // touched, and committing a reserved one page by page costs a
++                // wineserver request each that scans every range committed so
++                // far: commit it whole there.
++                PAGE_READWRITE | if on_wine() { SEC_COMMIT } else { SEC_RESERVE },
++                (size as u64 >> 32) as u32,
++                size as u32,
++                std::ptr::null(),
++            )
++        };
++        (handle, None)
+     };
+     if handle.is_null() {
+         let error = std::io::Error::last_os_error();
+@@ -694,9 +707,10 @@
+     );
+     // For the GPU side's in-place census: only a committed section can be
+     // opened as a host heap.
+-    victory_gpu::title_memory_section(handle as usize, size as u64, on_wine());
++    victory_gpu::title_memory_section(handle as usize, size as u64, backing.is_none() && on_wine());
+     let section = Arc::new(Section {
+         handle,
++        backing,
+         pages: n,
+         window: std::sync::OnceLock::new(),
+         committed: (0..n.div_ceil(64)).map(|_| std::sync::atomic::AtomicU64::new(0)).collect(),
+@@ -768,7 +782,7 @@
+             return None;
+         }
+         let view = View { at, len };
+-        if !commit(at.Value as usize, len) {
++        if slice.section.backing.is_none() && !commit(at.Value as usize, len) {
+             tracing::warn!(error = %std::io::Error::last_os_error(), n, "physical pages not committed for a write");
+             return None;
+         }
+@@ -2041,6 +2055,43 @@
+ #[cfg(test)]
+ mod tests {
+     use super::*;
++
++    // danekbiglike/rtx3090-20261127-ssd-physical-pool
++    #[test]
++    fn file_pool_aliases_windows_and_releases_its_file() {
++        let dir = std::env::temp_dir().join(format!("victory-file-pool-test-{}", std::process::id()));
++        std::fs::create_dir(&dir).unwrap();
++        assert!(ssd_pool::Backing::create(&dir.join("missing"), 3 * PAGE).is_err());
++        let (handle, backing) = ssd_pool::Backing::create(&dir, 3 * PAGE).unwrap().unwrap();
++        assert!(ssd_pool::Backing::create(&dir, PAGE).unwrap().is_none());
++        let section = Arc::new(Section {
++            handle, pages: 3, backing: Some(backing), window: Default::default(),
++            committed: vec![AtomicU64::new(0)].into_boxed_slice(),
++        });
++        let slice = Slice { section: section.clone(), index: 1 };
++        let mut view = View::map(&slice, 1).expect("DirectStorage write view");
++        assert!(view.bytes().iter().all(|&byte| byte == 0));
++        let window = section.window(1, 1).unwrap() as *mut u8;
++        // SAFETY: reserve a placeholder and map this slice over it exactly
++        // as a title mapping does. All views are held throughout the checks.
++        unsafe {
++            let base = VirtualAlloc2(GetCurrentProcess(), std::ptr::null_mut(), PAGE,
++                MEM_RESERVE | MEM_RESERVE_PLACEHOLDER, PAGE_NOACCESS, std::ptr::null_mut(), 0);
++            assert!(!base.is_null());
++            assert!(show(base as usize, PAGE, &slice, true));
++            view.bytes()[PAGE - 1] = 41;
++            assert_eq!(base.cast::<u8>().add(PAGE - 1).read(), 41);
++            base.cast::<u8>().write(17);
++            assert_eq!(window.read(), 17);
++            assert_ne!(UnmapViewOfFile2(GetCurrentProcess(), MEMORY_MAPPED_VIEW_ADDRESS { Value: base }, MEM_PRESERVE_PLACEHOLDER), 0);
++            assert_ne!(VirtualFree(base, 0, MEM_RELEASE), 0);
++        }
++        drop(view);
++        drop(slice);
++        drop(section);
++        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0);
++        std::fs::remove_dir(&dir).unwrap();
++    }
+ 
+     fn query(address: *const c_void) -> BasicInformation {
+         // SAFETY: plain data; zero is a valid value.
+diff --git a/crates/victory-hle/src/modules/xmem/ssd_pool.rs b/crates/victory-hle/src/modules/xmem/ssd_pool.rs
+new file mode 100644
+--- /dev/null
++++ b/crates/victory-hle/src/modules/xmem/ssd_pool.rs
+@@ -0,0 +1,89 @@
++//! Optional disk backing for the large physical page pool on low-RAM PCs.
++use std::fs::{File, OpenOptions};
++use std::io;
++use std::os::windows::fs::OpenOptionsExt;
++use std::os::windows::io::AsRawHandle;
++use std::path::Path;
++use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
++use windows_sys::Win32::Foundation::HANDLE;
++use windows_sys::Win32::Storage::FileSystem::FILE_FLAG_DELETE_ON_CLOSE;
++use windows_sys::Win32::System::Memory::{CreateFileMappingW, PAGE_READWRITE};
++
++static BUSY: AtomicBool = AtomicBool::new(false);
++static NEXT: AtomicU64 = AtomicU64::new(0);
++
++struct Slot;
++impl Drop for Slot {
++    fn drop(&mut self) {
++        BUSY.store(false, Ordering::Release);
++    }
++}
++
++pub(super) struct Backing {
++    _file: File,
++    _slot: Slot,
++}
++
++impl Backing {
++    pub(super) fn for_pool(bytes: usize) -> Option<(HANDLE, Self)> {
++        if !((1usize << 30)..=(8usize << 30)).contains(&bytes) {
++            return None;
++        }
++        let dir = std::env::var_os("VICTORY_PAGE_POOL_DIR")?;
++        match Self::create(Path::new(&dir), bytes) {
++            Ok(Some(section)) => {
++                tracing::warn!(
++                    bytes,
++                    "physical page pool uses a temporary file on the configured drive"
++                );
++                Some(section)
++            }
++            Ok(None) => None,
++            Err(error) => {
++                tracing::warn!(bytes, %error, "temporary page pool unavailable; using the standard physical section");
++                None
++            }
++        }
++    }
++
++    pub(super) fn create(dir: &Path, bytes: usize) -> io::Result<Option<(HANDLE, Self)>> {
++        if BUSY
++            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
++            .is_err()
++        {
++            return Ok(None);
++        }
++        let slot = Slot;
++        let serial = NEXT.fetch_add(1, Ordering::Relaxed);
++        let path = dir.join(format!("victory-pool-{}-{serial}.tmp", std::process::id()));
++        let file = OpenOptions::new()
++            .read(true)
++            .write(true)
++            .create_new(true)
++            .custom_flags(FILE_FLAG_DELETE_ON_CLOSE)
++            .open(path)?;
++        file.set_len(bytes as u64)?;
++        // SAFETY: the newly created file is sized and read-write. A zero
++        // maximum size uses the file length, and every view shares its bytes.
++        let handle = unsafe {
++            CreateFileMappingW(
++                file.as_raw_handle(),
++                std::ptr::null(),
++                PAGE_READWRITE,
++                0,
++                0,
++                std::ptr::null(),
++            )
++        };
++        if handle.is_null() {
++            return Err(io::Error::last_os_error());
++        }
++        Ok(Some((
++            handle,
++            Self {
++                _file: file,
++                _slot: slot,
++            },
++        )))
++    }
++}

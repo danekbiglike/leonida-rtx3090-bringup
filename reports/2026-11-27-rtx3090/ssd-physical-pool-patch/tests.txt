@@ -1,0 +1,22 @@
+running 19 tests
+test modules::xmem::tests::a_read_in_place_never_meets_the_gap_of_a_remapping ... ok
+test modules::xmem::tests::a_scatter_of_many_pages_is_what_one_after_the_other_is ... ok
+test modules::xmem::tests::a_title_thread_goes_on_using_the_rest_of_a_view ... ok
+test modules::xmem::tests::alloc_honours_alignment_and_frees ... ok
+test modules::xmem::tests::commit_limit_report_includes_request_and_system_commit ... ok
+test modules::xmem::tests::file_pool_aliases_windows_and_releases_its_file ... ok
+test modules::xmem::tests::map_bench ... ignored, a benchmark
+test modules::xmem::tests::mapping_is_busy_from_a_quarter_of_the_time_to_a_twentieth ... ok
+test modules::xmem::tests::mapping_no_pages_changes_nothing ... ok
+test modules::xmem::tests::page_windows_cover_one_run_in_place ... ok
+test modules::xmem::tests::pages_mapped_again_hold_what_they_held ... ok
+test modules::xmem::tests::pages_say_where_they_are_mapped ... ok
+test modules::xmem::tests::physical_pages_map_alias_and_unmap ... ok
+test modules::xmem::tests::runs_group_consecutive_pages_of_one_allocation ... ok
+test modules::xmem::tests::statistics_have_the_console_layout ... ok
+test modules::xmem::tests::the_32_bit_heap_gets_its_slices_in_address_order ... ok
+test modules::xmem::tests::transfers_shrink_the_title_budget ... ok
+test modules::xmem::tests::virtual_alloc_meets_console_constraints ... ok
+test modules::xmem::tests::writes_cross_runs_and_allocations ... ok
+
+test result: ok. 18 passed; 0 failed; 1 ignored; 0 measured; 136 filtered out; finished in 1.08s
