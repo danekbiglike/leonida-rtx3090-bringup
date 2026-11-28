@@ -1,0 +1,12 @@
+{
+  "clip_samples": 133,
+  "nonzero_clip_samples": 83,
+  "peak_reported_clipped_MB_per_frame": 361.0,
+  "last_present_interval_ms": 55833.404,
+  "last_present_after_cell_marker_s": 46.045494,
+  "presents_after_cell_marker": 1,
+  "has_escort_marker": false,
+  "min_available_ram_GiB_during_last_frame": 5.136,
+  "player_exit": "0xc0000005",
+  "stop_reason": "measurement interrupted"
+}

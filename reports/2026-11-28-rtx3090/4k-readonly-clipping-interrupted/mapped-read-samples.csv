@@ -1,0 +1,4 @@
+end_from_frame_start_s,thread,elapsed_us,copied_bytes,lookup_us,window_us,after_window_us,outcome
+2.704038,4040,2666368,65536,0,0,2666368,copied
+3.621758,5776,3584050,65536,1,0,3584049,copied
+55.665152,19112,55628240,65536,0,0,55628240,copied
