@@ -1,0 +1,20 @@
+footprints_keep_volume_and_array_copies_distinct
+Verified array and volume readback footprints on NVIDIA GeForce RTX 3090
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 509 filtered out; finished in 0.27s
+
+gpu_texback_and_read_backs_bit_exact_and_pool_benchmark
+Verified displacement texels and exposure rows on NVIDIA GeForce RTX 3090 with swizzle 5
+test texback::tests::gpu_texback_and_read_backs_bit_exact_and_pool_benchmark ... [NVIDIA GeForce RTX 3090] 50 iterations (256x256 R32G32_FLOAT 512 KiB texback + 5x2 RGBA32F read_backs):
+  VICTORY_READBACK_POOL=0: total 65.39 ms (median 1308.7 us, p95 1355.4 us) | record+reset CPU total 38.32 ms (median 768.4 us)
+  VICTORY_READBACK_POOL=1: total 18.07 ms (median 380.9 us, p95 591.4 us) | record+reset CPU total 0.85 ms (median 16.4 us)
+  Speedup: 3.62x end-to-end (3.44x median), 45.26x record+reset CPU (46.85x median)
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 509 filtered out; finished in 0.35s
+
+gpu_render_xor_readbacks_are_bit_exact
+Verified displacement texels and exposure rows on NVIDIA GeForce RTX 3090 with swizzle 27
+test texback::tests::gpu_render_xor_readbacks_are_bit_exact ... [NVIDIA GeForce RTX 3090] 50 iterations (256x256 R32G32_FLOAT 512 KiB texback + 5x2 RGBA32F read_backs):
+  VICTORY_READBACK_POOL=0: total 81.99 ms (median 1627.0 us, p95 1808.8 us) | record+reset CPU total 40.43 ms (median 803.6 us)
+  VICTORY_READBACK_POOL=1: total 43.01 ms (median 852.0 us, p95 924.3 us) | record+reset CPU total 1.14 ms (median 20.3 us)
+  Speedup: 1.91x end-to-end (1.91x median), 35.62x record+reset CPU (39.59x median)
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 509 filtered out; finished in 0.40s
+
