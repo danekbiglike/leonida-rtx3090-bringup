@@ -1,0 +1,17 @@
+running 1 test
+test resource::tests::light_draw_before_depth_publication_is_a_negative_control ... Verified exact R8 lighting values: publish_early=false, pixels=[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 517 filtered out; finished in 0.36s
+
+running 1 test
+test resource::tests::a_depth_planes_twin_is_drawn_into_the_plane ... Verified exact R8 lighting values: publish_early=true, pixels=[0, 255, 0, 255, 255, 0, 255, 0, 0, 0, 255, 0, 255, 0, 0, 255]
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 517 filtered out; finished in 0.30s
+
+running 1 test
+test resource::tests::a_stencil_planes_twin_reaches_the_plane ... Verified all four stencil rows after GPU readback.
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 517 filtered out; finished in 0.31s

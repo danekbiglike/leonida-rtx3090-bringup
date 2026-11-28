@@ -1,0 +1,7 @@
+# Reading lighting results before and after a depth write on RTX 3090
+
+A 4 × 4 D3D12 fixture on the RTX 3090 reproduced a case where every lighting output pixel was black. Moving depth publication ahead of the lighting draw lit the **seven expected pixels**. The nine remaining pixels stayed black, and all 16 readback bytes matched the expected mask. A separate stencil fixture checked all four rows. [Actual readbacks](hardware-results.txt)
+
+Both draws start with the same depth clear of zero, 16 synthetic class values and a single-channel output image. The control copies the new depth into place after the output is captured. The other run publishes depth before drawing. This isolates whether the draw can see those depth values. It does not establish the cause of any particular in-game silhouette or square highlight and provides no in-game FPS estimate.
+
+The additional test applies after the upstream depth-write change. Enable `VICTORY_DEPTH_TWINS=1` and select the graphics adapter with `VICTORY_ADAPTER=3090`. Run the three named resource tests in the hardware results with `cargo test --release -p victory-gpu --lib <test-name> -- --nocapture --test-threads=1`. Check the printed pixel values because a machine without a suitable device can skip the readback. [Test patch](depth-light-control.patch) · [Upstream depth publication change](https://github.com/trustno1-coder/VIctory-NVIDIA/pull/1018)
