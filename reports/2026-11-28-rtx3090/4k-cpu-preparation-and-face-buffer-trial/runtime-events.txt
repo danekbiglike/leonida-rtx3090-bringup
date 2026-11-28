@@ -1,0 +1,7 @@
+2026-11-28T08:19:46.804713Z  INFO victory_gpu::ambient: a stand-in for the indirect light role=Radiance size=[1280, 720] level=0.800000011920929 constant=0.0
+2026-11-28T08:19:46.804810Z  INFO victory_gpu::ambient: a stand-in for the indirect light role=Radiance size=[1280, 720] level=0.800000011920929 constant=0.0
+2026-11-28T08:19:58.975803Z  INFO victory_gpu::ambient: a stand-in for the indirect light role=Resolve size=[2560, 1440] level=0.800000011920929 constant=0.0
+2026-11-28T08:19:58.982601Z  INFO victory_gpu::ambient: a stand-in for the indirect light role=Air size=[160, 90] level=0.800000011920929 constant=0.0
+2026-11-28T08:19:58.982950Z  INFO victory_gpu::ambient: a stand-in for the indirect light role=Radiance size=[1280, 720] level=0.800000011920929 constant=0.0
+2026-11-28T08:20:03.489814Z  INFO victory_gpu::ambient: reflections held after their resolve, since the start (VICTORY_AMBIENT_REFLECT) n=1
+2026-11-28T08:25:18.965927Z  INFO victory_gpu::ambient: reflections held after their resolve, since the start (VICTORY_AMBIENT_REFLECT) n=5000

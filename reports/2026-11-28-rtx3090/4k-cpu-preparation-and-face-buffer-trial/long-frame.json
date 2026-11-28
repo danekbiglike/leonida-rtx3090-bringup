@@ -1,0 +1,9 @@
+{
+  "frame_start_relative_s": -8.0175,
+  "frame_end_relative_s": 5.2398,
+  "frame_interval_us": 13257273,
+  "whole_samples": 12,
+  "sampled_wall_us": 12425135,
+  "sampled_process_threads_cpu_us": 15984375,
+  "most_active_thread_cpu_us": 12359375
+}
