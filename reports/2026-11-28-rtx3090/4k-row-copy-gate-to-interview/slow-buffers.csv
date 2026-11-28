@@ -1,0 +1,11 @@
+phase,elapsed_end_us,kind,windows_thread,overlap_us,total_us,requested,retained,parallel,prefilter_us,write_watch_us,update_us,cleanup_us,span_bytes,written_pages,copied_bytes,watch_us,copy_us,elapsed_us,run_count,lock_us,scan_us,plan_us,transfer_us,finish_us
+cell,130400805,slow watched buffer update,20936,865456,,,,,,,,,2648176,41,1376256,72,11266189,,,,,,,
+cell,130400844,slow individual buffer update,20936,865462,,,,,,,,,2648176,,1376256,,,11266306,,,,,,
+escort,77533703,slow watched buffer update,26952,518641,,,,,,,,,4052304,62,131072,63,518578,,,,,,,
+escort,77533739,slow individual buffer update,26952,518682,,,,,,,,,4052304,,131072,,,518682,,,,,,
+escort,103310589,slow watched buffer update,26868,320800,,,,,,,,,2135648,33,1376256,141,320659,,,,,,,
+escort,103310633,slow individual buffer update,26868,320850,,,,,,,,,2135648,,1376256,,,320850,,,,,,
+escort,114591337,slow watched buffer update,26868,921094,,,,,,,,,3735552,57,3735552,183,920911,,,,,,,
+escort,114591376,slow individual buffer update,26868,921139,,,,,,,,,3735552,,3735552,,,921139,,,,,,
+escort,119934155,slow watched buffer update,20936,4033152,,,,,,,,,1750160,27,196608,111,4033041,,,,,,,
+escort,119934194,slow individual buffer update,20936,4033195,,,,,,,,,1750160,,196608,,,4033195,,,,,,

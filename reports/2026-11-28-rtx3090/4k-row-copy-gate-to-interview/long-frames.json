@@ -1,0 +1,62 @@
+{
+  "cell": {
+    "end_utc_us": 1795858020223446,
+    "present_interval_us": 606047,
+    "draws": 2157,
+    "thread_cpu": {},
+    "events": []
+  },
+  "escort": {
+    "end_utc_us": 1795858319780937,
+    "present_interval_us": 4092085,
+    "draws": 3497,
+    "thread_cpu": {
+      "8596": {
+        "cpu_us": 3078125,
+        "user_us": 2703125,
+        "kernel_us": 375000
+      },
+      "21724": {
+        "cpu_us": 812500,
+        "user_us": 765625,
+        "kernel_us": 46875
+      },
+      "20624": {
+        "cpu_us": 46875,
+        "user_us": 15625,
+        "kernel_us": 31250
+      }
+    },
+    "events": [
+      {
+        "kind": "slow individual buffer update",
+        "start": 1795858315693999,
+        "end": 1795858319727194,
+        "windows_thread": 20936,
+        "elapsed_us": 4033195,
+        "span_bytes": 1750160,
+        "copied_bytes": 196608,
+        "overlap_us": 4033195
+      },
+      {
+        "kind": "slow watched buffer update",
+        "start": 1795858315694003,
+        "end": 1795858319727155,
+        "windows_thread": 20936,
+        "span_bytes": 1750160,
+        "written_pages": 27,
+        "copied_bytes": 196608,
+        "watch_us": 111,
+        "copy_us": 4033041,
+        "overlap_us": 4033152
+      }
+    ]
+  },
+  "camera": {
+    "end_utc_us": 1795858337982709,
+    "present_interval_us": 78632,
+    "draws": 2910,
+    "thread_cpu": {},
+    "events": []
+  }
+}

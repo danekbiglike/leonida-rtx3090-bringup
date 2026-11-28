@@ -1,0 +1,106 @@
+diff --git a/crates/victory-gpu/src/host.rs b/crates/victory-gpu/src/host.rs
+index 8e8047d..a2745bf 100644
+--- a/crates/victory-gpu/src/host.rs
++++ b/crates/victory-gpu/src/host.rs
+@@ -8988,6 +8988,10 @@ impl Batch {
+         let _one = crate::timeline::span("a copy's refresh");
+         let copied = shadow.update(from, to - from);
+         let us = started.elapsed().as_micros() as u64;
++        if us >= 100_000 {
++            tracing::info!(target: "victory_gpu::host::slow_refresh", windows_thread = thread_id(),
++                elapsed_us = us, span_bytes = to - from, copied_bytes = copied, "slow individual buffer update");
++        }
+         #[cfg(feature = "diagnostics")]
+         crate::copystat::range(from, to - from, us, 0);
+         (us, copied as u64)
+@@ -9203,24 +9207,28 @@ impl Batch {
+         }
+         let (began, all) = (std::time::Instant::now(), self.refreshes.len());
+         let _flush = crate::timeline::span("refreshes of copies");
+-        self.flush_all();
++        self.flush_all(began);
+         SPLIT[6].fetch_add(began.elapsed().as_nanos() as u64, Ordering::Relaxed);
+         FLUSHES[0].fetch_add(1, Ordering::Relaxed);
+         FLUSHES[1].fetch_add(all as u64, Ordering::Relaxed);
+     }
+ 
+-    fn flush_all(&mut self) {
++    fn flush_all(&mut self, began: std::time::Instant) {
+         // Most of a flush's copies are as they were: they are told so here,
+         // from what the submission's asking found, before anything is asked
+         // and any thread woken. (Thousands of them, the heap's buffer views
+         // once a frame: on the threads, below.)
+         const FEW: usize = 256;
++        let requested = self.refreshes.len();
++        let mut prefilter = std::time::Duration::ZERO;
++        let mut write_watch = std::time::Duration::ZERO;
+         let light = crate::watch::light();
+         if light && self.refreshes.len() <= FEW {
+             let started = std::time::Instant::now();
+             let all = self.refreshes.len();
+             self.refreshes.retain(|(shadow, from, to)| !shadow.nothing_new(*from, *to - *from));
+-            PREPARING[0].fetch_add(started.elapsed().as_micros() as u64, Ordering::Relaxed);
++            prefilter = started.elapsed();
++            PREPARING[0].fetch_add(prefilter.as_micros() as u64, Ordering::Relaxed);
+             FLUSHES[2].fetch_add((all - self.refreshes.len()) as u64, Ordering::Relaxed);
+         }
+         // One write-watch asking for the copies that lie close together,
+@@ -9235,9 +9243,12 @@ impl Batch {
+                 .map(|r| (r.1, r.2))
+                 .collect();
+             crate::watch::ask_ahead(&ranges);
+-            PREPARING[0].fetch_add(started.elapsed().as_micros() as u64, Ordering::Relaxed);
++            write_watch = started.elapsed();
++            PREPARING[0].fetch_add(write_watch.as_micros() as u64, Ordering::Relaxed);
+         }
+-        if wide_refresh() && self.refreshes.len() >= 4 {
++        let retained = self.refreshes.len();
++        let parallel = wide_refresh() && retained >= 4;
++        if parallel {
+             // Each copy on its own, several at a time: a copy's refresh
+             // writes that copy and reads title memory, nothing of another's.
+             // The time counted is the time it took, not the threads' sum.
+@@ -9286,9 +9297,18 @@ impl Batch {
+                 Self::update(&shadow, from, to);
+             }
+         }
++        let before_cleanup = began.elapsed();
+         if ahead {
+             crate::watch::ask_ahead_done();
+         }
++        let elapsed = began.elapsed();
++        if elapsed.as_millis() >= 100 {
++            tracing::info!(target: "victory_gpu::host::slow_refresh", windows_thread = thread_id(),
++                requested, retained, parallel, total_us = elapsed.as_micros() as u64,
++                prefilter_us = prefilter.as_micros() as u64, write_watch_us = write_watch.as_micros() as u64,
++                update_us = before_cleanup.saturating_sub(prefilter + write_watch).as_micros() as u64,
++                cleanup_us = (elapsed - before_cleanup).as_micros() as u64, "slow buffer refresh batch");
++        }
+     }
+ }
+ 
+diff --git a/crates/victory-gpu/src/shadow.rs b/crates/victory-gpu/src/shadow.rs
+index 01da19a..62b8cc7 100644
+--- a/crates/victory-gpu/src/shadow.rs
++++ b/crates/victory-gpu/src/shadow.rs
+@@ -4250,11 +4250,20 @@ impl Shadow {
+     /// shader writes.
+     fn update_free(&self, from: usize, to: usize) -> usize {
+         if self.watched.load(Ordering::Relaxed) != NOT_WATCHED {
++            let began = std::time::Instant::now();
+             if let Some((now, written)) = crate::watch::writes(from, to, true) {
+                 // (A range whose blocks rest after a write has no guard now.)
+                 let guarded = crate::watch::guarded(from, to) || self.watched.load(Ordering::Relaxed) == GUARDED;
+                 self.watched.store(if guarded { GUARDED } else { 1 }, Ordering::Relaxed);
++                let before_copy = began.elapsed();
+                 let copied = self.copy_stale(from, to, now, &written);
++                let elapsed = began.elapsed();
++                if elapsed.as_millis() >= 100 {
++                    tracing::info!(target: "victory_gpu::host::slow_refresh", windows_thread = crate::host::thread_id(),
++                        span_bytes = to - from, written_pages = written.len(), copied_bytes = copied,
++                        watch_us = before_copy.as_micros() as u64, copy_us = (elapsed - before_copy).as_micros() as u64,
++                        "slow watched buffer update");
++                }
+                 self.refresh_check(from, to);
+                 #[cfg(feature = "diagnostics")]
+                 {
