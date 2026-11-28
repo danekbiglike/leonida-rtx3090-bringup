@@ -1,0 +1,5 @@
+phase,helper,start_s,end_s,presents,fps,p95_ms,median_draws,board_samples,mean_gpu_busy_pct,cpu_sample_s,helper_cpu_ms_per_s,mean_board_w,median_clock_mhz
+cell,false,15.335,33.357,216,11.986,118.851,5798.5,9,93.89,16.729,8.41,107.64,870.0
+cell,true,35.357,53.329,206,11.462,117.838,6188.5,9,94.33,16.792,92.12,167.24,1800.0
+cell,false,55.329,73.366,213,11.809,118.408,6347,9,88.11,16.782,9.31,106.7,870.0
+cell,true,75.366,93.34,238,13.241,106.781,6418.0,9,97.89,16.809,89.24,208.07,1800.0
