@@ -1,0 +1,120 @@
+--- a/crates/victory-gpu/src/host.rs
++++ b/crates/victory-gpu/src/host.rs
+@@ -8475,6 +8475,8 @@
+ /// Since the last frame-rate line: flushes of refreshes, their refreshes,
+ /// those known to copy nothing, and those done on several threads.
+ static FLUSHES: [std::sync::atomic::AtomicU64; 4] = [const { std::sync::atomic::AtomicU64::new(0) }; 4];
++// Front refresh calls, textures, retained buffer spans, groups of spans and total wall microseconds.
++static FRONT_WORK: [std::sync::atomic::AtomicU64; 5] = [const { std::sync::atomic::AtomicU64::new(0) }; 5];
+ 
+ /// Since the last frame-rate line, nanoseconds of the submitting thread
+ /// around its submissions ([`Host::send_late`]): after one is sent, its
+@@ -8532,6 +8534,11 @@
+ /// to the first number; refreshes and copies are inside the lists' steps),
+ /// and its time after each sending.
+ fn submit_split_line(frames: f64) {
++    let front = FRONT_WORK.each_ref().map(|counter| counter.swap(0, Ordering::Relaxed) as f64 / frames);
++    if front[0] > 0.0 {
++        tracing::info!("front refresh per frame: {:.2} calls, {:.1} textures, {:.1} buffers in {:.1} groups, {:.3} ms",
++            front[0], front[1], front[2], front[3], front[4] / 1000.0);
++    }
+     let ms: [f64; 16] = std::array::from_fn(|i| SPLIT[i].swap(0, Ordering::Relaxed) as f64 / 1e6 / frames);
+     let f: [f64; 4] = std::array::from_fn(|i| FLUSHES[i].swap(0, Ordering::Relaxed) as f64 / frames);
+     let after = AFTER_SEND.swap(0, Ordering::Relaxed) as f64 / 1e6 / frames;
+@@ -8957,6 +8964,52 @@
+     *ON.get_or_init(|| std::env::var_os("VICTORY_WIDE_FILLS").is_none_or(|v| v != "0") && wide_refresh())
+ }
+ 
++fn front_group_width(buffers: usize) -> usize {
++    static WIDTH: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
++    if buffers <= 256 { return 1; }
++    *WIDTH.get_or_init(|| std::env::var("VICTORY_FRONT_REFRESH_GROUP").ok()
++        .and_then(|s| s.parse::<usize>().ok()).filter(|n| matches!(n, 1 | 2 | 4 | 8)).unwrap_or(1))
++}
++
++/// Texture refreshes claim one job each. Buffer workers share adjacent spans;
++/// a short last group and an empty buffer list need no special tasks.
++fn visit_front_jobs(textures: usize, buffers: usize, width: usize,
++    texture: impl Fn(usize) + Send + Sync + 'static,
++    buffer_group: impl Fn(std::ops::Range<usize>) + Send + Sync + 'static) {
++    crate::shadow::wide_each(textures + buffers.div_ceil(width), move |job| {
++        if job < textures {
++            texture(job);
++        } else {
++            let first = (job - textures) * width;
++            buffer_group(first..(first + width).min(buffers));
++        }
++    });
++}
++
++#[cfg(test)]
++mod front_jobs_tests {
++    use super::visit_front_jobs;
++    use std::sync::{Arc, atomic::{AtomicU8, Ordering}};
++
++    #[test]
++    fn front_refresh_visits_each_texture_and_buffer_once() {
++        for (textures, buffers) in [(0,0), (0,7), (3,0), (1,1), (12,257), (3,4099)] {
++            for width in [1,2,4,8] {
++                let counts = Arc::new((0..textures+buffers).map(|_| AtomicU8::new(0)).collect::<Vec<_>>());
++                let tex = counts.clone();
++                let buf = counts.clone();
++                visit_front_jobs(textures, buffers, width,
++                    move |i| { assert!(i < textures); tex[i].fetch_add(1, Ordering::Relaxed); },
++                    move |range| {
++                        assert!(range.len() <= width && !range.is_empty());
++                        for i in range { buf[textures+i].fetch_add(1, Ordering::Relaxed); }
++                    });
++                assert!(counts.iter().all(|n| n.load(Ordering::Relaxed) == 1));
++            }
++        }
++    }
++}
++
+ /// Whether a submission's textures are brought up to date on several
+ /// threads (`VICTORY_WIDE_TEXTURES=0`: one after the other, where the lists
+ /// name them, as before).
+@@ -9192,24 +9245,31 @@
+             crate::watch::ask_ahead(&ranges);
+         }
+         FLUSHES[3].fetch_add(spans.len() as u64, Ordering::Relaxed);
+-        crate::shadow::wide_each(spans.len() + due.len(), move |i| {
+-            // The textures first: they are the longer pieces.
+-            let Some(i) = i.checked_sub(due.len()) else {
+-                due[i].refresh();
+-                return;
+-            };
+-            let (shadow, from, to) = &spans[i];
+-            if many && shadow.nothing_new(*from, *to - *from) {
+-                FLUSHES[2].fetch_add(1, Ordering::Relaxed);
+-                return;
+-            }
+-            Self::update(shadow, *from, *to);
++        let width = front_group_width(spans.len());
++        let (textures, buffers) = (due.len(), spans.len());
++        visit_front_jobs(textures, buffers, width, move |i| { due[i].refresh(); }, move |range| {
++            let (mut us, mut bytes, mut unchanged) = (0, 0, 0);
++            for (shadow, from, to) in &spans[range] {
++                if many && shadow.nothing_new(*from, *to - *from) {
++                    unchanged += 1;
++                } else {
++                    let (took, copied) = Self::timed_update(shadow, *from, *to);
++                    us += took;
++                    bytes += copied;
++                }
++            }
++            if us > 0 { PREPARING[0].fetch_add(us, Ordering::Relaxed); }
++            if bytes > 0 { PREPARING[1].fetch_add(bytes, Ordering::Relaxed); }
++            if unchanged > 0 { FLUSHES[2].fetch_add(unchanged, Ordering::Relaxed); }
+         });
+         if ahead {
+             crate::watch::ask_ahead_done();
+         }
+         // The time counted is the time it took, not the threads' sum.
+         let took = started.elapsed().as_micros() as u64;
++        for (counter, value) in FRONT_WORK.iter().zip([1, textures as u64, buffers as u64, buffers.div_ceil(width) as u64, took]) {
++            counter.fetch_add(value, Ordering::Relaxed);
++        }
+         let summed = [0, 2].map(|i| PREPARING[i].load(Ordering::Relaxed)).iter().zip(before).map(|(now, was)| now.saturating_sub(was)).collect::<Vec<_>>();
+         PREPARING[2].fetch_sub(summed[1], Ordering::Relaxed);
+         PREPARING[0].fetch_sub(summed[0], Ordering::Relaxed);
