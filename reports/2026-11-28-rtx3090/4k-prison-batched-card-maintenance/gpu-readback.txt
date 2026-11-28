@@ -1,0 +1,9 @@
+
+running 1 test
+test host::maintenance_tests::maintenance_retail_readback ... MAINTENANCE_NATIVE_START adapter="NVIDIA GeForce RTX 3090" software=false debug=false
+MAINTENANCE_NATIVE_OK adapter="NVIDIA GeForce RTX 3090" observations=7 producers=COPY,UAV modes=0,1,2 pending_fence=true duplicate_fallback=true
+maintenance native parity PASS
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 578 filtered out; finished in 0.61s
+

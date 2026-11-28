@@ -1,0 +1,1789 @@
+diff --git a/crates/victory-gpu/src/host.rs b/crates/victory-gpu/src/host.rs
+--- a/crates/victory-gpu/src/host.rs
++++ b/crates/victory-gpu/src/host.rs
+@@ -2589,6 +2589,15 @@
+ /// hashed, and compare passes after the lists.
+ static CARD_PASSES: [std::sync::atomic::AtomicU64; 3] = [const { std::sync::atomic::AtomicU64::new(0) }; 3];
+ 
++/// Native maintenance dispatches (rehash, compare), and phases which retained
++/// the legacy path. Logical ranges and their readback fanout remain unchanged.
++static CARD_LAUNCHES: [std::sync::atomic::AtomicU64; 4] = [const { std::sync::atomic::AtomicU64::new(0) }; 4];
++
++fn maintenance_batches() -> bool {
++    static ON: OnceLock<bool> = OnceLock::new();
++    *ON.get_or_init(|| std::env::var_os("VICTORY_MAINTENANCE_BATCHES").is_some_and(|v| v == "1"))
++}
++
+ /// Whether what shaders wrote to copies in the card's memory is merged
+ /// into title memory on several threads (`VICTORY_WIDE_MERGE=1`; off by
+ /// default). The pieces the card's compare found differing come down in
+@@ -2649,6 +2658,21 @@
+     looks: Option<upcheck::Looks>,
+     /// With [`send`]: the memory its sends come from.
+     sends: Option<send::Memory>,
++    /// Immutable job tables, descriptor heaps and resource pins. Their pool
++    /// separately proves native fence completion before allowing reuse.
++    maintenance: Vec<maintenance::Batch>,
++}
++
++impl CardPlan {
++    /// # Safety
++    /// `target` is a future native signal after the prefix, title producers and
++    /// checker. The submission lock prevents reserving the same value twice.
++    unsafe fn maintenance_submitted(&mut self, fence: &ID3D12Fence, target: u64) {
++        for batch in &mut self.maintenance {
++            // SAFETY: all batches are on the same native queue before target.
++            unsafe { batch.submitted(fence, target) };
++        }
++    }
+ }
+ 
+ /// One piece of submission-time work, in recorded order.
+@@ -4224,6 +4248,9 @@
+ pub(crate) mod aside;
+ pub(crate) mod awake;
+ mod card_steps;
++mod maintenance;
++#[cfg(all(test, feature = "diagnostics"))]
++mod maintenance_tests;
+ #[cfg(feature = "diagnostics")]
+ pub(crate) mod indirects;
+ mod font;
+@@ -4494,6 +4521,64 @@
+             crate::copystat::compared(from, to - from, written);
+         }
+         shadow.copy_back_done(declared);
++    }
++}
++
++/// The nonempty Execute ranges inside one existing submission part. Opening
++/// timestamp lists must finish before producer work can start; the checker must
++/// likewise follow every producer. Neither split needs another fence or wait.
++fn submission_ranges(
++    from: usize,
++    to: usize,
++    opening: usize,
++    checker: Option<usize>,
++) -> impl Iterator<Item = (usize, usize)> {
++    let opening = opening.clamp(from, to);
++    let checker = checker.unwrap_or(to).clamp(opening, to);
++    [(from, opening), (opening, checker), (checker, to)]
++        .into_iter()
++        .filter(|&(a, b)| a < b)
++}
++
++#[cfg(test)]
++mod submission_range_tests {
++    use super::submission_ranges;
++
++    #[test]
++    fn no_opening_stamp_preserves_producer_and_checker() {
++        assert_eq!(submission_ranges(0, 5, 0, None).collect::<Vec<_>>(), [(0, 5)]);
++        assert_eq!(submission_ranges(0, 5, 0, Some(3)).collect::<Vec<_>>(), [(0, 3), (3, 5)]);
++        assert!(submission_ranges(0, 0, 0, None).next().is_none());
++    }
++
++    #[test]
++    fn one_or_two_opening_stamps_finish_before_producers() {
++        for opening in 1..=2 {
++            assert_eq!(
++                submission_ranges(0, 8, opening, Some(6)).collect::<Vec<_>>(),
++                [(0, opening), (opening, 6), (6, 8)],
++            );
++            assert_eq!(
++                submission_ranges(0, 8, opening, None).collect::<Vec<_>>(),
++                [(0, opening), (opening, 8)],
++            );
++        }
++    }
++
++    #[test]
++    fn existing_parts_and_checker_boundaries_are_kept() {
++        let parts = [(0, 0), (0, 4), (4, 7), (7, 11), (11, 12)];
++        let calls: Vec<_> = parts.into_iter().flat_map(|(a, b)| submission_ranges(a, b, 2, Some(9))).collect();
++        assert_eq!(calls, [(0, 2), (2, 4), (4, 7), (7, 9), (9, 11), (11, 12)]);
++        assert_eq!(calls.into_iter().flat_map(|(a, b)| a..b).collect::<Vec<_>>(), (0..12).collect::<Vec<_>>());
++    }
++
++    #[test]
++    fn serial_timing_groups_keep_prefix_once_and_never_resubmit_it() {
++        let groups = [(0, 5), (5, 10)];
++        let calls: Vec<_> = groups.into_iter().flat_map(|(a, b)| submission_ranges(a, b, 2, Some(8))).collect();
++        assert_eq!(calls, [(0, 2), (2, 5), (5, 8), (8, 10)]);
++        assert_eq!(submission_ranges(2, 8, 2, Some(8)).collect::<Vec<_>>(), [(2, 8)]);
+     }
+ }
+ 
+@@ -4846,6 +4931,7 @@
+             }
+         }
+         let mut used: Vec<(bool, Prelude)> = Vec::new();
++        let mut maintenance = Vec::new();
+         let mut looks = None;
+         // The bytes as they are now, whatever later submissions put there.
+         let taking = crate::timeline::span("copies in the card's memory: taken");
+@@ -4907,6 +4993,7 @@
+                     list.SetComputeRootSignature(&work.root);
+                     list.SetPipelineState(&work.pso);
+                     list.SetComputeRootUnorderedAccessView(3, work.differs.0.GetGPUVirtualAddress());
++                    let mut jobs = Vec::new();
+                     for (shadow, ranges) in &dirty {
+                         let (Some((_, Some(before), _)), size) = (shadow.card_sides(), shadow.card_hash_size()) else {
+                             continue;
+@@ -4917,8 +5004,6 @@
+                         // hashed again, all of them the first time; the
+                         // compare after the lists hashes the declared
+                         // pieces and flags those whose hash is another.
+-                        list.SetComputeRootShaderResourceView(1, shadow.buffer.GetGPUVirtualAddress());
+-                        list.SetComputeRootUnorderedAccessView(2, before.GetGPUVirtualAddress());
+                         let joins = rehash_runs() || own.is_some();
+                         let runs: Vec<crate::shadow::CardSpan> = if whole.iter().any(|s| Arc::ptr_eq(s, shadow)) {
+                             vec![shadow.card_run(0, usize::MAX)]
+@@ -4939,9 +5024,17 @@
+                         CARD_PASSES[0].fetch_add(runs.len() as u64, Ordering::Relaxed);
+                         CARD_PASSES[1].fetch_add(runs.iter().map(|r| u64::from(r.pieces)).sum::<u64>(), Ordering::Relaxed);
+                         for run in runs {
+-                            card_pass(list, &run, size as u32, 0, 0);
++                            jobs.push(maintenance::Job {
++                                source: shadow.buffer.clone(),
++                                hashes: before.clone(),
++                                span: run,
++                                size: size as u32,
++                                out_at: 0,
++                                mode: 0,
++                            });
+                         }
+                     }
++                    self.record_maintenance(list, &jobs, &work.differs.0, &mut maintenance, 0);
+                     list.Close()?;
+                     self.queue.ExecuteCommandLists(&[Some(list.cast()?)]);
+                     Ok(())
+@@ -4961,6 +5054,7 @@
+             sent_as,
+             looks,
+             sends: own.map(send::Own::memory),
++            maintenance,
+         };
+         // Each byte once, as the copy-back joins the declared ranges. The
+         // results go behind those of plans still in the air.
+@@ -5037,17 +5131,24 @@
+                     list.SetComputeRootSignature(&work.root);
+                     list.SetPipelineState(&work.pso);
+                     list.SetComputeRootUnorderedAccessView(3, work.differs.0.GetGPUVirtualAddress());
++                    let mut jobs = Vec::new();
+                     for r in plan.ranges.iter().filter(|r| r.compared) {
+                         let (Some((_, Some(before), _)), size) = (r.shadow.card_sides(), r.shadow.card_hash_size()) else {
+                             continue;
+                         };
+-                        list.SetComputeRootShaderResourceView(1, r.shadow.buffer.GetGPUVirtualAddress());
+-                        list.SetComputeRootUnorderedAccessView(2, before.GetGPUVirtualAddress());
+                         // (What is only looked at keeps its hashes: what
+                         // changed there is the next declared range's to land.)
+-                        card_pass(list, &r.span, size as u32, r.at, if flown && !r.picked { 2 } else { 1 });
++                        jobs.push(maintenance::Job {
++                            source: r.shadow.buffer.clone(),
++                            hashes: before.clone(),
++                            span: r.span,
++                            size: size as u32,
++                            out_at: r.at,
++                            mode: if flown && !r.picked { 2 } else { 1 },
++                        });
+                         CARD_PASSES[2].fetch_add(1, Ordering::Relaxed);
+                     }
++                    self.record_maintenance(list, &jobs, &work.differs.0, &mut plan.maintenance, 1);
+                     list.Close()?;
+                     list.cast()
+                 })()
+@@ -5060,6 +5161,48 @@
+         }
+         work.out += 1;
+         Some(plan)
++    }
++
++    /// Prepare the entire phase before binding any batched resources. A
++    /// rejected plan preserves the original job order and all result slots.
++    ///
++    /// # Safety
++    /// The list is open, with the legacy hash root signature/pipeline bound,
++    /// and producers transitioned/ordered as required by `card_pass`.
++    unsafe fn record_maintenance(
++        &self,
++        list: &ID3D12GraphicsCommandList,
++        jobs: &[maintenance::Job],
++        differs: &ID3D12Resource,
++        leases: &mut Vec<maintenance::Batch>,
++        phase: usize,
++    ) {
++        if jobs.is_empty() {
++            return;
++        }
++        if maintenance_batches() {
++            if let Some(mut batch) = maintenance::prepare(self, jobs, differs) {
++                CARD_LAUNCHES[phase].fetch_add(batch.dispatches() as u64, Ordering::Relaxed);
++                // SAFETY: the caller established producer ordering and states;
++                // preparation validated every complete shader footprint.
++                unsafe { batch.record(list) };
++                leases.push(batch);
++                return;
++            }
++            CARD_LAUNCHES[phase + 2].fetch_add(1, Ordering::Relaxed);
++        }
++        for job in jobs {
++            // SAFETY: caller's legacy bindings/states; original jobs retained.
++            unsafe {
++                list.SetComputeRootShaderResourceView(1, job.source.GetGPUVirtualAddress());
++                list.SetComputeRootUnorderedAccessView(2, job.hashes.GetGPUVirtualAddress());
++                card_pass(list, &job.span, job.size, job.out_at, job.mode);
++            }
++            CARD_LAUNCHES[phase].fetch_add(
++                u64::from(job.span.pieces.div_ceil(D3D12_CS_DISPATCH_MAX_THREAD_GROUPS_PER_DIMENSION)),
++                Ordering::Relaxed,
++            );
++        }
+     }
+ 
+     /// With [`relay`]: whether the compare's result area is half taken by
+@@ -6308,7 +6451,7 @@
+             shadow.writing(*at, *len);
+         }
+         let declared = declared_writes(runs);
+-        let card = self.card_before(&declared, &picked, flown);
++        let mut card = self.card_before(&declared, &picked, flown);
+         // One-sided host copies written by this submission's CPU buffer
+         // copies: restore their bytes from a submission-owned snapshot so a
+         // later prepare cannot overwrite what this one's GPU reads still use.
+@@ -6348,12 +6491,17 @@
+         stage.next("submit: sending");
+         // When it runs on the card, for the timeline.
+         #[cfg(feature = "diagnostics")]
++        let mut opening_stamps = 0;
++        #[cfg(not(feature = "diagnostics"))]
++        let opening_stamps = 0;
++        #[cfg(feature = "diagnostics")]
+         let stamp = stamps::take();
+         #[cfg(feature = "diagnostics")]
+         if let Some((ahead, behind)) = stamp.and_then(stamps::lists) {
+             lists.insert(0, Some(ahead));
+             lists.push(Some(behind));
+             firsts.iter_mut().for_each(|first| *first += 1);
++            opening_stamps += 1;
+         }
+         #[cfg(feature = "diagnostics")]
+         let sending = crate::timeline::ticks();
+@@ -6364,18 +6512,20 @@
+                 lists.insert(0, Some(front));
+                 lists.push(Some(behind));
+                 firsts.iter_mut().for_each(|first| *first += 1);
+-            }
+-            let mut cuts: Vec<usize> = parts.iter().filter_map(|&n| firsts.get(n).copied()).collect();
+-            if let Some(at) = check_at(&lists, check.as_ref()) {
+-                cuts.push(at);
+-                cuts.sort_unstable();
+-                cuts.dedup();
+-            }
+-            // SAFETY: closed lists; the fence is ours.
++                opening_stamps += 1;
++            }
++            let cuts: Vec<usize> = parts.iter().filter_map(|&n| firsts.get(n).copied()).collect();
++            let checker = check_at(&lists, check.as_ref());
++            // SAFETY: the signal follows all producer and maintenance lists.
+             let signalled = unsafe {
++                if let Some(card) = &mut card {
++                    card.maintenance_submitted(&self.fence, *submitted);
++                }
+                 let mut from = 0;
+                 for to in cuts.into_iter().chain([lists.len()]) {
+-                    self.queue.ExecuteCommandLists(&lists[from..to]);
++                    for (a, b) in submission_ranges(from, to, opening_stamps, checker) {
++                        self.queue.ExecuteCommandLists(&lists[a..b]);
++                    }
+                     from = to;
+                 }
+                 self.queue.Signal(&self.fence, *submitted)
+@@ -6418,20 +6568,31 @@
+             firsts
+                 .iter()
+                 .zip(firsts.iter().skip(1).chain([&lists.len()]))
+-                .map(|(&a, &b)| &lists[a..b])
++                .enumerate()
++                .map(|(i, (&a, &b))| &lists[if i == 0 { 0 } else { a }..b])
+                 .collect()
+         } else {
+             split_at_check(&lists, check.as_ref())
+         };
+         #[cfg(not(feature = "diagnostics"))]
+         let groups = split_at_check(&lists, check.as_ref());
++        let checker = check_at(&lists, check.as_ref());
++        if let Some(card) = &mut card {
++            // SAFETY: the final signal covers every group, including the checker.
++            unsafe { card.maintenance_submitted(&self.fence, *submitted + groups.len() as u64) };
++        }
++        let mut from = 0;
+         submitting(2, runs.len());
+         for (i, group) in groups.iter().enumerate() {
+             *submitted += 1;
+             let started = std::time::Instant::now();
+             // SAFETY: closed lists; the fence and event are ours.
+             unsafe {
+-                self.queue.ExecuteCommandLists(group);
++                let to = from + group.len();
++                for (a, b) in submission_ranges(from, to, opening_stamps, checker) {
++                    self.queue.ExecuteCommandLists(&lists[a..b]);
++                }
++                from = to;
+                 self.card_sent();
+                 let waited = self
+                     .queue
+@@ -9377,6 +9538,35 @@
+     }
+ }
+ 
++// Runtime measurement of intermittent long worker waits. Keep the data local to
++// the call so several overlapping workers do not overwrite each other's timers.
++struct ReadTimer {
++    start: std::time::Instant,
++    len: usize,
++    stage: &'static str,
++}
++
++impl ReadTimer {
++    fn start(len: usize, stage: &'static str) -> Option<Self> {
++        static ON: OnceLock<bool> = OnceLock::new();
++        if len < 16 << 10 || !*ON.get_or_init(|| crate::switch::on("VICTORY_MEASURE_BUFFER_READS")) {
++            return None;
++        }
++        Some(Self { start: std::time::Instant::now(), len, stage })
++    }
++}
++
++impl Drop for ReadTimer {
++    fn drop(&mut self) {
++        let elapsed = self.start.elapsed();
++        if elapsed.as_millis() >= 100 {
++            tracing::info!(target: "victory_gpu::host::slow_refresh", windows_thread = thread_id(),
++                elapsed_us = elapsed.as_micros() as u64, span_bytes = self.len, stage = self.stage,
++                "slow title buffer read stage");
++        }
++    }
++}
++
+ /// Copies title memory at submission. The ranges were checked against their
+ /// resources when recorded, but the title may since have unmapped pages of
+ /// them (tiled memory, page mappings), which read as zeros here; a title
+@@ -9453,6 +9643,7 @@
+ /// After a failed bulk read into host memory, skip contiguous holes. Never
+ /// cache the query across copies: the title may remap the same address.
+ fn read_sparse(src: *const u8, dst: *mut u8, len: usize) {
++    let _sample = ReadTimer::start(len, "sparse");
+     use windows_sys::Win32::System::Memory::{
+         MEM_COMMIT, MEMORY_BASIC_INFORMATION, PAGE_NOACCESS, VirtualQuery,
+     };
+@@ -9499,6 +9690,7 @@
+ }
+ 
+ fn read_pieces(src: *const u8, dst: *mut u8, len: usize) {
++    let _sample = ReadTimer::start(len, "pieces");
+     // Something is unmapped: page by page (64 KiB, then 4 KiB in a piece
+     // that fails), zeros for what cannot be read.
+     for_pieces(src as usize, len, 64 << 10, |at, n| {
+@@ -9582,6 +9774,7 @@
+ /// Copies `len` bytes from `src` to `dst` unless a source page is not
+ /// readable.
+ fn read(src: *const u8, dst: *mut u8, len: usize) -> bool {
++    let _sample = ReadTimer::start(len, "read");
+     // Views the runtime keeps in its books alone (`VICTORY_SOFT_VIEWS`) are
+     // read from their pages, and stay as they are: no view of the host's is
+     // made for our reading. What lies between them is read as before.
+@@ -9612,6 +9805,7 @@
+ 
+ /// [`read`] of memory the host has mapped, or has not.
+ fn read_plain(src: *const u8, dst: *mut u8, len: usize) -> bool {
++    let _sample = ReadTimer::start(len, "plain");
+     use windows_sys::Win32::System::Diagnostics::Debug::ReadProcessMemory;
+     use windows_sys::Win32::System::Threading::GetCurrentProcess;
+     if crate::safecopy::on() {
+@@ -10055,6 +10249,16 @@
+                      ranges were sent up (VICTORY_CARD_REHASH_RUNS=1 joins them: now {}), {compares:.0} compare passes; \
+                      {wc_left:.1} MB declared written in write-combined memory left on the card (VICTORY_WC_NO_BACK)",
+                     if rehash_runs() { "on" } else { "off" }
++                );
++            }
++            let [hash, compare, hash_fallback, compare_fallback] =
++                [0, 1, 2, 3].map(|i| CARD_LAUNCHES[i].swap(0, Ordering::Relaxed) as f64 / frames);
++            if hash + compare > 0.0 {
++                tracing::info!(
++                    "native card maintenance dispatches per frame: {hash:.0} rehash, {compare:.0} compare; \
++                     {hash_fallback:.1} rehash and {compare_fallback:.1} compare phases retained legacy work \
++                     (VICTORY_MAINTENANCE_BATCHES={})",
++                    u8::from(maintenance_batches())
+                 );
+             }
+         }
+diff --git a/crates/victory-gpu/src/host/maintenance.rs b/crates/victory-gpu/src/host/maintenance.rs
+--- /dev/null
++++ b/crates/victory-gpu/src/host/maintenance.rs
+@@ -0,0 +1,780 @@
++//! Fence-owned batches of the existing card-piece hash/compare work.
++//!
++//! Preparation is fallible and changes no command list. Recording only binds
++//! immutable objects and dispatches. A recorded batch cannot reenter the pool
++//! until its covering native fence is proved complete, including on error paths.
++
++use std::collections::HashMap;
++use std::sync::Arc;
++
++use super::*;
++use crate::shadow::CardSpan;
++
++const VIEWS: usize = 32;
++const SLOTS: u32 = (VIEWS * 2) as u32;
++const ROW_BYTES: u64 = 32;
++const MOST: usize = D3D12_CS_DISPATCH_MAX_THREAD_GROUPS_PER_DIMENSION as usize;
++const FREE_BYTES: u64 = 32 << 20;
++const FREE_HEAPS: usize = 256;
++
++pub(super) struct Job {
++    pub(super) source: ID3D12Resource,
++    pub(super) hashes: ID3D12Resource,
++    pub(super) span: CardSpan,
++    pub(super) size: u32,
++    /// DWORD offset, exactly as passed to the legacy `card_pass`.
++    pub(super) out_at: u32,
++    pub(super) mode: u32,
++}
++
++#[derive(Clone, Copy)]
++struct Spec {
++    source: usize,
++    hashes: usize,
++    span: CardSpan,
++    size: u32,
++    out_at: u32,
++    mode: u32,
++}
++
++struct Part {
++    sources: Vec<usize>,
++    hashes: Vec<usize>,
++    rows: Vec<[u32; 8]>,
++}
++
++/// Check the shader's complete footprint, rather than just the guest range.
++fn footprint(s: &Spec) -> Option<(u64, u64)> {
++    if s.mode > 2 || s.span.pieces == 0 || s.size == 0 || s.size % 16 != 0 || s.span.skew >= 65536 {
++        return None;
++    }
++    if s.span.from >= s.span.to || s.span.to > s.size {
++        return None;
++    }
++    let end = s.span.first.checked_add(s.span.pieces)?;
++    // The legacy shader multiplies (piece + 1) in 32 bits.
++    if u64::from(end) * 65536 > u64::from(u32::MAX) {
++        return None;
++    }
++    let lo = (u64::from(s.span.first) * 65536).saturating_sub(u64::from(s.span.skew)) & !15;
++    let last_lo = (u64::from(end - 1) * 65536).saturating_sub(u64::from(s.span.skew));
++    let hi = (u64::from(end) * 65536 - u64::from(s.span.skew))
++        .min(u64::from(s.size))
++        .next_multiple_of(16);
++    (last_lo < u64::from(s.size) && lo < hi && hi <= u64::from(s.size)).then_some((lo, hi))
++}
++
++/// Read-only repeats are independent. Any repeat involving a hash write falls
++/// back as a whole phase: its flags may otherwise acquire different semantics.
++fn plan(specs: &[Spec], differs_bytes: u64) -> Option<Vec<Part>> {
++    if specs.is_empty() {
++        return None;
++    }
++    let mut pieces = HashMap::new();
++    let mut outputs = Vec::new();
++    for s in specs {
++        footprint(s)?;
++        if s.mode != 0 {
++            let end = u64::from(s.out_at)
++                .checked_add(u64::from(s.span.pieces))?
++                .checked_mul(4)?;
++            if end > differs_bytes || end > u64::from(u32::MAX) {
++                return None;
++            }
++            outputs.push((u64::from(s.out_at) * 4, end));
++        }
++        for piece in s.span.first..s.span.first + s.span.pieces {
++            let writes = s.mode != 1;
++            if let Some(old_writes) = pieces.insert((s.hashes, piece), writes)
++                && (old_writes || writes)
++            {
++                return None;
++            }
++        }
++    }
++    outputs.sort_unstable();
++    if outputs.windows(2).any(|p| p[0].1 > p[1].0) {
++        return None;
++    }
++    let mut parts = Vec::new();
++    let mut part = Part {
++        sources: Vec::new(),
++        hashes: Vec::new(),
++        rows: Vec::new(),
++    };
++    for s in specs {
++        for i in 0..s.span.pieces {
++            let source = part.sources.iter().position(|&r| r == s.source);
++            let hash = part.hashes.iter().position(|&r| r == s.hashes);
++            if part.rows.len() == MOST
++                || source.is_none() && part.sources.len() == VIEWS
++                || hash.is_none() && part.hashes.len() == VIEWS
++            {
++                parts.push(part);
++                part = Part {
++                    sources: Vec::new(),
++                    hashes: Vec::new(),
++                    rows: Vec::new(),
++                };
++            }
++            let source = match part.sources.iter().position(|&r| r == s.source) {
++                Some(at) => at,
++                None => {
++                    part.sources.push(s.source);
++                    part.sources.len() - 1
++                }
++            };
++            let hash = match part.hashes.iter().position(|&r| r == s.hashes) {
++                Some(at) => at,
++                None => {
++                    part.hashes.push(s.hashes);
++                    part.hashes.len() - 1
++                }
++            };
++            let out = if s.mode == 0 { 0 } else { (s.out_at + i) * 4 };
++            part.rows.push([
++                source as u32,
++                hash as u32,
++                s.span.first + i,
++                s.span.skew,
++                s.size,
++                out,
++                s.mode,
++                0,
++            ]);
++        }
++    }
++    if !part.rows.is_empty() {
++        parts.push(part);
++    }
++    Some(parts)
++}
++
++const HEADER: &str = r#"
++#define RS "RootConstants(num32BitConstants=2, b0), SRV(t32), DescriptorTable(SRV(t0, numDescriptors=32)), DescriptorTable(UAV(u0, numDescriptors=32)), UAV(u32)"
++cbuffer Batch : register(b0) { uint first_job; uint job_count; };
++ByteAddressBuffer jobs : register(t32);
++ByteAddressBuffer sources[32] : register(t0);
++RWByteAddressBuffer hashes[32] : register(u0);
++RWByteAddressBuffer differs : register(u32);
++groupshared uint4 parts[64];
++[RootSignature(RS)]
++[numthreads(64, 1, 1)]
++void main(uint3 id : SV_GroupID, uint thread : SV_GroupIndex) {
++    if (id.x >= job_count) return;
++    uint4 a = jobs.Load4((first_job + id.x) * 32u);
++    uint4 b = jobs.Load4((first_job + id.x) * 32u + 16u);
++    uint source = a.x, hash = a.y, piece = a.z, skew = a.w;
++    uint size = b.x, out_at = b.y, compare = b.z;
++"#;
++
++/// Reuse the legacy reduction verbatim, including its load ordering and hash
++/// folding. Only resource selection and the already-expanded output offset differ.
++fn shader_source() -> Option<String> {
++    const START: &str = "    uint lo = piece * 65536u;";
++    let (_, body) = CARD_COMPARE.split_once(START)?;
++    let body = body
++        .replace(
++            "now.Load4(",
++            "sources[NonUniformResourceIndex(source)].Load4(",
++        )
++        .replace("hashes.", "hashes[NonUniformResourceIndex(hash)].")
++        .replace("out_at + id.x * 4u", "out_at");
++    Some(format!("{HEADER}{START}{body}"))
++}
++
++struct Pass {
++    _device: ID3D12Device,
++    root: ID3D12RootSignature,
++    pso: ID3D12PipelineState,
++}
++
++/// Keep the device alive for failures too: a recycled native address must not
++/// inherit a previous device's negative capability/compilation result.
++struct CachedPass {
++    device: ID3D12Device,
++    pass: Option<Arc<Pass>>,
++}
++
++fn pass(host: &Host) -> Option<Arc<Pass>> {
++    static PASSES: Mutex<Vec<CachedPass>> = Mutex::new(Vec::new());
++    let mut passes = PASSES.lock().unwrap_or_else(|e| e.into_inner());
++    if let Some(entry) = passes
++        .iter()
++        .find(|entry| entry.device.as_raw() == host.device.as_raw())
++    {
++        return entry.pass.clone();
++    }
++    let result = make_pass(host);
++    let pass = match result {
++        Ok(pass) => Some(pass),
++        Err(reason) => {
++            tracing::warn!(
++                reason,
++                "GPU maintenance batches unavailable on this device; retaining legacy passes"
++            );
++            None
++        }
++    };
++    passes.push(CachedPass {
++        device: host.device.clone(),
++        pass: pass.clone(),
++    });
++    pass
++}
++
++fn make_pass(host: &Host) -> Result<Arc<Pass>, String> {
++    let mut options = D3D12_FEATURE_DATA_D3D12_OPTIONS::default();
++    // SAFETY: the feature structure has exactly the advertised layout/size.
++    unsafe {
++        host.device
++            .CheckFeatureSupport(
++                D3D12_FEATURE_D3D12_OPTIONS,
++                (&raw mut options).cast(),
++                size_of_val(&options) as u32,
++            )
++            .map_err(|_| "resource binding capability query failed")?;
++    }
++    if options.ResourceBindingTier.0 < D3D12_RESOURCE_BINDING_TIER_2.0 {
++        return Err("resource binding tier below tier 2".into());
++    }
++    let source = shader_source().ok_or("legacy hash shader body unavailable")?;
++    // Keep compiler diagnostics in the single cached warning, rather than the
++    // generic compile helper's separate warning plus another phase warning.
++    let code = compile_batch(&source)?;
++    // SAFETY: live compiled bytecode, containing its root signature.
++    let pass = unsafe {
++        let root: ID3D12RootSignature = host
++            .device
++            .CreateRootSignature(0, &code)
++            .map_err(|_| "batched hash root signature creation failed")?;
++        let pso = host
++            .device
++            .CreateComputePipelineState(&D3D12_COMPUTE_PIPELINE_STATE_DESC {
++                pRootSignature: std::mem::transmute_copy(&root),
++                CS: D3D12_SHADER_BYTECODE {
++                    pShaderBytecode: code.as_ptr().cast(),
++                    BytecodeLength: code.len(),
++                },
++                ..Default::default()
++            })
++            .map_err(|_| "batched hash pipeline creation failed")?;
++        Arc::new(Pass {
++            _device: host.device.clone(),
++            root,
++            pso,
++        })
++    };
++    Ok(pass)
++}
++
++fn compile_batch(source: &str) -> Result<Vec<u8>, String> {
++    use windows::Win32::Graphics::Direct3D::Fxc::D3DCompile;
++    use windows::Win32::Graphics::Direct3D::ID3DBlob;
++    let mut code: Option<ID3DBlob> = None;
++    let mut errors: Option<ID3DBlob> = None;
++    // SAFETY: all source/name arguments and output storage live through the
++    // call. Returned blobs own their bytes until they have been copied below.
++    unsafe {
++        let compiled = D3DCompile(
++            source.as_ptr().cast(),
++            source.len(),
++            windows::core::s!("maintenance batches"),
++            None,
++            None,
++            windows::core::s!("main"),
++            windows::core::s!("cs_5_1"),
++            0,
++            0,
++            &mut code,
++            Some(&mut errors),
++        );
++        if let Err(error) = compiled {
++            let detail = errors
++                .as_ref()
++                .map(|blob| {
++                    String::from_utf8_lossy(std::slice::from_raw_parts(
++                        blob.GetBufferPointer().cast::<u8>(),
++                        blob.GetBufferSize(),
++                    ))
++                    .into_owned()
++                })
++                .unwrap_or_default();
++            return Err(format!(
++                "batched hash shader compilation failed: {error}; {detail}"
++            ));
++        }
++        let code = code.ok_or("batched hash compiler returned no bytecode")?;
++        Ok(
++            std::slice::from_raw_parts(code.GetBufferPointer().cast::<u8>(), code.GetBufferSize())
++                .to_vec(),
++        )
++    }
++}
++
++struct Storage {
++    device: ID3D12Device,
++    table: ID3D12Resource,
++    data: usize,
++    bytes: u64,
++    heap: ID3D12DescriptorHeap,
++}
++
++// SAFETY: free-threaded native objects; the mapping has one CPU owner and is
++// never modified while recorded GPU work may read it.
++unsafe impl Send for Storage {}
++
++struct Chunk {
++    storage: Storage,
++    rows: u32,
++}
++
++struct Pending {
++    chunks: Vec<Chunk>,
++    _pins: Vec<ID3D12Resource>,
++    _pass: Arc<Pass>,
++    fence: Option<(ID3D12Fence, u64)>,
++}
++
++#[derive(Default)]
++struct Pool {
++    free: Vec<Storage>,
++    pending: Vec<Pending>,
++}
++
++static POOL: Mutex<Pool> = Mutex::new(Pool {
++    free: Vec::new(),
++    pending: Vec::new(),
++});
++
++impl Pool {
++    fn put(&mut self, storage: Storage) {
++        if self.free.len() < FREE_HEAPS
++            && self.free.iter().map(|m| m.bytes).sum::<u64>() + storage.bytes <= FREE_BYTES
++        {
++            self.free.push(storage);
++        }
++    }
++
++    fn collect(&mut self) {
++        let mut i = 0;
++        while i < self.pending.len() {
++            let complete = self.pending[i].fence.as_ref().is_some_and(|(f, target)| {
++                // SAFETY: the fence is retained by this pending allocation.
++                let value = unsafe { f.GetCompletedValue() };
++                value != u64::MAX && value >= *target
++            });
++            if complete {
++                let pending = self.pending.swap_remove(i);
++                for chunk in pending.chunks {
++                    self.put(chunk.storage);
++                }
++            } else {
++                i += 1;
++            }
++        }
++    }
++}
++
++fn storage(host: &Host, bytes: u64) -> Option<Storage> {
++    {
++        let mut pool = POOL.lock().unwrap_or_else(|e| e.into_inner());
++        pool.collect();
++        let at = pool
++            .free
++            .iter()
++            .enumerate()
++            .filter(|(_, s)| s.device.as_raw() == host.device.as_raw() && s.bytes >= bytes)
++            .min_by_key(|(_, s)| s.bytes)
++            .map(|(i, _)| i);
++        if let Some(at) = at {
++            return Some(pool.free.swap_remove(at));
++        }
++    }
++    let bytes = bytes.max(4096).next_power_of_two();
++    let (table, data) = host.upload_buffer(bytes)?;
++    // SAFETY: an ordinary bounded shader-visible descriptor heap.
++    let heap = unsafe {
++        host.device
++            .CreateDescriptorHeap(&D3D12_DESCRIPTOR_HEAP_DESC {
++                Type: D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV,
++                NumDescriptors: SLOTS,
++                Flags: D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE,
++                NodeMask: 0,
++            })
++    }
++    .ok()?;
++    Some(Storage {
++        device: host.device.clone(),
++        table,
++        data: data as usize,
++        bytes,
++        heap,
++    })
++}
++
++/// Immutable native objects held from preparation through actual completion.
++pub(super) struct Batch {
++    chunks: Vec<Chunk>,
++    pins: Vec<ID3D12Resource>,
++    pass: Arc<Pass>,
++    differs: ID3D12Resource,
++    recorded: bool,
++    fence: Option<(ID3D12Fence, u64)>,
++}
++
++impl Batch {
++    pub(super) fn dispatches(&self) -> usize {
++        self.chunks.len()
++    }
++
++    /// # Safety
++    /// `list` is open; producer and alias barriers have already been recorded;
++    /// resources have the same states required by the legacy `card_pass`.
++    /// A batch is recorded exactly once.
++    pub(super) unsafe fn record(&mut self, list: &ID3D12GraphicsCommandList) {
++        assert!(!self.recorded, "a maintenance batch was recorded twice");
++        self.recorded = true;
++        // SAFETY: the caller's command list and states; every descriptor/table
++        // and complete footprint was validated and pinned during preparation.
++        unsafe {
++            list.SetComputeRootSignature(&self.pass.root);
++            list.SetPipelineState(&self.pass.pso);
++            list.SetComputeRootUnorderedAccessView(4, self.differs.GetGPUVirtualAddress());
++            for chunk in &self.chunks {
++                let s = &chunk.storage;
++                list.SetDescriptorHeaps(&[Some(s.heap.clone())]);
++                let start = s.heap.GetGPUDescriptorHandleForHeapStart();
++                let step = s
++                    .device
++                    .GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
++                list.SetComputeRootShaderResourceView(1, s.table.GetGPUVirtualAddress());
++                list.SetComputeRootDescriptorTable(2, start);
++                list.SetComputeRootDescriptorTable(
++                    3,
++                    D3D12_GPU_DESCRIPTOR_HANDLE {
++                        ptr: start.ptr + u64::from(step) * VIEWS as u64,
++                    },
++                );
++                let constants = [0u32, chunk.rows];
++                list.SetComputeRoot32BitConstants(0, 2, constants.as_ptr().cast(), 0);
++                list.Dispatch(chunk.rows, 1, 1);
++            }
++        }
++    }
++
++    /// Tag before native submission, with a freshly reserved fence value which
++    /// will be signalled after every command recorded from this batch.
++    ///
++    /// # Safety
++    /// No command from this batch may execute after that signal. `target` must
++    /// be the future native value reserved for those commands, not a logical
++    /// guest/flight number. Missing signals intentionally retain the objects.
++    pub(super) unsafe fn submitted(&mut self, fence: &ID3D12Fence, target: u64) {
++        self.fence = None;
++        // SAFETY: a live retained native fence.
++        let completed = unsafe { fence.GetCompletedValue() };
++        if self.recorded && target > completed && completed != u64::MAX {
++            self.fence = Some((fence.clone(), target));
++        }
++    }
++}
++
++impl Drop for Batch {
++    fn drop(&mut self) {
++        let mut pool = POOL.lock().unwrap_or_else(|e| e.into_inner());
++        if self.recorded {
++            // None means quarantine: work was recorded without a proved native
++            // retirement point, so neither storage nor pins can be discarded.
++            pool.pending.push(Pending {
++                chunks: std::mem::take(&mut self.chunks),
++                _pins: std::mem::take(&mut self.pins),
++                _pass: self.pass.clone(),
++                fence: self.fence.take(),
++            });
++        } else {
++            for chunk in std::mem::take(&mut self.chunks) {
++                pool.put(chunk.storage);
++            }
++        }
++        pool.collect();
++    }
++}
++
++/// All validation, compilation and allocation precede the first mutation of a
++/// command list. Any unsupported plan simply uses the existing implementation.
++pub(super) fn prepare(host: &Host, jobs: &[Job], differs: &ID3D12Resource) -> Option<Batch> {
++    let pass = pass(host)?;
++    // SAFETY: resources are live COM references throughout this function.
++    let differs_desc = unsafe { differs.GetDesc() };
++    if differs_desc.Dimension != D3D12_RESOURCE_DIMENSION_BUFFER
++        || !differs_desc
++            .Flags
++            .contains(D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS)
++    {
++        return None;
++    }
++    let mut resources: HashMap<usize, &ID3D12Resource> = HashMap::new();
++    let mut specs = Vec::with_capacity(jobs.len());
++    for job in jobs {
++        let source = job.source.as_raw() as usize;
++        let hashes = job.hashes.as_raw() as usize;
++        let spec = Spec {
++            source,
++            hashes,
++            span: job.span,
++            size: job.size,
++            out_at: job.out_at,
++            mode: job.mode,
++        };
++        let (_, hi) = footprint(&spec)?;
++        // SAFETY: live retained resources.
++        let (src, hash) = unsafe { (job.source.GetDesc(), job.hashes.GetDesc()) };
++        if src.Dimension != D3D12_RESOURCE_DIMENSION_BUFFER
++            || hash.Dimension != D3D12_RESOURCE_DIMENSION_BUFFER
++            || src.Width % 4 != 0
++            || hash.Width % 4 != 0
++            || src.Width / 4 > u64::from(u32::MAX)
++            || hash.Width / 4 > u64::from(u32::MAX)
++            || src.Width < hi
++            || src.Flags.contains(D3D12_RESOURCE_FLAG_DENY_SHADER_RESOURCE)
++            || !hash
++                .Flags
++                .contains(D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS)
++            || u64::from(job.span.first + job.span.pieces) * 16 > hash.Width
++        {
++            return None;
++        }
++        resources.insert(source, &job.source);
++        resources.insert(hashes, &job.hashes);
++        specs.push(spec);
++    }
++    // The normal representation owns separate source, hash and result
++    // allocations. Refuse unusual aliases whose cross-job write dependencies
++    // the independently scheduled groups cannot reproduce.
++    let result = differs.as_raw() as usize;
++    if specs
++        .iter()
++        .any(|s| s.source == result || s.hashes == result)
++        || specs
++            .iter()
++            .any(|s| specs.iter().any(|other| s.source == other.hashes))
++    {
++        return None;
++    }
++    let parts = plan(&specs, differs_desc.Width)?;
++    let mut batch = Batch {
++        chunks: Vec::with_capacity(parts.len()),
++        pins: resources
++            .values()
++            .map(|r| (*r).clone())
++            .chain(std::iter::once(differs.clone()))
++            .collect(),
++        pass,
++        differs: differs.clone(),
++        recorded: false,
++        fence: None,
++    };
++    for part in parts {
++        let storage = storage(host, part.rows.len() as u64 * ROW_BYTES)?;
++        // SAFETY: unique CPU ownership before recording, with sufficient room.
++        unsafe {
++            std::ptr::copy_nonoverlapping(
++                part.rows.as_ptr(),
++                storage.data as *mut [u32; 8],
++                part.rows.len(),
++            );
++        }
++        // SAFETY: the heap has exactly two bounded 32-descriptor ranges. Null
++        // descriptors initialize every unused slot, including tier2 requirements.
++        unsafe {
++            let start = storage.heap.GetCPUDescriptorHandleForHeapStart();
++            let step = host
++                .device
++                .GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV)
++                as usize;
++            for i in 0..VIEWS {
++                let source = part.sources.get(i).and_then(|k| resources.get(k).copied());
++                let width = source.map_or(4, |r| r.GetDesc().Width);
++                let desc = D3D12_SHADER_RESOURCE_VIEW_DESC {
++                    Format: DXGI_FORMAT_R32_TYPELESS,
++                    ViewDimension: D3D12_SRV_DIMENSION_BUFFER,
++                    Shader4ComponentMapping: D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING,
++                    Anonymous: D3D12_SHADER_RESOURCE_VIEW_DESC_0 {
++                        Buffer: D3D12_BUFFER_SRV {
++                            FirstElement: 0,
++                            NumElements: (width / 4) as u32,
++                            StructureByteStride: 0,
++                            Flags: D3D12_BUFFER_SRV_FLAG_RAW,
++                        },
++                    },
++                };
++                host.device.CreateShaderResourceView(
++                    source,
++                    Some(&desc),
++                    D3D12_CPU_DESCRIPTOR_HANDLE {
++                        ptr: start.ptr + i * step,
++                    },
++                );
++                let hash = part.hashes.get(i).and_then(|k| resources.get(k).copied());
++                let width = hash.map_or(4, |r| r.GetDesc().Width);
++                let desc = D3D12_UNORDERED_ACCESS_VIEW_DESC {
++                    Format: DXGI_FORMAT_R32_TYPELESS,
++                    ViewDimension: D3D12_UAV_DIMENSION_BUFFER,
++                    Anonymous: D3D12_UNORDERED_ACCESS_VIEW_DESC_0 {
++                        Buffer: D3D12_BUFFER_UAV {
++                            FirstElement: 0,
++                            NumElements: (width / 4) as u32,
++                            StructureByteStride: 0,
++                            CounterOffsetInBytes: 0,
++                            Flags: D3D12_BUFFER_UAV_FLAG_RAW,
++                        },
++                    },
++                };
++                host.device.CreateUnorderedAccessView(
++                    hash,
++                    None,
++                    Some(&desc),
++                    D3D12_CPU_DESCRIPTOR_HANDLE {
++                        ptr: start.ptr + (VIEWS + i) * step,
++                    },
++                );
++            }
++        }
++        batch.chunks.push(Chunk {
++            storage,
++            rows: part.rows.len() as u32,
++        });
++    }
++    Some(batch)
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    fn spec(source: usize, hashes: usize, first: u32, pieces: u32, mode: u32, out_at: u32) -> Spec {
++        Spec {
++            source,
++            hashes,
++            span: CardSpan {
++                from: 0,
++                to: 4 << 20,
++                first,
++                pieces,
++                skew: 0,
++            },
++            size: 4 << 20,
++            out_at,
++            mode,
++        }
++    }
++
++    #[test]
++    fn keeps_each_piece_and_output_slot() {
++        let p = plan(&[spec(1, 2, 3, 2, 2, 11), spec(7, 8, 9, 1, 1, 20)], 1024).unwrap();
++        assert_eq!(p.len(), 1);
++        assert_eq!(
++            p[0].rows,
++            vec![
++                [0, 0, 3, 0, 4 << 20, 44, 2, 0],
++                [0, 0, 4, 0, 4 << 20, 48, 2, 0],
++                [1, 1, 9, 0, 4 << 20, 80, 1, 0]
++            ]
++        );
++    }
++
++    #[test]
++    fn writable_piece_repeats_fall_back_even_for_disjoint_guest_ranges() {
++        for a in 0..=2 {
++            for b in 0..=2 {
++                let mut second = spec(3, 2, 3, 1, b, 20);
++                second.span.from = 65536;
++                let p = plan(&[spec(1, 2, 3, 1, a, 11), second], 1024);
++                assert_eq!(p.is_some(), a == 1 && b == 1);
++            }
++        }
++    }
++
++    #[test]
++    fn overlapping_result_slots_and_invalid_footprints_fall_back() {
++        assert!(plan(&[spec(1, 2, 3, 2, 1, 11), spec(3, 4, 7, 1, 1, 12)], 1024).is_none());
++        assert!(plan(&[spec(1, 2, 3, 2, 1, 11)], 48).is_none());
++        assert!(plan(&[spec(1, 2, 64, 1, 1, 0)], 1024).is_none());
++        assert!(plan(&[spec(1, 2, 0, 0, 1, 0)], 1024).is_none());
++        assert!(plan(&[spec(1, 2, 0, 1, 3, 0)], 1024).is_none());
++    }
++
++    #[test]
++    fn preserves_skew_and_the_complete_widened_last_piece() {
++        let mut s = spec(1, 2, 64, 1, 1, 0);
++        s.span.skew = 65535;
++        assert_eq!(
++            footprint(&s),
++            Some(((63 * 65536) as u64, (64 * 65536) as u64))
++        );
++        let p = plan(&[s], 1024).unwrap();
++        assert_eq!(p[0].rows[0][3], 65535);
++    }
++
++    #[test]
++    fn small_title_buffers_hash_their_rounded_logical_size() {
++        let mut s = spec(1, 2, 0, 1, 1, 0);
++        s.size = 288;
++        s.span.to = 281;
++        assert_eq!(footprint(&s), Some((0, 288)));
++        assert_eq!(plan(&[s], 1024).unwrap()[0].rows[0][4], 288);
++    }
++
++    #[test]
++    fn descriptor_capacity_splits_without_losing_work() {
++        let specs: Vec<_> = (0..33).map(|i| spec(i + 1, i + 100, 0, 1, 0, 0)).collect();
++        let parts = plan(&specs, 0).unwrap();
++        assert_eq!(
++            parts.iter().map(|p| p.rows.len()).collect::<Vec<_>>(),
++            [32, 1]
++        );
++        assert!(
++            parts
++                .iter()
++                .all(|p| p.sources.len() <= VIEWS && p.hashes.len() <= VIEWS)
++        );
++    }
++
++    #[test]
++    fn dispatch_capacity_splits_without_losing_work() {
++        let mut full = spec(1, 2, 0, MOST as u32, 0, 0);
++        full.size = MOST as u32 * 65536;
++        full.span.to = full.size;
++        let parts = plan(&[full, spec(3, 4, 0, 1, 0, 0)], 0).unwrap();
++        assert_eq!(
++            parts.iter().map(|p| p.rows.len()).collect::<Vec<_>>(),
++            [MOST, 1]
++        );
++        assert_eq!(parts[0].rows.last().unwrap()[2], MOST as u32 - 1);
++        assert_eq!(parts[1].rows[0][2], 0);
++    }
++
++    #[test]
++    fn shader_keeps_legacy_hash_reduction_verbatim() {
++        let source = shader_source().unwrap();
++        let body = source
++            .split_once("    uint lo = piece * 65536u;")
++            .unwrap()
++            .1
++            .replace(
++                "sources[NonUniformResourceIndex(source)].Load4(",
++                "now.Load4(",
++            )
++            .replace("hashes[NonUniformResourceIndex(hash)].", "hashes.")
++            .replace("differs.Store(out_at,", "differs.Store(out_at + id.x * 4u,");
++        assert_eq!(
++            body,
++            CARD_COMPARE
++                .split_once("    uint lo = piece * 65536u;")
++                .unwrap()
++                .1
++        );
++        assert!(source.contains("if (id.x >= job_count) return;"));
++    }
++}
+diff --git a/crates/victory-gpu/src/host/maintenance_tests.rs b/crates/victory-gpu/src/host/maintenance_tests.rs
+--- /dev/null
++++ b/crates/victory-gpu/src/host/maintenance_tests.rs
+@@ -0,0 +1,580 @@
++//! Native, asset-free maintenance regressions. Run this ignored test in its own
++//! diagnostics process, with one test thread and the D3D12 debug layer enabled.
++
++use super::maintenance::{self, Batch, Job};
++use super::*;
++use windows::Win32::Foundation::WAIT_OBJECT_0;
++use windows::Win32::Graphics::Direct3D::Fxc::D3DCompile;
++use windows::Win32::Graphics::Direct3D::ID3DBlob;
++
++const OUTPUT_BYTES: usize = 256;
++const HASH_BYTES: usize = 64;
++const SENTINEL: u32 = 0xa5a5_5a5a;
++
++struct Case {
++    source: ID3D12Resource,
++    hashes: ID3D12Resource,
++    bytes: Vec<u8>,
++    span: crate::shadow::CardSpan,
++    out_at: u32,
++}
++
++#[derive(Debug, PartialEq, Eq)]
++struct Observation {
++    output: Vec<u32>,
++    hashes: Vec<Vec<u8>>,
++}
++
++fn open(host: &Host) -> Prelude {
++    let pair = host.make_prelude().expect("fixture command list");
++    // SAFETY: a newly created, closed list whose allocator has never executed.
++    unsafe {
++        pair.0.Reset().unwrap();
++        pair.1.Reset(&pair.0, None).unwrap();
++    }
++    pair
++}
++
++fn wait(host: &Host, target: u64) {
++    // SAFETY: this fixture exclusively owns the host and its event, and every
++    // target was signalled after the lists it covers. Bound a failed GPU wait.
++    unsafe {
++        host.fence.SetEventOnCompletion(target, host.event).unwrap();
++        assert_eq!(
++            WaitForSingleObject(host.event, 30_000),
++            WAIT_OBJECT_0,
++            "native fixture timed out"
++        );
++        host.device.GetDeviceRemovedReason().unwrap();
++        assert!(host.fence.GetCompletedValue() >= target);
++    }
++}
++
++/// Each entry is a distinct Execute call: buffer decay and producer completion
++/// must happen before the checker, including when the producer is a COPY.
++fn send(host: &Host, lists: &[&ID3D12GraphicsCommandList], batch: Option<&mut Batch>) -> u64 {
++    let mut target = host.submitted.lock().unwrap();
++    *target += 1;
++    // SAFETY: live closed lists and a freshly reserved native target, signalled
++    // after every list; no fixture objects are reset or freed before its wait.
++    unsafe {
++        if let Some(batch) = batch {
++            batch.submitted(&host.fence, *target);
++        }
++        for list in lists {
++            host.queue
++                .ExecuteCommandLists(&[Some(list.cast().unwrap())]);
++        }
++        host.queue.Signal(&host.fence, *target).unwrap();
++    }
++    *target
++}
++
++fn copy_up(
++    host: &Host,
++    list: &ID3D12GraphicsCommandList,
++    dst: &ID3D12Resource,
++    at: u64,
++    bytes: &[u8],
++) -> ID3D12Resource {
++    let (upload, data) = host
++        .upload_buffer(bytes.len() as u64)
++        .expect("fixture upload");
++    // SAFETY: the upload mapping has exactly this capacity and remains pinned
++    // by the caller until the producer's native submission fence completes.
++    unsafe {
++        std::ptr::copy_nonoverlapping(bytes.as_ptr(), data, bytes.len());
++        list.CopyBufferRegion(dst, at, &upload, 0, bytes.len() as u64);
++    }
++    upload
++}
++
++fn jobs_of(cases: &[Case], mode: u32) -> Vec<Job> {
++    cases
++        .iter()
++        .map(|c| Job {
++            source: c.source.clone(),
++            hashes: c.hashes.clone(),
++            span: c.span,
++            size: c.bytes.len() as u32,
++            out_at: c.out_at,
++            mode,
++        })
++        .collect()
++}
++
++fn record_legacy(
++    work: &CardWork,
++    list: &ID3D12GraphicsCommandList,
++    jobs: &[Job],
++    output: &ID3D12Resource,
++) {
++    // SAFETY: independent committed buffers, validated spans, open list, and
++    // separate Execute calls establish the producer's buffer COMMON state.
++    unsafe {
++        list.SetComputeRootSignature(&work.root);
++        list.SetPipelineState(&work.pso);
++        list.SetComputeRootUnorderedAccessView(3, output.GetGPUVirtualAddress());
++        for (i, job) in jobs.iter().enumerate() {
++            if i != 0 {
++                // The duplicate-piece fallback fixture deliberately depends on
++                // the preceding mode2 hash update, so order those UAV accesses.
++                list.ResourceBarrier(&[D3D12_RESOURCE_BARRIER {
++                    Type: D3D12_RESOURCE_BARRIER_TYPE_UAV,
++                    Flags: D3D12_RESOURCE_BARRIER_FLAG_NONE,
++                    Anonymous: D3D12_RESOURCE_BARRIER_0 {
++                        UAV: std::mem::ManuallyDrop::new(D3D12_RESOURCE_UAV_BARRIER {
++                            pResource: std::mem::ManuallyDrop::new(None),
++                        }),
++                    },
++                }]);
++            }
++            list.SetComputeRootShaderResourceView(1, job.source.GetGPUVirtualAddress());
++            list.SetComputeRootUnorderedAccessView(2, job.hashes.GetGPUVirtualAddress());
++            card_pass(list, &job.span, job.size, job.out_at, job.mode);
++        }
++    }
++}
++
++fn check(
++    host: &Host,
++    work: &CardWork,
++    cases: &[Case],
++    output: &ID3D12Resource,
++    producer: Option<&ID3D12GraphicsCommandList>,
++    mode: u32,
++    batched: bool,
++    gated: bool,
++) {
++    let jobs = jobs_of(cases, mode);
++    let checker = open(host);
++    let mut batch =
++        batched.then(|| maintenance::prepare(host, &jobs, output).expect("batch accepted"));
++    if let Some(batch) = &mut batch {
++        assert_eq!(
++            batch.dispatches(),
++            1,
++            "six independent pieces fit one dispatch"
++        );
++        // SAFETY: submission below places the producer in an earlier Execute;
++        // fixture buffers are independent and retained through the native fence.
++        unsafe { batch.record(&checker.1) };
++    } else {
++        record_legacy(work, &checker.1, &jobs, output);
++    }
++    // SAFETY: all recording is complete.
++    unsafe { checker.1.Close().unwrap() };
++    let gate: Option<ID3D12Fence> =
++        gated.then(|| unsafe { host.device.CreateFence(0, D3D12_FENCE_FLAG_NONE).unwrap() });
++    if let Some(gate) = &gate {
++        // SAFETY: a fixture-only fence released below; the queued batch cannot
++        // finish while another preparation tries to acquire reusable storage.
++        unsafe { host.queue.Wait(gate, 1).unwrap() };
++    }
++    let lists: Vec<&ID3D12GraphicsCommandList> = producer.into_iter().chain([&checker.1]).collect();
++    let target = send(host, &lists, batch.as_mut());
++    drop(batch);
++    let disturbance = if gated {
++        let mut different = jobs_of(cases, 1);
++        different.reverse();
++        for job in &mut different {
++            job.out_at += 32;
++        }
++        Some(maintenance::prepare(host, &different, output).expect("second immutable batch"))
++    } else {
++        None
++    };
++    if let Some(gate) = &gate {
++        // SAFETY: CPU release of the fixture gate, not a completion signal for
++        // any work. The existing native queue fence still proves completion.
++        unsafe { gate.Signal(1).unwrap() };
++    }
++    wait(host, target);
++    drop(disturbance);
++}
++
++fn observe(host: &Host, cases: &[Case], output: &ID3D12Resource) -> Observation {
++    let bytes = OUTPUT_BYTES
++        + cases.len() * HASH_BYTES
++        + cases.iter().map(|c| c.bytes.len()).sum::<usize>();
++    let back = host
++        .read_back_buffer(bytes as u64)
++        .expect("fixture readback");
++    let list = open(host);
++    // SAFETY: all sources completed and decayed in earlier Execute calls;
++    // destination offsets are disjoint and lie inside this readback buffer.
++    unsafe {
++        list.1
++            .CopyBufferRegion(&back, 0, output, 0, OUTPUT_BYTES as u64);
++        let mut at = OUTPUT_BYTES;
++        for c in cases {
++            list.1
++                .CopyBufferRegion(&back, at as u64, &c.hashes, 0, HASH_BYTES as u64);
++            at += HASH_BYTES;
++        }
++        for c in cases {
++            list.1
++                .CopyBufferRegion(&back, at as u64, &c.source, 0, c.bytes.len() as u64);
++            at += c.bytes.len();
++        }
++        list.1.Close().unwrap();
++    }
++    wait(host, send(host, &[&list.1], None));
++    let mut data = std::ptr::null_mut();
++    // SAFETY: completed native copy, bounded mapping, CPU read only. Copy all
++    // observations out before unmapping and releasing the backing resource.
++    unsafe {
++        back.Map(0, None, Some(&mut data)).unwrap();
++        let data = std::slice::from_raw_parts(data.cast::<u8>(), bytes);
++        let output = data[..OUTPUT_BYTES]
++            .chunks_exact(4)
++            .map(|b| u32::from_le_bytes(b.try_into().unwrap()))
++            .collect();
++        let hashes = data[OUTPUT_BYTES..OUTPUT_BYTES + cases.len() * HASH_BYTES]
++            .chunks_exact(HASH_BYTES)
++            .map(<[u8]>::to_vec)
++            .collect();
++        let mut at = OUTPUT_BYTES + cases.len() * HASH_BYTES;
++        for c in cases {
++            assert_eq!(
++                &data[at..at + c.bytes.len()],
++                &c.bytes,
++                "producer bytes, including untouched holes"
++            );
++            at += c.bytes.len();
++        }
++        let observed = Observation { output, hashes };
++        back.Unmap(0, None);
++        observed
++    }
++}
++
++fn writer(host: &Host) -> (ID3D12RootSignature, ID3D12PipelineState) {
++    const SOURCE: &str = r#"
++#define RS "RootConstants(num32BitConstants=2,b0),UAV(u0)"
++cbuffer Place : register(b0) { uint at; uint value; };
++RWByteAddressBuffer destination : register(u0);
++[RootSignature(RS)] [numthreads(1,1,1)]
++void main() { destination.Store(at, value); }
++"#;
++    let mut code: Option<ID3DBlob> = None;
++    // SAFETY: immutable source and valid object descriptions live through each
++    // synchronous compile/create call; root signature is embedded in the blob.
++    unsafe {
++        D3DCompile(
++            SOURCE.as_ptr().cast(),
++            SOURCE.len(),
++            windows::core::s!("maintenance fixture writer"),
++            None,
++            None,
++            windows::core::s!("main"),
++            windows::core::s!("cs_5_1"),
++            0,
++            0,
++            &mut code,
++            None,
++        )
++        .unwrap();
++        let code = code.unwrap();
++        let bytes =
++            std::slice::from_raw_parts(code.GetBufferPointer().cast::<u8>(), code.GetBufferSize());
++        let root: ID3D12RootSignature = host.device.CreateRootSignature(0, bytes).unwrap();
++        let pso = host
++            .device
++            .CreateComputePipelineState(&D3D12_COMPUTE_PIPELINE_STATE_DESC {
++                pRootSignature: std::mem::transmute_copy(&root),
++                CS: D3D12_SHADER_BYTECODE {
++                    pShaderBytecode: bytes.as_ptr().cast(),
++                    BytecodeLength: bytes.len(),
++                },
++                ..Default::default()
++            })
++            .unwrap();
++        (root, pso)
++    }
++}
++
++fn mutate(
++    host: &Host,
++    cases: &mut [Case],
++    uav: bool,
++    writer: &(ID3D12RootSignature, ID3D12PipelineState),
++) -> (Prelude, Vec<ID3D12Resource>) {
++    let changes: Vec<(usize, usize, u32)> = if uav {
++        vec![
++            (0, 80, 0x1122_3344),
++            (1, 144, 0x5566_7788),
++            (2, 400, 0x99aa_bbcc),
++        ]
++    } else {
++        vec![
++            (0, 0, 0x0123_4567),
++            (0, 131_088, 0x89ab_cdef),
++            (1, 284, 0xfedc_ba98),
++            (2, 0, 0x7654_3210),
++        ]
++    };
++    let list = open(host);
++    let mut pins = Vec::new();
++    for (i, at, value) in changes {
++        let c = &mut cases[i];
++        c.bytes[at..at + 4].copy_from_slice(&value.to_le_bytes());
++        if uav {
++            // SAFETY: committed COMMON buffer, one disjoint dword per resource
++            // in this producer. No hash/check work shares this Execute call.
++            unsafe {
++                list.1.SetComputeRootSignature(&writer.0);
++                list.1.SetPipelineState(&writer.1);
++                list.1
++                    .SetComputeRootUnorderedAccessView(1, c.source.GetGPUVirtualAddress());
++                list.1
++                    .SetComputeRoot32BitConstants(0, 2, [at as u32, value].as_ptr().cast(), 0);
++                list.1.Dispatch(1, 1, 1);
++            }
++        } else {
++            pins.push(copy_up(
++                host,
++                &list.1,
++                &c.source,
++                at as u64,
++                &value.to_le_bytes(),
++            ));
++        }
++    }
++    // SAFETY: all commands are recorded. The caller pins both objects and
++    // uploads until the checker's fence covers their separate Execute calls.
++    unsafe { list.1.Close().unwrap() };
++    (list, pins)
++}
++
++fn flags(observed: &Observation, cases: &[Case]) -> Vec<bool> {
++    let mut used = vec![false; OUTPUT_BYTES / 4];
++    let mut flags = Vec::new();
++    for c in cases {
++        for p in 0..c.span.pieces {
++            let i = (c.out_at + p) as usize;
++            used[i] = true;
++            flags.push(torn::flagged(observed.output[i]));
++        }
++    }
++    for (i, &used) in used.iter().enumerate() {
++        if !used {
++            assert_eq!(observed.output[i], SENTINEL, "output hole {i} overwritten");
++        }
++    }
++    flags
++}
++
++fn exercise(
++    host: &Host,
++    work: &CardWork,
++    writer: &(ID3D12RootSignature, ID3D12PipelineState),
++    batched: bool,
++) -> Vec<Observation> {
++    let specs = [
++        (131_104usize, 7, 3, 23, 131_099, 2),
++        (288, 0, 1, 17, 281, 9),
++        (65_552, 65_520, 2, 0, 65_547, 13),
++    ];
++    let mut cases: Vec<Case> = specs
++        .into_iter()
++        .enumerate()
++        .map(|(i, (size, skew, pieces, from, to, out_at))| {
++            let bytes = (0..size / 4)
++                .flat_map(|w| {
++                    (0x3456_7890u32
++                        .wrapping_add(i as u32 * 17)
++                        .wrapping_add(w as u32 * 31))
++                    .to_le_bytes()
++                })
++                .collect();
++            Case {
++                source: host.uav_buffer(size as u64).unwrap(),
++                hashes: host.uav_buffer(HASH_BYTES as u64).unwrap(),
++                bytes,
++                span: crate::shadow::CardSpan {
++                    from,
++                    to,
++                    first: 0,
++                    pieces,
++                    skew,
++                },
++                out_at,
++            }
++        })
++        .collect();
++    let output = host.uav_buffer(OUTPUT_BYTES as u64).unwrap();
++    let initial = open(host);
++    let mut pins = Vec::new();
++    for c in &cases {
++        pins.push(copy_up(host, &initial.1, &c.source, 0, &c.bytes));
++        pins.push(copy_up(host, &initial.1, &c.hashes, 0, &[0; HASH_BYTES]));
++    }
++    pins.push(copy_up(
++        host,
++        &initial.1,
++        &output,
++        0,
++        &SENTINEL.to_le_bytes().repeat(OUTPUT_BYTES / 4),
++    ));
++    // SAFETY: all initial copies are recorded; their uploads live until wait.
++    unsafe { initial.1.Close().unwrap() };
++    wait(host, send(host, &[&initial.1], None));
++    check(host, work, &cases, &output, None, 0, batched, false);
++    let mut observations = vec![observe(host, &cases, &output)];
++    assert!(
++        observations[0].output.iter().all(|&v| v == SENTINEL),
++        "mode0 changed flags"
++    );
++    for (uav, expected) in [
++        (false, vec![true, false, true, true, true, false]),
++        (true, vec![true, false, false, true, false, true]),
++    ] {
++        let (producer, _uploads) = mutate(host, &mut cases, uav, writer);
++        let before = observations.last().unwrap().hashes.clone();
++        // No CPU wait separates producer and checker: the two native Execute
++        // calls and final fence must establish completion and COMMON decay.
++        check(
++            host,
++            work,
++            &cases,
++            &output,
++            Some(&producer.1),
++            1,
++            batched,
++            false,
++        );
++        let read_only = observe(host, &cases, &output);
++        assert_eq!(
++            flags(&read_only, &cases),
++            expected,
++            "mode1 flags, uav={uav}"
++        );
++        assert_eq!(read_only.hashes, before, "mode1 modified hashes");
++        observations.push(read_only);
++        check(
++            host,
++            work,
++            &cases,
++            &output,
++            None,
++            2,
++            batched,
++            batched && !uav,
++        );
++        let updated = observe(host, &cases, &output);
++        assert_eq!(flags(&updated, &cases), expected, "mode2 flags, uav={uav}");
++        observations.push(updated);
++        check(host, work, &cases, &output, None, 1, batched, false);
++        let unchanged = observe(host, &cases, &output);
++        assert_eq!(
++            flags(&unchanged, &cases),
++            vec![false; 6],
++            "updated baseline remained stale"
++        );
++        assert_eq!(unchanged.hashes, observations.last().unwrap().hashes);
++        observations.push(unchanged);
++    }
++    // A mode2 update may suppress another range's flag for the same piece.
++    // Batch rejection must preserve the relay's union-and-fanout protocol.
++    let mut duplicates = jobs_of(&cases[..1], 2);
++    duplicates[0].span = crate::shadow::CardSpan {
++        from: 64,
++        to: 96,
++        first: 0,
++        pieces: 1,
++        skew: 7,
++    };
++    duplicates.push(Job {
++        source: cases[0].source.clone(),
++        hashes: cases[0].hashes.clone(),
++        span: crate::shadow::CardSpan {
++            from: 40_000,
++            to: 40_032,
++            first: 0,
++            pieces: 1,
++            skew: 7,
++        },
++        size: cases[0].bytes.len() as u32,
++        out_at: 9,
++        mode: 2,
++    });
++    assert!(
++        maintenance::prepare(host, &duplicates, &output).is_none(),
++        "duplicate hash writer must fall back"
++    );
++    let fetch = flagged_pieces(&[(1, 0, true), (1, 0, false)]);
++    let selected: Vec<_> = duplicates
++        .iter()
++        .filter(|j| fetch.contains(&(1, j.span.first)))
++        .map(|j| (j.span.from, j.span.to))
++        .collect();
++    assert_eq!(
++        selected,
++        [(64, 96), (40_000, 40_032)],
++        "both clipped portions remain landable"
++    );
++    observations
++}
++
++#[test]
++#[ignore = "native D3D12 fixture; own diagnostics process, VICTORY_D3D12_DEBUG=1, one test thread"]
++fn maintenance_native_copy_uav_equivalence() {
++    assert!(
++        crate::switch::on("VICTORY_D3D12_DEBUG"),
++        "enable the D3D12 debug layer"
++    );
++    verify_native_equivalence(true);
++}
++
++#[test]
++#[ignore = "RTX 3090 hardware readback without the optional Windows debug component"]
++fn maintenance_retail_readback() {
++    verify_native_equivalence(false);
++}
++
++fn verify_native_equivalence(debug: bool) {
++    let host = create().expect("native fixture must execute, never silently skip");
++    if debug { assert!(host.messages.is_some(), "D3D12 debug interface is required"); }
++    // SAFETY: the host retained its adapter for this device's lifetime.
++    let desc = unsafe {
++        host.adapter
++            .as_ref()
++            .expect("fixture adapter")
++            .GetDesc1()
++            .unwrap()
++    };
++    let end = desc
++        .Description
++        .iter()
++        .position(|&v| v == 0)
++        .unwrap_or(desc.Description.len());
++    let adapter = String::from_utf16_lossy(&desc.Description[..end]);
++    let software = desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE.0 as u32 != 0;
++    assert_eq!(
++        software,
++        crate::switch::on("VICTORY_D3D12_WARP"),
++        "actual adapter must match requested backend"
++    );
++    if let Ok(expected) = std::env::var("VICTORY_EXPECT_ADAPTER") {
++        assert!(
++            adapter.contains(&expected),
++            "actual adapter {adapter:?} must contain {expected:?}"
++        );
++    }
++    println!("MAINTENANCE_NATIVE_START adapter={adapter:?} software={software} debug={debug}");
++    let work = host.make_card_work().expect("legacy compare pipeline");
++    let writer = writer(&host);
++    let legacy = exercise(&host, &work, &writer, false);
++    let batched = exercise(&host, &work, &writer, true);
++    assert_eq!(
++        batched, legacy,
++        "all output DWORDs and complete128bit hash buffers must match"
++    );
++    if debug { assert_eq!(host.log_messages(), None, "D3D12 debug layer error"); }
++    println!(
++        "MAINTENANCE_NATIVE_OK adapter={adapter:?} observations={} producers=COPY,UAV modes=0,1,2 pending_fence=true duplicate_fallback=true",
++        batched.len()
++    );
++    println!("maintenance native parity PASS");
++}
