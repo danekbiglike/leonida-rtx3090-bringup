@@ -1,0 +1,17 @@
+run,pass,scene,pixels_changed,pixels_checked,gather_160_us,gather_192_us,paired_combined_delta_us
+hardware-grid,diffuse,1,1174002,8294400,536.576,492.544,-46.08
+hardware-grid,diffuse,2,3980698,8294400,537.6,491.52,-44.032
+hardware-grid,diffuse,3,0,8294400,537.6,491.52,-47.104
+hardware-grid,diffuse,4,0,8294400,407.552,489.472,77.824
+hardware-grid,reflection,1,118093,2073600,534.528,492.544,-43.008
+hardware-grid,reflection,2,810231,2073600,535.552,491.52,-44.032
+hardware-grid,reflection,3,116276,2073600,536.576,492.544,-44.032
+hardware-grid,reflection,4,0,2073600,408.576,490.496,82.944
+hardware-grid-repeat,diffuse,1,1174002,8294400,538.624,491.52,-40.96
+hardware-grid-repeat,diffuse,2,3980698,8294400,536.576,491.52,-46.08
+hardware-grid-repeat,diffuse,3,0,8294400,536.576,492.544,-44.032
+hardware-grid-repeat,diffuse,4,0,8294400,407.552,490.496,80.896
+hardware-grid-repeat,reflection,1,118093,2073600,537.6,491.52,-44.032
+hardware-grid-repeat,reflection,2,810231,2073600,535.552,491.52,-43.008
+hardware-grid-repeat,reflection,3,116276,2073600,538.624,491.52,-46.08
+hardware-grid-repeat,reflection,4,0,2073600,407.552,489.472,82.944
