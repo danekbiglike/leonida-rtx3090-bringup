@@ -1,0 +1,6 @@
+{
+  "mode": "nvidia-fsr-quality",
+  "exit_code": "0xc0000094",
+  "startup_display": "display        the title's output, scene at 0.6666667 of it through its FidelityFX path (quality)",
+  "game_message": "FSR_API_DEBUG_ERROR: Shipping FSR4 configuration mismatch: maxUpscaleSize must be 1920x1080; received 3840x2160. Only the fixed-resolution Quality shader tables are included."
+}

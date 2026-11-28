@@ -1,0 +1,8 @@
+{
+  "mode": "nvidia-1440",
+  "exit_code": "0xc0000005",
+  "startup_display": "display        2560x1440 SDR, scene 2560x1440",
+  "last_30s_presents": 91,
+  "last_30s_min_free_physical_gib": 3.708,
+  "game_message": "null write after reaching cell"
+}
