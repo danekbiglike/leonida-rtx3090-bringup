@@ -1,0 +1,5 @@
+modules-xmem-tests test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 91 filtered out; finished in 0.04s
+modules-gameinput test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 94 filtered out; finished in 0.06s
+descriptor-host-tests test result: ok. 19 passed; 0 failed; 0 ignored; 0 measured; 185 filtered out; finished in 0.42s
+watch- test drvwatch::tests::an_entry_written_reaches_a_subscription ... ignored, writes one entry to the Application event log: run it by name with --ignored
+watch- test result: ok. 15 passed; 0 failed; 1 ignored; 0 measured; 188 filtered out; finished in 0.24s
