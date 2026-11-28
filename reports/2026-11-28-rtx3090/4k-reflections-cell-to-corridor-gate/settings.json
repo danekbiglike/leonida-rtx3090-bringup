@@ -1,0 +1,16 @@
+{
+  "renderer_sha256": "fe9b31347b4b10120c986f1125dc24fd39971790a07a3fff57a271becad5e2de",
+  "launcher_sha256": "ba4d39cbfbb314ab122ec6057db05cd1d66532f244b8b05782cd19cb328b6ecb",
+  "platform": "Series X",
+  "output": [
+    3840,
+    2160
+  ],
+  "dlss": false,
+  "frame_generation": false,
+  "host_resident_max_gib": 16,
+  "VICTORY_AMBIENT": "0.8",
+  "VICTORY_AMBIENT_REFLECT": "1",
+  "VICTORY_AMBIENT_REFLECT_IN": "CS_TemporalResolve2_Opaque,CS_TemporalResolve1_Alpha",
+  "VICTORY_PHYSICAL_RESERVE_MIB": "4608"
+}

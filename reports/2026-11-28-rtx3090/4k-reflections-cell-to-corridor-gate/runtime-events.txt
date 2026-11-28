@@ -1,0 +1,4 @@
+2026-11-28T07:50:46.888309Z  INFO victory_gpu::ambient: reflections held to a multiple of the light around (VICTORY_AMBIENT_REFLECT) held=1.0 names=["CS_TemporalResolve2_Opaque", "CS_TemporalResolve1_Alpha"]
+2026-11-28T07:53:49.948689Z  INFO victory_gpu::ambient: reflections held after their resolve, since the start (VICTORY_AMBIENT_REFLECT) n=1
+2026-11-28T07:54:27.519110Z  WARN victory_gpu::residency: host memory pressure: limiting texture prefetch and idle upload storage frame=6063 physical_free_mib=4581 available_commit_mib=24494 buffer_mirror_span_mib=2304 texture_staging_mib=57 spare_scratch_mib=1 game_filled_gpu_texture_mib=4683
+2026-11-28T07:58:49.806329Z  INFO victory_gpu::ambient: reflections held after their resolve, since the start (VICTORY_AMBIENT_REFLECT) n=5000

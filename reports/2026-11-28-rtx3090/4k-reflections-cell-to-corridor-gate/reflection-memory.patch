@@ -1,0 +1,489 @@
+--- a/crates/victory-gpu/src/ambient.rs
++++ b/crates/victory-gpu/src/ambient.rs
+@@ -68,10 +68,29 @@
+     /// Gives the reflection rays that found nothing the sky's light
+     /// (`CS_RayMiss`, not `CS_RayMiss_Volumetrics` nor the screen probes').
+     Miss,
++    /// Resolves the traced reflections (`VICTORY_AMBIENT_REFLECT_IN` names
++    /// the programs): after it each texel is held to a multiple of the light
++    /// around ([`reflect`]).
++    Reflect,
+ }
+ 
+ /// The program's part in this, by its name in the container.
+ pub(crate) fn role(container: &[u8]) -> Option<Role> {
++    role_in(container, reflect_in())
++}
++
++/// [`role`], with the texts that name the reflections' resolves (looked for
++/// last, so that no text takes a program of the other roles).
++fn role_in(container: &[u8], reflect_in: &[String]) -> Option<Role> {
++    let has = |name: &[u8]| container.windows(name.len()).any(|w| w == name);
++    if let Some(found) = role_fixed(container) {
++        return Some(found);
++    }
++    reflect_in.iter().any(|name| has(name.as_bytes())).then_some(Role::Reflect)
++}
++
++/// The roles named in the code.
++fn role_fixed(container: &[u8]) -> Option<Role> {
+     let has = |name: &[u8]| container.windows(name.len()).any(|w| w == name);
+     if has(b"CS_ScreenProbes_TemporalResolve") {
+         Some(Role::Resolve)
+@@ -154,6 +173,64 @@
+     let share = parts.next().flatten().filter(|v| *v > 0.0)?;
+     let sky = parts.next().flatten().map_or(0.0, |v| v.clamp(0.0, 1.0));
+     Some(Specular { share, sky })
++}
++
++/// Where the reflections' resolves write them: the first of these places
++/// that holds a 2D image of their format (R32_UINT holding R9G9B9E5; the
++/// opaque surfaces' resolve has it at the first, the transparent ones' at the
++/// second).
++pub(crate) const REFLECTIONS: [(u8, u32); 2] = [(1, 128), (1, 136)];
++
++/// The most a resolved reflection may hold, as a multiple of the light
++/// around (`VICTORY_AMBIENT_REFLECT=<multiple>`; unset, `0` or `off`: the
++/// title's own). Acts only while `VICTORY_AMBIENT` is set and the builder
++/// does not run. Ported from TaynanGT/Vice-Tay#99 (fc9ef8a, fa90adf), itself
++/// from Serph91P's avatarmanz/VIctory-7900XTX#314 (6c7e3a87, GPL-3.0); the
++/// idea and the switch's name are beloooo's (VIctory-Belobug-AMD 44dcd437).
++fn reflect() -> f32 {
++    static SET: OnceLock<f32> = OnceLock::new();
++    *SET.get_or_init(|| parse_reflect(&std::env::var("VICTORY_AMBIENT_REFLECT").unwrap_or_default()))
++}
++
++fn parse_reflect(set: &str) -> f32 {
++    set.trim().parse().ok().filter(|v: &f32| v.is_finite() && *v > 0.0).unwrap_or(0.0)
++}
++
++/// The texts in the names of the programs that resolve the reflections
++/// (`VICTORY_AMBIENT_REFLECT_IN=<text>[,<text>]`, e.g.
++/// `CS_TemporalResolve2_Opaque,CS_TemporalResolve1_Alpha`); none while the
++/// hold is off.
++fn reflect_in() -> &'static [String] {
++    static SET: OnceLock<Vec<String>> = OnceLock::new();
++    SET.get_or_init(|| {
++        let held = reflect();
++        if held == 0.0 {
++            return Vec::new();
++        }
++        let names = parse_reflect_in(&std::env::var("VICTORY_AMBIENT_REFLECT_IN").unwrap_or_default());
++        if names.is_empty() {
++            tracing::warn!("VICTORY_AMBIENT_REFLECT without VICTORY_AMBIENT_REFLECT_IN: no reflections are held");
++        } else {
++            tracing::info!(held, ?names, "reflections held to a multiple of the light around (VICTORY_AMBIENT_REFLECT)");
++        }
++        names
++    })
++}
++
++fn parse_reflect_in(set: &str) -> Vec<String> {
++    set.split(',').map(str::trim).filter(|t| !t.is_empty()).map(str::to_owned).collect()
++}
++
++/// Reflections' resolves held since the start.
++static HELD: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
++
++/// A resolve of the reflections was held after.
++fn note_held() {
++    use std::sync::atomic::Ordering::Relaxed;
++    let n = HELD.fetch_add(1, Relaxed) + 1;
++    if n == 1 || n.is_multiple_of(5000) {
++        tracing::info!(n, "reflections held after their resolve, since the start (VICTORY_AMBIENT_REFLECT)");
++    }
+ }
+ 
+ fn specular() -> Option<Specular> {
+@@ -207,7 +284,10 @@
+ }
+ 
+ const SOURCE: &str = r#"
+-#define RS "RootConstants(num32BitConstants=12, b0), DescriptorTable(SRV(t0)), DescriptorTable(UAV(u0)), UAV(u1), UAV(u2)"
++// The depth range is volatile: the keep and mean programs (Radiance, Air)
++// read no depth, and the table they are given there is the image's, a UAV
++// (D3D12 debug layer message 646 with a static range).
++#define RS "RootConstants(num32BitConstants=12, b0), DescriptorTable(SRV(t0, flags=DESCRIPTORS_VOLATILE)), DescriptorTable(UAV(u0)), UAV(u1), UAV(u2)"
+ #define CX 64
+ #define CY 36
+ #define CELLS (CX * CY)
+@@ -388,7 +468,7 @@
+ }
+ #endif
+ 
+-#ifdef RAISE
++#if defined(RAISE) || defined(HOLD)
+ RWTexture2D<uint> light : register(u0);
+ float3 unpack(uint v) {
+     return float3(v & 511, (v >> 9) & 511, (v >> 18) & 511) * exp2(float(v >> 27) - 24.0);
+@@ -402,6 +482,40 @@
+     uint3 m = min(uint3(c * scale + 0.5), 511u);
+     return m.r | (m.g << 9) | (m.b << 18) | (uint(e) << 27);
+ }
++#endif
++
++#ifdef HOLD
++// The resolved reflections: no brighter than `most` times the light around,
++// as the estimate has it at the four points about the texel (with a fifth of
++// the room's slow mean), or the constant; hue kept.
++[RootSignature(RS)]
++[numthreads(8, 8, 1)]
++void hold(uint3 at : SV_DispatchThreadID) {
++    uint w, h;
++    light.GetDimensions(w, h);
++    if (at.x >= w || at.y >= h) return;
++    float3 around = float3(1.0, 0.98, 0.94) * constant;
++    if (constant <= 0.0) {
++        float2 g = (float2(at.xy) + 0.5) / float2(w, h) * float2(PX, PY) - 0.5;
++        int2 g0 = int2(floor(g));
++        float2 f = g - float2(g0);
++        around = 0;
++        for (int k = 0; k < 4; k++) {
++            int2 q = clamp(g0 + int2(k & 1, k >> 1), int2(0, 0), int2(PX, PY) - 1);
++            float2 b = float2(k & 1 ? f.x : 1 - f.x, k >> 1 ? f.y : 1 - f.y);
++            uint at0 = (q.y * PX + q.x) * 3;
++            around += b.x * b.y * float3(points[at0].w, points[at0 + 1].w, points[at0 + 2].w);
++        }
++        around = lerp(around, cells[CELLS].rgb, 0.2);
++    }
++    float top = most * dot(around, LUMA);
++    float3 c = unpack(light[at.xy]);
++    float has = dot(c, LUMA);
++    if (has > top) light[at.xy] = pack(c * (top / max(has, 1e-9)));
++}
++#endif
++
++#ifdef RAISE
+ [RootSignature(RS)]
+ [numthreads(8, 8, 1)]
+ void raise(uint3 at : SV_DispatchThreadID) {
+@@ -507,6 +621,8 @@
+     raise: ID3D12PipelineState,
+     air: ID3D12PipelineState,
+     reflect: ID3D12PipelineState,
++    /// Made only while the hold of the reflections is on.
++    hold: Option<ID3D12PipelineState>,
+     cells: ID3D12Resource,
+     points: ID3D12Resource,
+ }
+@@ -539,6 +655,13 @@
+     let raise = pipeline("RAISE", s!("raise"))?;
+     let air = pipeline("AIR", s!("clear_air"))?;
+     let reflect = pipeline("REFLECT", s!("reflect_light"))?;
++    // Not made unless the hold is on, and on its own: without it the rest of
++    // the stand-in still runs.
++    let hold = if reflect_in().is_empty() {
++        None
++    } else {
++        pipeline("HOLD", s!("hold")).inspect_err(|e| tracing::warn!(%e, "no hold of the reflections")).ok()
++    };
+     let made = |bytes| buffer(bytes).ok_or_else(windows::core::Error::empty);
+     Ok(Pass {
+         root: root.ok_or_else(windows::core::Error::empty)?,
+@@ -549,6 +672,7 @@
+         raise,
+         air,
+         reflect,
++        hold,
+         cells: made(CELL_BYTES)?,
+         points: made(POINT_BYTES)?,
+     })
+@@ -703,6 +827,10 @@
+     if role == Role::Air && (constant > 0.0 || air() == 0.0) {
+         return false;
+     }
++    // The traced reflections are the title's own while its rays run.
++    if role == Role::Reflect && (pass.hold.is_none() || crate::pipeline::builder_runs()) {
++        return false;
++    }
+     static SAID: Mutex<u32> = Mutex::new(0);
+     {
+         let mut said = SAID.lock().unwrap_or_else(|e| e.into_inner());
+@@ -722,7 +850,7 @@
+     words[6] = views.depth_size[0];
+     words[7] = views.depth_size[1];
+     words[8] = 0.04f32.to_bits();
+-    words[9] = 4.0f32.to_bits();
++    words[9] = if role == Role::Reflect { reflect() } else { 4.0f32 }.to_bits();
+     words[10] = air().to_bits();
+     words[11] = if once() { 1.0f32 } else { 0.0 }.to_bits();
+     let l = &list.list;
+@@ -756,6 +884,12 @@
+                 }
+                 run(&pass.raise, views.size[0].div_ceil(8), views.size[1].div_ceil(8), 1);
+             }
++            Role::Reflect => {
++                if let Some(hold) = &pass.hold {
++                    run(hold, views.size[0].div_ceil(8), views.size[1].div_ceil(8), 1);
++                    note_held();
++                }
++            }
+             Role::Miss => {
+                 // The points afresh, from this frame's depth: the diffuse
+                 // stand-in makes them later in the frame.
+--- a/crates/victory-gpu/src/draw.rs
++++ b/crates/victory-gpu/src/draw.rs
+@@ -3789,6 +3789,8 @@
+         DISPATCHED.fetch_add(1, Ordering::Relaxed);
+         if let Some(role) = p.stages.first().and_then(|s| s.shader.ambient)
+             && crate::ambient::on()
++            // A resolve of no groups writes nothing: a hold would rewrite what the image held before.
++            && !(role == crate::ambient::Role::Reflect && (x == 0 || y == 0 || z == 0))
+             && self.ambient(list, p, role)
+         {
+             self.host_pipeline = 0;
+@@ -3799,7 +3801,7 @@
+     /// The stand-in for the indirect light after a dispatch of `p`
+     /// (`crate::ambient`). Whether it recorded anything.
+     fn ambient(&self, list: &HostList, p: &HostPipeline, role: crate::ambient::Role) -> bool {
+-        use crate::ambient::{AIR, DEPTH, LIGHT, MISS_DEPTH, MISS_LIGHT, MissNote, RADIANCE, Role, Views};
++        use crate::ambient::{AIR, DEPTH, LIGHT, MISS_DEPTH, MISS_LIGHT, MissNote, RADIANCE, REFLECTIONS, Role, Views};
+         let Some(t) = p.stages.first().map(|s| s.translated()) else {
+             return false;
+         };
+@@ -3837,6 +3839,10 @@
+         else {
+             return false;
+         };
++        // The title resources of the shader views found, by their handle: the
++        // depth the pass reads is made readable before it runs (it may still
++        // be in the depth-read state the title's draws left it in).
++        let found_views: std::cell::RefCell<Vec<(u64, usize)>> = std::cell::RefCell::default();
+         let entry = |kind: ResourceType, (slot, offset): (u8, u32)| {
+             t.used.iter().find(|u| {
+                 u.kind == kind && u.root == RootType::Table && (u.slot, u.table_offset_dwords) == (slot, offset)
+@@ -3860,13 +3866,18 @@
+             let host = crate::resource::host_resource(resource as This)?;
+             // SAFETY: a live resource.
+             let desc = unsafe { host.GetDesc() };
+-            Some((desc, heap.gpu_handle((start + offset * 4) / 32)))
++            let handle = heap.gpu_handle((start + offset * 4) / 32);
++            if kind == ResourceType::Srv {
++                found_views.borrow_mut().push((handle.ptr, resource));
++            }
++            Some((desc, handle))
+         };
+         let at = match role {
+             Role::Resolve => LIGHT,
+             Role::Radiance => RADIANCE,
+             Role::Air => AIR,
+             Role::Miss => MISS_LIGHT,
++            Role::Reflect => REFLECTIONS[0],
+         };
+         // Variants of the miss program bind the rays' image and the depth at
+         // other places of their tables than the one found first (run
+@@ -3927,6 +3938,15 @@
+                     d.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE2D && d.Format.0 == 26
+                 })
+             }),
++            // The first of the places that holds a 2D image of the format
++            // (R32_UINT holding R9G9B9E5), else the first such in the tables.
++            Role::Reflect => {
++                let fits = |d: &D3D12_RESOURCE_DESC| d.Format.0 == 42 && d.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE2D;
++                REFLECTIONS
++                    .iter()
++                    .find_map(|&at| entry(ResourceType::Uav, at).filter(|(d, _)| fits(d)))
++                    .or_else(|| scan(ResourceType::Uav, &fits))
++            }
+             _ => entry(ResourceType::Uav, at),
+         };
+         let usual_depth = |at: (u8, u32)| {
+@@ -4010,6 +4030,7 @@
+                         continue;
+                     }
+                     let found = (d, heap.gpu_handle((start + offset * 4) / 32));
++                    found_views.borrow_mut().push((found.1.ptr, resource));
+                     match d.Format {
+                         DXGI_FORMAT_R32G8X24_TYPELESS | DXGI_FORMAT_D32_FLOAT_S8X24_UINT => {
+                             static WIDE: AtomicU64 = AtomicU64::new(0);
+@@ -4024,7 +4045,7 @@
+                 }
+                 plain
+             }),
+-            Role::Radiance | Role::Air => image,
++            Role::Radiance | Role::Air | Role::Reflect => image,
+         };
+         let (Some((of, image)), Some((seen, depth))) = (image, depth) else {
+             once!(?role, "no stand-in for the indirect light: other tables");
+@@ -4063,7 +4084,7 @@
+             return false;
+         };
+         // (R32_UINT holding R9G9B9E5; R11G11B10_FLOAT.)
+-        let format = if role == Role::Resolve { 42 } else { 26 };
++        let format = if matches!(role, Role::Resolve | Role::Reflect) { 42 } else { 26 };
+         let volume = of.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE3D;
+         // The miss program's image is of half the picture's size, its depth
+         // (32-bit) of the whole.
+@@ -4092,6 +4113,19 @@
+                 crate::ambient::note_miss(MissNote::NotReady);
+             }
+             return false;
++        }
++        // The depth the pass reads (Resolve and Miss; Radiance and Air read
++        // none): a shader resource, and still depth-read for the title's
++        // draws that test it (D3D12 debug layer message 538 otherwise). A
++        // texture that is no depth target takes the shader states only.
++        let depth_title = found_views.borrow().iter().find(|(h, _)| *h == depth.ptr).map(|&(_, r)| r);
++        if let Some(resource) = depth_title {
++            let state = if seen.Flags.contains(D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL) {
++                DEPTH_READ | SHADER_RESOURCE
++            } else {
++                SHADER_RESOURCE
++            };
++            crate::list::ensure_state(list, resource as This, state);
+         }
+         let ran = crate::ambient::after(list, role, &Views {
+             image,
+@@ -5433,7 +5467,12 @@
+         // the run before: the tables noted are another program's.)
+         if kind == DISPATCH
+             && !joined
+-            && let Some(role @ crate::ambient::Role::Miss) = p.stages.first().and_then(|s| s.shader.ambient)
++            && let Some(role @ (crate::ambient::Role::Miss | crate::ambient::Role::Reflect)) =
++                p.stages.first().and_then(|s| s.shader.ambient)
++            // The reflections' resolve not after a count buffer: a count of 0
++            // runs no resolve, and the hold would rewrite the image's earlier
++            // contents (Vice-Tay fa90adf).
++            && (role == crate::ambient::Role::Miss || counter.is_none())
+             && crate::ambient::on()
+         {
+             unsettle_indirect(list);
+--- a/crates/victory-gpu/src/host.rs
++++ b/crates/victory-gpu/src/host.rs
+@@ -2894,6 +2894,27 @@
+ /// idle host objects go (it needs nothing in the air).
+ pub(crate) fn late_free_present() -> bool {
+     late_stage() > 2
++}
++
++/// Where the compare list `check` (the card copies' hashes, read as root
++/// views) is in `lists`, by identity: it goes to the queue in an
++/// `ExecuteCommandLists` call of its own, so that the copies the lists
++/// before it wrote are back in the common state.
++fn check_at(lists: &[Option<ID3D12CommandList>], check: Option<&ID3D12CommandList>) -> Option<usize> {
++    let check = check?;
++    lists.iter().position(|l| l.as_ref().is_some_and(|l| l.as_raw() == check.as_raw()))
++}
++
++/// `lists` as one call, or two with the compare list starting the second
++/// ([`check_at`]).
++fn split_at_check<'a>(
++    lists: &'a [Option<ID3D12CommandList>],
++    check: Option<&ID3D12CommandList>,
++) -> Vec<&'a [Option<ID3D12CommandList>]> {
++    match check_at(lists, check) {
++        Some(at) if at > 0 => vec![&lists[..at], &lists[at..]],
++        _ => vec![lists],
++    }
+ }
+ 
+ /// The relay's first stage (`VICTORY_RELAY=1`; off by default; it turns
+@@ -6261,8 +6282,16 @@
+         for (shadow, at, bytes) in batch.placed.drain(..) {
+             shadow.placed_copy(at, &bytes);
+         }
+-        if let Some(check) = card.as_ref().and_then(|c| c.check.clone()) {
+-            lists.push(Some(check));
++        // The compare reads the copies as root views without transitions: it
++        // relies on them being in the common state, which buffers return to
++        // only at the end of an `ExecuteCommandLists` call. In the same call
++        // as the lists, a copy they wrote by `CopyBufferRegion` is still in
++        // the copy-destination state it was promoted to (D3D12 debug layer
++        // message 538, about 50,000 a run). So it goes to the queue in a
++        // call of its own, right behind theirs.
++        let check = card.as_ref().and_then(|c| c.check.clone());
++        if let Some(check) = &check {
++            lists.push(Some(check.clone()));
+         }
+         split.part(4);
+         stage.next("submit: waiting for the heaps' records");
+@@ -6296,7 +6325,12 @@
+                 lists.push(Some(behind));
+                 firsts.iter_mut().for_each(|first| *first += 1);
+             }
+-            let cuts: Vec<usize> = parts.iter().filter_map(|&n| firsts.get(n).copied()).collect();
++            let mut cuts: Vec<usize> = parts.iter().filter_map(|&n| firsts.get(n).copied()).collect();
++            if let Some(at) = check_at(&lists, check.as_ref()) {
++                cuts.push(at);
++                cuts.sort_unstable();
++                cuts.dedup();
++            }
+             // SAFETY: closed lists; the fence is ours.
+             let signalled = unsafe {
+                 let mut from = 0;
+@@ -6346,10 +6380,10 @@
+                 .map(|(&a, &b)| &lists[a..b])
+                 .collect()
+         } else {
+-            vec![&lists[..]]
++            split_at_check(&lists, check.as_ref())
+         };
+         #[cfg(not(feature = "diagnostics"))]
+-        let groups = [&lists[..]];
++        let groups = split_at_check(&lists, check.as_ref());
+         submitting(2, runs.len());
+         for (i, group) in groups.iter().enumerate() {
+             *submitted += 1;
+--- a/crates/victory-gpu/src/residency.rs
++++ b/crates/victory-gpu/src/residency.rs
+@@ -95,11 +95,20 @@
+     *LIMITED.get_or_init(|| memory_status().is_some_and(|s| s.ullTotalPhys <= 32 * GIB))
+ }
+ 
+-fn next_pressure(was: bool, physical: u64, commit: u64) -> bool {
++fn physical_reserve() -> u64 {
++    static RESERVE: OnceLock<u64> = OnceLock::new();
++    *RESERVE.get_or_init(|| {
++        std::env::var("VICTORY_PHYSICAL_RESERVE_MIB").ok()
++            .and_then(|s| s.parse::<u64>().ok())
++            .unwrap_or(3072).clamp(3072, 8192) * MIB
++    })
++}
++
++fn next_pressure(was: bool, physical: u64, commit: u64, physical_floor: u64) -> bool {
+     if was {
+-        physical < 5 * GIB || commit < 6 * GIB
++        physical < physical_floor + 2 * GIB || commit < 6 * GIB
+     } else {
+-        physical <= 3 * GIB || commit <= 4 * GIB
++        physical <= physical_floor || commit <= 4 * GIB
+     }
+ }
+ 
+@@ -109,7 +118,7 @@
+     let (physical, commit) = (status.ullAvailPhys, status.ullAvailPageFile);
+     HEADROOM.store(physical.min(commit), Ordering::Relaxed);
+     let was = pressured();
+-    let pressure = next_pressure(was, physical, commit);
++    let pressure = next_pressure(was, physical, commit, physical_reserve());
+     if pressure != was {
+         PRESSURED.store(pressure, Ordering::Relaxed);
+         if pressure {
+@@ -179,12 +188,21 @@
+ 
+     #[test]
+     fn either_constraint_enters_pressure_and_both_must_recover() {
+-        assert!(next_pressure(false, 12 * GIB, 4 * GIB));
+-        assert!(next_pressure(false, 3 * GIB, 16 * GIB));
+-        assert!(next_pressure(true, 4 * GIB, 7 * GIB));
+-        assert!(next_pressure(true, 6 * GIB, 5 * GIB));
+-        assert!(!next_pressure(true, 5 * GIB, 6 * GIB));
+-        assert!(!next_pressure(false, 4 * GIB, 5 * GIB));
++        let floor = 3 * GIB;
++        assert!(next_pressure(false, 12 * GIB, 4 * GIB, floor));
++        assert!(next_pressure(false, 3 * GIB, 16 * GIB, floor));
++        assert!(next_pressure(true, 4 * GIB, 7 * GIB, floor));
++        assert!(next_pressure(true, 6 * GIB, 5 * GIB, floor));
++        assert!(!next_pressure(true, 5 * GIB, 6 * GIB, floor));
++        assert!(!next_pressure(false, 4 * GIB, 5 * GIB, floor));
++    }
++
++    #[test]
++    fn a_larger_reserve_trims_speculative_work_before_the_supervisor_cutoff() {
++        let floor = 4608 * MIB;
++        assert!(next_pressure(false, 4 * GIB, 12 * GIB, floor));
++        assert!(next_pressure(true, 6 * GIB, 12 * GIB, floor));
++        assert!(!next_pressure(true, floor + 2 * GIB, 12 * GIB, floor));
+     }
+ 
+     #[test]
