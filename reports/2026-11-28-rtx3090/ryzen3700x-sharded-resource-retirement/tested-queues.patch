@@ -1,0 +1,168 @@
+--- a/crates/victory-gpu/src/host.rs
++++ b/crates/victory-gpu/src/host.rs
+@@ -76,7 +76,28 @@
+ /// releases reach the host at once, from its own threads, while the host
+ /// runs a submission: freeing there is a GPU page fault on the freed
+ /// texture (a device hang).
+-static RETIRED: Mutex<std::collections::VecDeque<(u64, Retired)>> = Mutex::new(std::collections::VecDeque::new());
++///
++/// A queue to each thread that retires, of [`RETIRED_QUEUES`] taken in turn
++/// ([`retired`]), each in the order its thread retired. One queue under one
++/// lock was what the threads that record the title's lists waited for: eight
++/// of them let go of some 20,000 slots' resources a frame, each a push of a
++/// few nanoseconds, but a thread that finds the lock taken sleeps and is
++/// woken 50 microseconds later or more. 3.3 of the 22 ms a frame each of
++/// them was at work, and 0.7 ms of the submitting thread's frame (a profile
++/// of the prologue's cell, RTX 3090 Ti, Ryzen 9 9950X3D, Series S profile).
++static RETIRED: [Mutex<std::collections::VecDeque<(u64, Retired)>>; RETIRED_QUEUES] =
++    [const { Mutex::new(std::collections::VecDeque::new()) }; RETIRED_QUEUES];
++const RETIRED_QUEUES: usize = 32;
++
++/// This thread's queue of [`RETIRED`].
++fn retired() -> &'static Mutex<std::collections::VecDeque<(u64, Retired)>> {
++    static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
++    thread_local! {
++        static MINE: usize = NEXT.fetch_add(1, Ordering::Relaxed) % RETIRED_QUEUES;
++    }
++    // (A thread that is ending has none any more: the first.)
++    &RETIRED[MINE.try_with(|mine| *mine).unwrap_or(0)]
++}
+ /// Submissions started and finished (waited for).
+ static STARTED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+ static FINISHED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+@@ -482,7 +503,7 @@
+         return;
+     }
+     RETIREMENTS[1].fetch_add(1, Ordering::Relaxed);
+-    RETIRED
++    retired()
+         .lock()
+         .unwrap_or_else(|e| e.into_inner())
+         .push_back((started, Retired::Any(Box::new(object))));
+@@ -498,7 +519,7 @@
+         return;
+     }
+     RETIREMENTS[1].fetch_add(1, Ordering::Relaxed);
+-    RETIRED.lock().unwrap_or_else(|e| e.into_inner()).push_back((started, Retired::Resource(object)));
++    retired().lock().unwrap_or_else(|e| e.into_inner()).push_back((started, Retired::Resource(object)));
+ }
+ 
+ /// How many submissions later than it could (the last one that may use it
+@@ -516,19 +537,107 @@
+ }
+ 
+ /// Drops what waited for submissions up to `finished` ([`bury_lag`]). The
+-/// numbers come in order, but for threads that overtake each other: one of
+-/// those is dropped a little later than it could be.
++/// numbers of a queue come in order, but for a submission begun between a
++/// thread's two looks ([`retire`]): what follows such a one is dropped a
++/// little later than it could be.
+ fn bury(finished: u64) {
+-    let finished = finished.saturating_sub(bury_lag());
+-    let done: Vec<(u64, Retired)> = {
+-        let mut retired = RETIRED.lock().unwrap_or_else(|e| e.into_inner());
++    release_through(&RETIRED, finished.saturating_sub(bury_lag()));
++}
++
++fn release_through<T>(queues: &[Mutex<std::collections::VecDeque<(u64, T)>>], finished: u64) {
++    let mut done = Vec::new();
++    for queue in queues {
++        let mut retired = queue.lock().unwrap_or_else(|e| e.into_inner());
+         let n = retired.iter().take_while(|(at, _)| *at <= finished).count();
+-        if n == 0 {
+-            return;
+-        }
+-        retired.drain(..n).collect()
+-    };
++        if n != 0 {
++            done.extend(retired.drain(..n));
++        }
++    }
++    // (Dropped with no queue's lock held: a release each.)
+     drop(done);
++}
++
++#[cfg(test)]
++mod retirement_queue_tests {
++    use super::{release_through, Mutex};
++    use std::{collections::VecDeque, sync::{Arc, Weak, atomic::{AtomicUsize, Ordering}}};
++
++    type Queue = Mutex<VecDeque<(u64, Watched)>>;
++    struct Watched {
++        queues: Weak<Vec<Queue>>,
++        count: Arc<AtomicUsize>,
++    }
++    impl Drop for Watched {
++        fn drop(&mut self) {
++            let queues = self.queues.upgrade().unwrap();
++            assert!(queues.iter().all(|q| q.try_lock().is_ok()));
++            self.count.fetch_add(1, Ordering::Relaxed);
++        }
++    }
++
++    #[test]
++    fn retirement_keeps_later_fences_and_releases_outside_all_queue_locks() {
++        let queues = Arc::new((0..4).map(|_| Queue::default()).collect::<Vec<_>>());
++        let count = Arc::new(AtomicUsize::new(0));
++        for (index, fences) in [(0, &[2, 5, 3][..]), (1, &[1, 4]), (3, &[7])] {
++            for &fence in fences {
++                queues[index].lock().unwrap().push_back((fence, Watched {
++                    queues: Arc::downgrade(&queues), count: count.clone(),
++                }));
++            }
++        }
++        for (fence, dropped) in [(0, 0), (3, 2), (3, 2), (4, 3), (5, 5), (7, 6), (12, 6)] {
++            release_through(&queues, fence);
++            assert_eq!(count.load(Ordering::Relaxed), dropped);
++        }
++    }
++
++    #[test]
++    #[ignore = "per-producer retirement queue timing on the measured CPU"]
++    fn bench_retirement_producers() {
++        use std::{sync::Barrier, thread, time::Instant};
++        fn round(workers: usize, shards: usize) -> (u128, u128) {
++            let queues: Vec<_> = (0..shards).map(|_| Mutex::new(VecDeque::new())).collect();
++            let ready = Barrier::new(workers + 1);
++            let start = Barrier::new(workers + 1);
++            let end = Barrier::new(workers + 1);
++            let push_us = thread::scope(|scope| {
++                for worker in 0..workers {
++                    let (queue, ready, start, end) = (&queues[worker % shards], &ready, &start, &end);
++                    scope.spawn(move || {
++                        ready.wait();
++                        start.wait();
++                        for index in 0..2500 {
++                            queue.lock().unwrap().push_back((1, (worker, index)));
++                        }
++                        end.wait();
++                    });
++                }
++                ready.wait();
++                let timer = Instant::now();
++                start.wait();
++                end.wait();
++                timer.elapsed().as_micros()
++            });
++            assert_eq!(queues.iter().map(|q| q.lock().unwrap().len()).sum::<usize>(), 2500 * workers);
++            let timer = Instant::now();
++            release_through(&queues, 1);
++            let drain_us = timer.elapsed().as_micros();
++            assert!(queues.iter().all(|q| q.lock().unwrap().is_empty()));
++            (push_us, drain_us)
++        }
++        println!("workers,pair,queues,push_us,drain_us");
++        for workers in [1, 4, 8] {
++            for pair in 0..11 {
++                for shards in if pair % 2 == 0 { [1, 32] } else { [32, 1] } {
++                    let (push, drain) = round(workers, shards);
++                    if pair >= 2 {
++                        println!("{workers},{},{shards},{push},{drain}", pair-2);
++                    }
++                }
++            }
++        }
++    }
+ }
+ 
+ /// Objects [`retire`] dropped at once (no submission was running) and
