@@ -1,0 +1,5 @@
+host,environment,dlss_device_ready,frame_generation_ready,gpu_quality_1440_to_2160
+Desktop,minimal,false,false,false
+Desktop,minimal + ProgramData,false,false,false
+Desktop,minimal + ProgramData + SystemDrive,true,false,true
+AppContainer + job,minimal + ProgramData + SystemDrive,false,false,false
