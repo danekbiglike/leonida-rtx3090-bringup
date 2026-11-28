@@ -1,0 +1,208 @@
+diff --git a/crates/victory-gpu/src/host.rs b/crates/victory-gpu/src/host.rs
+index 6671067..7c4603b 100644
+--- a/crates/victory-gpu/src/host.rs
++++ b/crates/victory-gpu/src/host.rs
+@@ -4202,6 +4202,7 @@ mod font;
+ mod menu;
+ mod panel;
+ mod place;
++mod front_ranges;
+ mod send;
+ pub(crate) use send::{goes_as_words, words_under};
+ #[cfg(feature = "diagnostics")]
+@@ -8544,10 +8545,9 @@ struct Batch {
+     /// copy (by address) is in it.
+     spans: Vec<(std::sync::Arc<crate::shadow::Shadow>, usize, usize)>,
+     spans_at: ByCopy<usize>,
+-    /// Room for the submission's one asking's ranges, and for
+-    /// [`Batch::refresh_front`]'s walk over the steps.
++    /// Room for the submission's one asking's ranges.
+     ranges: Vec<(usize, usize)>,
+-    touches: Vec<Touch>,
++    front_ranges: front_ranges::FrontRanges,
+ }
+ 
+ thread_local! {
+@@ -8594,6 +8594,7 @@ fn refresh_front() -> bool {
+ /// What a part refreshes of a copy it has given to its shaders stays where it
+ /// stands: around what they write. What a later part refreshes is the
+ /// title's bytes of before either.
++#[cfg(test)]
+ fn front_spans(steps: impl Iterator<Item = Touch>) -> Vec<(usize, usize, usize)> {
+     let mut at: ByCopy<usize> = ByCopy::default();
+     // (Copy, from, to), in the order they come, and the part that gave it to
+@@ -8648,6 +8649,7 @@ enum Touch {
+     Title,
+     Nothing,
+     /// Another part of the submission begins.
++    #[cfg_attr(not(test), allow(dead_code))]
+     Part,
+ }
+ 
+@@ -8681,6 +8683,36 @@ fn written_spans(steps: impl Iterator<Item = Touch>) -> Vec<(usize, usize, usize
+ mod written_spans_tests {
+     use super::{Touch, front_spans, split, written_spans};
+ 
++    #[test]
++    fn indexed_front_ranges_match_ordered_refreshes_after_reuse() {
++        use super::front_ranges::FrontRanges;
++        let mut ranges = FrontRanges::default();
++        let mut random = 277u32;
++        for count in [91, 2, 0, 11, 1, 153, 37].into_iter().cycle().take(70) {
++            ranges.begin(count);
++            let mut steps = Vec::new();
++            for _ in 0..2_000 {
++                random = random.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
++                let index = (random >> 9) as usize % (count + 3);
++                if random & 7 == 0 {
++                    ranges.next_part();
++                    steps.push(Touch::Part);
++                } else if index >= count || random & 3 == 1 {
++                    if index < count {
++                        ranges.write(index);
++                    }
++                    steps.push(Touch::Write(index));
++                } else {
++                    let from = (random >> 16) as usize;
++                    let to = from + (random as usize & 63);
++                    ranges.refresh(index, from, to);
++                    steps.push(Touch::Refresh(index, from, to));
++                }
++            }
++            assert_eq!(ranges.ranges().collect::<Vec<_>>(), front_spans(steps.into_iter()));
++        }
++    }
++
+     #[test]
+     fn everything_is_refreshed_in_front_but_what_a_part_gave_its_shaders() {
+         use Touch::{Nothing, Part, Refresh, Title, Write};
+@@ -8797,7 +8829,6 @@ impl Batch {
+         self.spans.clear();
+         self.spans_at.clear();
+         self.ranges.clear();
+-        self.touches.clear();
+         SPARE_BATCH.set(Some(self));
+     }
+ 
+@@ -8924,30 +8955,43 @@ impl Batch {
+             self.copy_spans(runs);
+         }
+         let mut due = Vec::new();
+-        self.touches.clear();
++        self.front_ranges.begin(self.spans.len());
++        let mut previous = None;
+         for (n, list) in runs.iter().enumerate() {
+             if parts.contains(&n) {
+-                self.touches.push(Touch::Part);
++                self.front_ranges.next_part();
+             }
+             for step in &list.deferred().copies {
+-                match step {
+-                    Step::Refresh(shadow, at, len) => {
+-                        self.touches.push(Touch::Refresh(std::sync::Arc::as_ptr(shadow) as usize, *at, *at + *len));
+-                    }
+-                    Step::GpuWrite(shadow, ..) => self.touches.push(Touch::Write(std::sync::Arc::as_ptr(shadow) as usize)),
++                let (shadow, range) = match step {
++                    Step::Refresh(shadow, at, len) => (shadow, Some((*at, *at + *len))),
++                    Step::GpuWrite(shadow, ..) => (shadow, None),
+                     Step::Texture(staging) if wide_textures() => {
+                         if self.texture_due(staging) {
+                             due.push(staging.clone());
+                         }
++                        continue;
+                     }
+-                    _ => {}
++                    _ => continue,
++                };
++                let key = std::sync::Arc::as_ptr(shadow) as usize;
++                let index = match previous {
++                    Some((previous_key, index)) if previous_key == key => index,
++                    _ => {
++                        // A write-only shadow has no range to prepare.
++                        let Some(&index) = self.spans_at.get(&key) else { continue };
++                        previous = Some((key, index));
++                        index
++                    }
++                };
++                if let Some((from, to)) = range {
++                    self.front_ranges.refresh(index, from, to);
++                } else {
++                    self.front_ranges.write(index);
+                 }
+             }
+         }
+-        let found = front_spans(self.touches.drain(..));
+-        let spans: Vec<_> = found
+-            .into_iter()
+-            .filter_map(|(key, from, to)| Some((self.spans.get(*self.spans_at.get(&key)?)?.0.clone(), from, to)))
++        let spans: Vec<_> = self.front_ranges.ranges()
++            .map(|(index, from, to)| (self.spans[index].0.clone(), from, to))
+             .collect();
+         self.front = true;
+         for (shadow, from, to) in &spans {
+diff --git a/crates/victory-gpu/src/host/front_ranges.rs b/crates/victory-gpu/src/host/front_ranges.rs
+new file mode 100644
+index 0000000..b752e76
+--- /dev/null
++++ b/crates/victory-gpu/src/host/front_ranges.rs
+@@ -0,0 +1,60 @@
++/// The refresh interval for each shadow from the submission's existing shadow index.
++/// Writes block subsequent refreshes until the next part. The order of first use
++/// is preserved even for a shadow first seen in a write.
++#[derive(Default)]
++pub(super) struct FrontRanges {
++    slots: Vec<Slot>,
++    order: Vec<usize>,
++    part: usize,
++}
++
++#[derive(Clone, Copy)]
++struct Slot {
++    from: usize,
++    to: usize,
++    blocked: usize,
++    seen: bool,
++}
++
++impl FrontRanges {
++    pub(super) fn begin(&mut self, size: usize) {
++        self.slots.clear();
++        self.slots.resize(size, Slot { from: usize::MAX, to: 0, blocked: 0, seen: false });
++        self.order.clear();
++        self.part = 1;
++    }
++
++    pub(super) fn next_part(&mut self) {
++        self.part += 1;
++    }
++
++    fn touch(&mut self, index: usize) -> &mut Slot {
++        let slot = &mut self.slots[index];
++        if !slot.seen {
++            slot.seen = true;
++            self.order.push(index);
++        }
++        slot
++    }
++
++    pub(super) fn refresh(&mut self, index: usize, from: usize, to: usize) {
++        let part = self.part;
++        let slot = self.touch(index);
++        if slot.blocked != part {
++            slot.from = slot.from.min(from);
++            slot.to = slot.to.max(to);
++        }
++    }
++
++    pub(super) fn write(&mut self, index: usize) {
++        let part = self.part;
++        self.touch(index).blocked = part;
++    }
++
++    pub(super) fn ranges(&self) -> impl Iterator<Item = (usize, usize, usize)> + '_ {
++        self.order.iter().filter_map(|&index| {
++            let slot = &self.slots[index];
++            (slot.from < slot.to).then_some((index, slot.from, slot.to))
++        })
++    }
++}
