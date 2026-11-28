@@ -1,0 +1,43 @@
+{
+  "report_id": "danekbiglike/rtx3090-20261128-paired-cell",
+  "first_capture_utc_us": 1795824014404211,
+  "presents": 197,
+  "fps": 1.6416666666666666,
+  "bins": [
+    5,
+    8,
+    4,
+    9,
+    13,
+    12,
+    9,
+    8,
+    9,
+    10,
+    12,
+    11,
+    12,
+    13,
+    11,
+    13,
+    14,
+    14,
+    8,
+    0,
+    0,
+    0,
+    1,
+    1
+  ],
+  "p95_ms": 932.321,
+  "worst_ms": 18673.089,
+  "min_free_gib": 5.301567077636719,
+  "resident_max_gib": 15.936683654785156,
+  "second_capture_s": 123.290872,
+  "renderer_sha256": "2696794b4b404a2b0870097e379e7c6088b64d97b60e1573de0e99c0de6268eb",
+  "num_pipeline_reports": 17,
+  "omitted_range": [
+    0,
+    0
+  ]
+}
