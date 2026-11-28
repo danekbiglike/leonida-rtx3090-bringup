@@ -1,0 +1,158 @@
+diff --git a/crates/victory-gpu/src/host.rs b/crates/victory-gpu/src/host.rs
+--- a/crates/victory-gpu/src/host.rs
++++ b/crates/victory-gpu/src/host.rs
+@@ -2632,29 +2632,36 @@
+         if !crate::shadow::gpu_ro_check() {
+             return;
+         }
+-        static WARNED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
++        let spans = crate::shadow::gpu_ro_intervals();
++        if spans.is_empty() {
++            return;
++        }
++        let mut counts = [0_u64; 5];
+         for r in self.ranges.iter().filter(|r| !r.picked && r.compared) {
+-            let (base, shadow_len) = r.shadow.span();
+-            for p in 0..r.span.pieces {
+-                if !differs.get((r.at + p) as usize).is_some_and(|&d| torn::flagged(d)) {
++            let (base, size) = r.shadow.span();
++            let first = spans.partition_point(|&(_, end)| end <= base);
++            let spans = &spans[first..];
++            if spans.first().is_none_or(|&(start, _)| start >= base.saturating_add(size)) {
++                continue;
++            }
++            for piece in 0..r.span.pieces {
++                let (lo, hi) = r.shadow.card_piece(&r.span, piece);
++                let (lo, hi) = (base + lo as u64, base + hi as u64);
++                if lo >= hi { continue; }
++                let i = spans.partition_point(|&(_, end)| end <= lo);
++                let Some(&(start, end)) = spans.get(i) else { continue };
++                if start >= hi { continue; }
++                let Some(&flag) = differs.get((r.at + piece) as usize) else {
++                    counts[4] += 1;
+                     continue;
+-                }
+-                let (lo, hi) = r.shadow.card_piece(&r.span, p);
+-                let at = base + lo as u64;
+-                let len = (hi - lo) as u64;
+-                if crate::shadow::overlaps_gpu_readonly(at, len) {
+-                    let n = WARNED.fetch_add(1, Ordering::Relaxed) + 1;
+-                    if n <= 16 || n.is_power_of_two() {
+-                        tracing::warn!(
+-                            hit = n,
+-                            piece = format_args!("{at:#x}..{:#x}", at + len),
+-                            declared = format_args!("{:#x}..{:#x}", r.declared.0, r.declared.1),
+-                            shadow = format_args!("{base:#x}+{shadow_len:#x}"),
+-                            "VICTORY_GPU_RO_CHECK: GPU compare saw changed bytes inside a GPU-read-only region"
+-                        );
+-                    }
+-                }
+-            }
++                };
++                let edge = usize::from(start > lo || end < hi);
++                counts[edge] += 1;
++                if torn::flagged(flag) { counts[2 + edge] += 1; }
++            }
++        }
++        for (counter, delta) in crate::shadow::GPU_RO_AUDIT.iter().zip(counts) {
++            if delta != 0 { counter.fetch_add(delta, Ordering::Relaxed); }
+         }
+     }
+ }
+@@ -10081,6 +10088,12 @@
+             let [passes, pieces, compares] = [0, 1, 2].map(|i| CARD_PASSES[i].swap(0, Ordering::Relaxed) as f64 / frames);
+             let wc_left = crate::shadow::WC_LEFT.swap(0, Ordering::Relaxed) as f64 / 1e6 / frames;
+             let gpu_ro_left = crate::shadow::GPU_RO_LEFT.swap(0, Ordering::Relaxed) as f64 / 1e6 / frames;
++            if crate::shadow::gpu_ro_check() {
++                let [whole, edges, changed_whole, changed_edges, missing] =
++                    std::array::from_fn(|i| crate::shadow::GPU_RO_AUDIT[i].swap(0, Ordering::Relaxed));
++                tracing::info!(whole, edges, changed_whole, changed_edges, missing,
++                    "GPU-read-only compare coverage since the previous sample");
++            }
+             if passes + compares + wc_left + gpu_ro_left > 0.0 {
+                 tracing::info!(
+                     "our passes over copies in the card's memory per frame: {passes:.0} hash passes over {pieces:.0} pieces after \
+diff --git a/crates/victory-gpu/src/shadow.rs b/crates/victory-gpu/src/shadow.rs
+--- a/crates/victory-gpu/src/shadow.rs
++++ b/crates/victory-gpu/src/shadow.rs
+@@ -2486,6 +2486,13 @@
+ /// the last frame-rate line.
+ pub(crate) static GPU_RO_LEFT: AtomicU64 = AtomicU64::new(0);
+ 
++/// Full-range and edge-piece coverage for the read-only verification run.
++pub(crate) static GPU_RO_AUDIT: [AtomicU64; 5] = [const { AtomicU64::new(0) }; 5];
++
++pub(crate) fn gpu_ro_intervals() -> Vec<(u64, u64)> {
++    GPU_READONLY.read().unwrap_or_else(|e| e.into_inner()).clone()
++}
++
+ /// Records `[at, at + len)` as GPU-read-only title memory.
+ pub fn title_memory_gpu_readonly(at: usize, len: usize) {
+     let Some(end) = (at as u64).checked_add(len as u64) else {
+diff --git a/crates/victory-hle/src/modules/xmem.rs b/crates/victory-hle/src/modules/xmem.rs
+--- a/crates/victory-hle/src/modules/xmem.rs
++++ b/crates/victory-hle/src/modules/xmem.rs
+@@ -224,7 +224,7 @@
+     if !at.is_null() {
+         // Fresh reservation: clear any stale GPU-read-only records in case a
+         // previously split reservation was released with len == 0.
+-        if constrained {
++        if kind & MEM_RESERVE != 0 {
+             victory_gpu::title_memory_gpu_writable(at as usize, size);
+         }
+         note_gpu_protection(at as usize, size, asked);
+@@ -2605,6 +2605,21 @@
+     if len == 0 || !maybe_lazy(at, len) {
+         return (false, len);
+     }
++    static MEASURE: LazyLock<bool> = LazyLock::new(|| {
++        std::env::var_os("VICTORY_MEASURE_BUFFER_READS").is_some_and(|v| v == "1")
++    });
++    let start = (len >= 65536 && *MEASURE).then(std::time::Instant::now);
++    let stamp = || start.map_or(0, |t| t.elapsed().as_micros() as u64);
++    let report = |lookup: u64, window: u64, done: u64, bytes: usize, outcome: &str| {
++        if done >= 100_000 {
++            // SAFETY: obtains the current thread's numeric identifier.
++            let tid = unsafe { windows_sys::Win32::System::Threading::GetCurrentThreadId() };
++            tracing::info!(target: "victory_gpu::host::slow_refresh", windows_thread = tid,
++                elapsed_us = done, span_bytes = len, copied_bytes = bytes, lookup_us = lookup,
++                window_us = window - lookup, after_window_us = done - window, outcome,
++                "slow mapped title view read");
++        }
++    };
+     let found = {
+         let lazy = LAZY.read().unwrap_or_else(|e| e.into_inner());
+         match lazy.range(..=at).next_back().filter(|(base, view)| at < **base + view.0) {
+@@ -2612,22 +2627,30 @@
+             None => Err(lazy.range(at..).next().map_or(len, |(&next, _)| (next - at).min(len))),
+         }
+     };
++    let lookup = stamp();
+     let (base, size, slice) = match found {
+         Ok(view) => view,
+-        Err(n) => return (false, n),
++        Err(n) => {
++            report(lookup, lookup, lookup, 0, "ordinary");
++            return (false, n);
++        }
+     };
+     let n = (base + size - at).min(len);
+     let (first, within) = ((at - base) / PAGE, (at - base) % PAGE);
+     // Committed, as the view would be when mapped: a page nothing wrote
+     // reads as zeros, as it would there. (The section is held: its view
+     // stands while the bytes are copied, whatever the title unmaps.)
+-    let Some(window) = slice.section.window(slice.index + first, (within + n).div_ceil(PAGE)) else {
++    let view = slice.section.window(slice.index + first, (within + n).div_ceil(PAGE));
++    let opened = stamp();
++    let Some(window) = view else {
+         materialize_for(at, n, Touch::Asked);
++        report(lookup, opened, stamp(), 0, "materialize");
+         return (false, n);
+     };
+     // SAFETY: `n` committed bytes of the section's view; the caller's `to`
+     // holds as many. The title's writes to the pages race as on the console.
+     unsafe { std::ptr::copy_nonoverlapping((window + within) as *const u8, to, n) };
++    report(lookup, opened, stamp(), n, "copied");
+     count(Soft::Reads, 1);
+     count(Soft::ReadBytes, n as u64);
+     (true, n)
