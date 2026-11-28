@@ -1,0 +1,21 @@
+{
+  "route_presents": 2154,
+  "cpu_sample_presents": 2132,
+  "cpu_ms_per_present_by_thread": {
+    "victory-list-0": 25.665,
+    "victory-list-1": 21.613,
+    "victory-list-2": 21.818,
+    "victory-list-3": 23.599,
+    "victory-list-4": 23.489,
+    "victory-list-5": 24.999,
+    "victory-submit": 39.202,
+    "victory-under-1": 0.638,
+    "victory-under-2": 0.63,
+    "victory-under-3": 0.718,
+    "victory-under-4": 0.777,
+    "victory-under-5": 1.033
+  },
+  "sampled_batches": 0,
+  "overlapping_batches": 0,
+  "longest_intersection_us_summed_over_sampled_batches": 0
+}

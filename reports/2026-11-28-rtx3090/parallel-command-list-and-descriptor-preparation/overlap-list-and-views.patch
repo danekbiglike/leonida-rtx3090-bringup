@@ -1,0 +1,249 @@
+--- a/crates/victory-gpu/src/host.rs
++++ b/crates/victory-gpu/src/host.rs
+@@ -4368,6 +4368,8 @@
+ pub(crate) mod aside;
+ pub(crate) mod awake;
+ mod card_steps;
++#[cfg(test)]
++pub(crate) use card_steps::prepare_card_groups;
+ #[cfg(feature = "diagnostics")]
+ pub(crate) mod indirects;
+ mod font;
+--- a/crates/victory-gpu/src/host/card_steps.rs
++++ b/crates/victory-gpu/src/host/card_steps.rs
+@@ -881,6 +881,52 @@
+ /// Those that have landed: closed, their steps dropped.
+ static POOL: Mutex<Vec<Own>> = Mutex::new(Vec::new());
+ 
++// The copy recorder owns every D3D12 command-list call. Descriptor writers
++// use the device and disjoint slots. Both finish before the list is closed.
++pub(crate) fn prepare_card_groups(
++    active: &[bool; 8],
++    record: &(impl Fn() + Sync),
++    write_group: &(impl Fn(usize) + Sync),
++) {
++    if !active.iter().any(|&used| used) {
++        record();
++        return;
++    }
++    let run = |job| match job {
++        0 => record(),
++        i => write_group(i - 1),
++    };
++    let enabled = |job: usize| job == 0 || active[job - 1];
++    let batch = PARALLEL_BATCHES.fetch_add(1, Ordering::Relaxed);
++    if !batch.is_multiple_of(64) {
++        crate::land::each_under(9, &|job| {
++            if enabled(job) { run(job); }
++        });
++        return;
++    }
++    let times: [std::sync::OnceLock<(std::time::Instant, std::time::Instant)>; 9] = Default::default();
++    crate::land::each_under(9, &|job| {
++        if enabled(job) {
++            let start = std::time::Instant::now();
++            run(job);
++            let _ = times[job].set((start, std::time::Instant::now()));
++        }
++    });
++    let &(start, end) = times[0].get().expect("copy recorder ran");
++    // The longest single intersection is a lower bound even when several
++    // writers run at once. Wall times from different workers must not be added.
++    let overlap = times[1..].iter().filter_map(|t| t.get()).map(|&(a, b)| {
++        end.min(b).saturating_duration_since(start.max(a))
++    }).max().unwrap_or_default();
++    let mut sample = PARALLEL_SAMPLES.lock().unwrap_or_else(|err| err.into_inner());
++    sample.0 += 1;
++    sample.1 += u64::from(!overlap.is_zero());
++    sample.2 += overlap.as_micros() as u64;
++}
++
++static PARALLEL_BATCHES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
++static PARALLEL_SAMPLES: Mutex<(u64, u64, u64)> = Mutex::new((0, 0, 0));
++
+ /// Since the last frame-rate line: fills and copies done on the card, their
+ /// bytes, submissions that waited instead, refused by a check, and fills that read where a
+ /// copy at its place ahead of them takes its bytes from ([`read_behind_placed`]).
+@@ -1109,32 +1155,33 @@
+         }
+         #[cfg(feature = "diagnostics")]
+         own.list.note_op(|| format!("{} copies of title memory done on the card, {end} bytes (VICTORY_CARD_STEPS)", ops.len()));
+-        let levels = ops.iter().map(|op| op.level).max().unwrap_or(0);
+-        for level in 0..=levels {
+-            // One copy for each span of places of this level.
+-            let reads: Vec<(&ID3D12Resource, u64, u64, u64)> = read_spans
+-                .iter()
+-                .filter(|s| s.level == level)
+-                .map(|s| {
+-                    let from = &read_from[s.first];
+-                    (&from.buffer, from.offset(s.src as u64), s.at, s.len as u64)
+-                })
+-                .collect();
+-            let mut writes = Vec::new();
+-            for op in ops.iter().filter(|op| op.level == level) {
+-                let len = op.len as u64;
+-                match &op.to {
+-                    To::Copy(to, dst) => writes.push((&to.buffer, to.offset(*dst as u64), op.at, len)),
+-                    To::Buffer(buffer) => writes.push((buffer, 0, op.at, len)),
+-                    To::Slot(..) => {}
++        let record_copies = || {
++            let levels = ops.iter().map(|op| op.level).max().unwrap_or(0);
++            for level in 0..=levels {
++                // One copy for each span of places of this level.
++                let reads: Vec<(&ID3D12Resource, u64, u64, u64)> = read_spans
++                    .iter()
++                    .filter(|s| s.level == level)
++                    .map(|s| {
++                        let from = &read_from[s.first];
++                        (&from.buffer, from.offset(s.src as u64), s.at, s.len as u64)
++                    })
++                    .collect();
++                let mut writes = Vec::new();
++                for op in ops.iter().filter(|op| op.level == level) {
++                    let len = op.len as u64;
++                    match &op.to {
++                        To::Copy(to, dst) => writes.push((&to.buffer, to.offset(*dst as u64), op.at, len)),
++                        To::Buffer(buffer) => writes.push((buffer, 0, op.at, len)),
++                        To::Slot(..) => {}
++                    }
+                 }
+-            }
+-            record(level == 0, &own.list.list, &own.between, &reads, &writes);
+-        }
+-        own.list.close();
++                record(level == 0, &own.list.list, &own.between, &reads, &writes);
++            }
++        };
+         // SAFETY: a live buffer.
+         let gpu = unsafe { own.between.GetGPUVirtualAddress() };
+-        spent.next("steps on the card: the slots");
++        spent.next("steps on the card: record and prepare views");
+         // (11,000 slots a frame in a street, two descriptors each: on
+         // several threads, a slot always on the same one, in the steps'
+         // order.)
+@@ -1143,6 +1190,7 @@
+             _ => None,
+         };
+         if ops.len() < 256 {
++            record_copies();
+             crate::descriptor::constant_slots_batch(&own.between, gpu, ops.iter().filter_map(slot));
+         } else {
+             let mut parts: [Vec<&Op>; 8] = Default::default();
+@@ -1152,7 +1200,8 @@
+                     parts[part].push(op);
+                 }
+             }
+-            crate::land::each_under(parts.len(), &|part| {
++            let active = parts.each_ref().map(|group| !group.is_empty());
++            prepare_card_groups(&active, &record_copies, &|part| {
+                 crate::descriptor::constant_slots_batch(
+                     &own.between,
+                     gpu,
+@@ -1160,6 +1209,7 @@
+                 );
+             });
+         }
++        own.list.close();
+         let copies = ops.iter().filter(|op| matches!(op.to, To::Copy(..))).count();
+         DONE[0].fetch_add((ops.len() - copies) as u64, Ordering::Relaxed);
+         DONE[1].fetch_add(copies as u64, Ordering::Relaxed);
+@@ -1226,6 +1276,11 @@
+ pub(super) fn log(frames: f64) {
+     if stage() == 0 {
+         return;
++    }
++    let (sampled, overlapped, overlap_us) =
++        std::mem::take(&mut *PARALLEL_SAMPLES.lock().unwrap_or_else(|err| err.into_inner()));
++    if sampled > 0 {
++        tracing::info!(target: "victory_gpu::host", sampled, overlapped, overlap_us, "parallel copy recording and descriptor preparation");
+     }
+     let refusals = std::mem::take(&mut *REFUSALS.lock().unwrap_or_else(|e| e.into_inner()));
+     if !refusals.is_empty() {
+--- a/crates/victory-gpu/src/descriptor.rs
++++ b/crates/victory-gpu/src/descriptor.rs
+@@ -2097,6 +2097,18 @@
+     #[test]
+     #[ignore = "needs a D3D12 device and real descriptor heaps"]
+     fn batched_constant_slots_preserve_gpu_values_across_heaps() {
++        check_constant_slots(false);
++    }
++
++    #[cfg(windows)]
++    #[test]
++    #[ignore = "needs a D3D12 device and at least two pool participants"]
++    fn parallel_recording_and_slot_writes_reach_the_gpu_in_order() {
++        check_constant_slots(true);
++    }
++
++    #[cfg(windows)]
++    fn check_constant_slots(parallel: bool) {
+         use windows::Win32::Graphics::Direct3D12::*;
+         let device = crate::host::host().expect("D3D12 device");
+         let code = crate::host::compile(
+@@ -2124,11 +2136,42 @@
+             }
+             std::ptr::write_bytes(observed, 0, 256);
+             let base = input.GetGPUVirtualAddress();
+-            constant_slots_batch(&input, base, [
+-                (a, 2, base, 256), (a, 3, base + 256, 256), (0, 2, base, 256),
+-                (b, 2, base + 512, 256), (a, 2, base + 1024, 256),
+-                (b, 2, base + 1536, 256),
+-            ]);
++            let (witness, copied_word) = device.shared_buffer(256).expect("recorded copy destination");
++            let copy_list = device.new_list().expect("copy list");
++            let cmd = &copy_list.list;
++            let record = || cmd.CopyBufferRegion(&witness, 0, &input, 256, 4);
++            let write = |part| match part {
++                0 => constant_slots_batch(&input, base, [
++                    (a, 2, base, 256), (0, 2, base, 256), (b, 2, base + 512, 256),
++                    (a, 2, base + 1024, 256), (b, 2, base + 1536, 256),
++                ]),
++                1 => constant_slots_batch(&input, base, [(a, 3, base + 256, 256)]),
++                _ => unreachable!(),
++            };
++            if parallel {
++                // Rendezvous before either operation: a single-thread fallback
++                // must not masquerade as a passing concurrency check.
++                let arrived = std::sync::atomic::AtomicUsize::new(0);
++                let meet = || {
++                    use std::sync::atomic::Ordering;
++                    arrived.fetch_add(1, Ordering::AcqRel);
++                    let until = std::time::Instant::now() + std::time::Duration::from_secs(3);
++                    while arrived.load(Ordering::Acquire) < 2 {
++                        assert!(std::time::Instant::now() < until, "second worker did not start");
++                        std::thread::yield_now();
++                    }
++                };
++                crate::host::prepare_card_groups(
++                    &[true, true, false, false, false, false, false, false],
++                    &|| { meet(); record(); },
++                    &|part| { if part == 0 { meet(); } write(part); },
++                );
++            } else {
++                record();
++                write(0);
++                write(1);
++            }
++            copy_list.close();
+             let root: ID3D12RootSignature = device.device.CreateRootSignature(0, &code).unwrap();
+             let pipeline: ID3D12PipelineState = device.device.CreateComputePipelineState(
+                 &D3D12_COMPUTE_PIPELINE_STATE_DESC {
+@@ -2148,13 +2191,17 @@
+                 list.list.Dispatch(1, 1, 1);
+             }
+             list.close();
+-            device.execute(&[&list]);
++            device.execute(&[&copy_list, &list]);
++            assert_eq!(copied_word.cast::<u32>().read(), 101);
+             let values = [0, 16, 32].map(|offset| observed.add(offset).cast::<u32>().read());
+             assert_eq!(values, [104, 101, 106]);
+             device.device.GetDeviceRemovedReason().unwrap();
+         }
+         for h in handles {
+             slot::<extern "system" fn(This) -> u32>(h, 0x10)(h);
++        }
++        if parallel {
++            eprintln!("Verified concurrent copy word 101 and ordered GPU descriptor values 104, 101, 106");
+         }
+         eprintln!("Verified three GPU values across two heaps after repeated and missing slots");
+     }

@@ -1,0 +1,29 @@
+{
+  "parallel_recording_and_slot_writes_reach_the_gpu_in_order": [
+    "Verified concurrent copy word 101 and ordered GPU descriptor values 104, 101, 106",
+    "Verified three GPU values across two heaps after repeated and missing slots",
+    "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 531 filtered out; finished in 0.40s"
+  ],
+  "batched_constant_slots_preserve_gpu_values_across_heaps": [
+    "Verified three GPU values across two heaps after repeated and missing slots",
+    "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 531 filtered out; finished in 0.38s"
+  ],
+  "joined_and_compact_spans_preserve_d3d12_bytes": [
+    "Verified 40 logical reads via 40 staging copies including destination gaps",
+    "Verified 40 logical reads via 1 staging copies including destination gaps",
+    "Verified 1200 logical reads via 1200 staging copies including destination gaps",
+    "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 531 filtered out; finished in 0.30s"
+  ],
+  "host-card_steps-tests-the_card_copies_what_is_recorded": [
+    "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 531 filtered out; finished in 0.28s"
+  ],
+  "two_public_copies_in_the_same_list": [
+    "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 531 filtered out; finished in 0.36s"
+  ],
+  "each_submission_reads_its_own_copy_in_pc_memory": [
+    "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 531 filtered out; finished in 0.33s"
+  ],
+  "each_submission_reads_its_own_copy_on_the_card": [
+    "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 531 filtered out; finished in 0.34s"
+  ]
+}
