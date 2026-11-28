@@ -1,0 +1,54 @@
+--- a/crates/victory-gpu/src/host/upcheck.rs
++++ b/crates/victory-gpu/src/host/upcheck.rs
+@@ -1040,6 +1040,51 @@
+             (None, None),
+             "first wrong byte offsets in the two GPU reads"
+         );
++    }
++
++    /// Three live list uploads must keep their distinct bytes until the GPU
++    /// has read them. Repeat after the lists retire, when the pool can reuse them.
++    #[test]
++    #[ignore = "requires a D3D12 adapter and the asynchronous submission path"]
++    fn three_list_uploads_keep_their_data_across_pool_reuse() {
++        const LEN: usize = 65_537;
++        const STRIDE: usize = LEN + 15;
++        let host = host().expect("D3D12 adapter");
++        let (out, mapped) = host.shared_buffer((3 * STRIDE) as u64).unwrap();
++        let pattern = |round: usize, lane: usize, i: usize| ((round * 61 + lane * 73 + i * 3) % 251) as u8;
++        let before = UPLOADS_TAKEN[0].load(Ordering::Relaxed);
++        for round in 0..3 {
++            // SAFETY: the mapped destination is idle between rounds.
++            unsafe { std::ptr::write_bytes(mapped, 0xff, 3 * STRIDE) };
++            let mut lists = Vec::new();
++            for lane in 0..3 {
++                let list = host.new_list().unwrap();
++                let (buffer, data) = list.upload(host, LEN as u64).unwrap();
++                // SAFETY: this list owns the mapped source, disjoint from the destination.
++                let slice = unsafe { std::slice::from_raw_parts_mut(data, LEN) };
++                for (i, byte) in slice.iter_mut().enumerate() { *byte = pattern(round, lane, i); }
++                unsafe { list.list.CopyBufferRegion(&out, (lane * STRIDE) as u64, &buffer, 0, LEN as u64) };
++                list.close();
++                lists.push(list);
++            }
++            let mut enqueued = true;
++            let gated = while_queue_waits(host, || {
++                for list in &lists { enqueued &= host.execute_own(list) != 0; }
++            });
++            settle_now(WHY_SYNC);
++            assert!(gated && enqueued, "the GPU must read after all three lists have been submitted");
++            // SAFETY: all GPU writes completed before this CPU read.
++            let bytes = unsafe { std::slice::from_raw_parts(mapped, 3 * STRIDE) };
++            for (lane, chunk) in bytes.chunks_exact(STRIDE).enumerate() {
++                for (i, &byte) in chunk[..LEN].iter().enumerate() {
++                    assert_eq!(byte, pattern(round, lane, i), "round {round}, lane {lane}, byte {i}");
++                }
++                assert!(chunk[LEN..].iter().all(|&byte| byte == 0xff));
++            }
++        }
++        let reused = UPLOADS_TAKEN[0].load(Ordering::Relaxed) - before;
++        if upload_pool() { assert!(reused >= 6, "only {reused} recycled buffers"); } else { assert_eq!(reused, 0); }
++        eprintln!("Verified 9 GPU payloads of {LEN} bytes and all 135 guard bytes; reused {reused} buffers");
+     }
+ 
+     /// Each submission copies a distinct payload to the same bytes and

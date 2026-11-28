@@ -1,0 +1,13 @@
+size_kib,allocation,policy,mean_us,median_us,p99_us
+64,upload,made for each,192.5,182,319
+64,upload,kept,1.1,0,0
+64,shared (CARD_STEPS=2),made for each,336.5,304,489
+64,shared (CARD_STEPS=2),kept,1.7,0,0
+1024,upload,made for each,289.7,282,420
+1024,upload,kept,1.4,0,0
+1024,shared (CARD_STEPS=2),made for each,352.7,347,808
+1024,shared (CARD_STEPS=2),kept,1.8,0,0
+8192,upload,made for each,846.5,872,1052
+8192,upload,kept,4.7,0,0
+8192,shared (CARD_STEPS=2),made for each,983.8,978,1686
+8192,shared (CARD_STEPS=2),kept,4.3,0,0
