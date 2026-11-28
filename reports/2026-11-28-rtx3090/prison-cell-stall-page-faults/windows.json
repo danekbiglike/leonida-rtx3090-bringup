@@ -1,0 +1,38 @@
+[
+  {
+    "window": "A1",
+    "cap_gib": 16.0,
+    "seconds": 60.002,
+    "presents": 144,
+    "fps": 2.4,
+    "frame_p95_ms": 1561.38,
+    "median_draw_calls": 554.0,
+    "min_available_gib": 6.079,
+    "peak_resident_gib": 16.001,
+    "process_faults_per_second": 48478
+  },
+  {
+    "window": "B",
+    "cap_gib": 17.5,
+    "seconds": 60.002,
+    "presents": 27,
+    "fps": 0.45,
+    "frame_p95_ms": 2062.247,
+    "median_draw_calls": 3973,
+    "min_available_gib": 4.283,
+    "peak_resident_gib": 17.5,
+    "process_faults_per_second": 42672
+  },
+  {
+    "window": "A2",
+    "cap_gib": 16.0,
+    "seconds": 60.003,
+    "presents": 132,
+    "fps": 2.2,
+    "frame_p95_ms": 1488.1,
+    "median_draw_calls": 1062.0,
+    "min_available_gib": 4.728,
+    "peak_resident_gib": 16.0,
+    "process_faults_per_second": 40935
+  }
+]
