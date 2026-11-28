@@ -1,0 +1,19 @@
+phase,elapsed_end_us,kind,windows_thread,overlap_us,total_us,requested,retained,parallel,prefilter_us,write_watch_us,update_us,cleanup_us,span_bytes,written_pages,copied_bytes,watch_us,copy_us,elapsed_us,run_count,lock_us,scan_us,plan_us,transfer_us,finish_us
+cell,53287465,slow stale buffer copy phases,12368,146110,,,,,,,,,1310720,,1179648,,,146110,1,0,1,1,146108,0
+cell,53287522,slow watched buffer update,12368,146631,,,,,,,,,1310720,20,1179648,458,146173,,,,,,,
+cell,53287538,slow individual buffer update,12368,146647,,,,,,,,,1310720,,1179648,,,146647,,,,,,
+cell,54084985,slow stale buffer copy phases,7036,618498,,,,,,,,,1965280,,196608,,,618498,1,0,0,1,618497,0
+cell,54085044,slow watched buffer update,7036,618580,,,,,,,,,1965280,30,196608,18,618562,,,,,,,
+cell,54085062,slow individual buffer update,7036,618599,,,,,,,,,1965280,,196608,,,618599,,,,,,
+cell,54086204,slow stale buffer copy phases,10416,622978,,,,,,,,,3456720,,1310720,,,622978,2,0,2,0,622976,0
+cell,54086251,slow watched buffer update,10416,623264,,,,,,,,,3456720,53,1310720,230,623034,,,,,,,
+cell,54086260,slow individual buffer update,10416,623274,,,,,,,,,3456720,,1310720,,,623274,,,,,,
+cell,54750375,slow stale buffer copy phases,9784,562653,,,,,,,,,3592192,,589824,,,562653,3,0,1,1,562651,0
+cell,54750453,slow watched buffer update,9784,563308,,,,,,,,,3592192,55,589824,568,562740,,,,,,,
+cell,54750465,slow individual buffer update,9784,563321,,,,,,,,,3592192,,589824,,,563321,,,,,,
+escort,61150821,slow stale buffer copy phases,12368,1082572,,,,,,,,,3013056,,1441792,,,1082572,2,0,1,0,1082571,0
+escort,61150881,slow watched buffer update,12368,1082702,,,,,,,,,3013056,46,1441792,65,1082637,,,,,,,
+escort,61150893,slow individual buffer update,12368,1082715,,,,,,,,,3013056,,1441792,,,1082715,,,,,,
+escort,61650250,slow stale buffer copy phases,7036,237885,,,,,,,,,3007792,,262144,,,237885,2,0,1,0,237884,0
+escort,61650289,slow watched buffer update,7036,238480,,,,,,,,,3007792,46,262144,552,237928,,,,,,,
+escort,61650298,slow individual buffer update,7036,238488,,,,,,,,,3007792,,262144,,,238488,,,,,,

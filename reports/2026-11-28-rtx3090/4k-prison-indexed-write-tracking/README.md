@@ -1,0 +1,17 @@
+# Indexed write tracking on the 4K prison route
+
+From the officer beside gate A-102, the indexed write-tracking build presented **1,998 frames in 120 seconds, averaging 16.65 FPS**. The slowest five seconds averaged **11.2 FPS**, the fastest 18.8 FPS. The 95th-percentile frame interval was 83.2 ms, and one frame took **1.161 seconds**. None of the 24 five-second windows reached 25 FPS. [Frame intervals](escort-frames.csv) · [Metrics](escort-metrics.json) · [Route captures](escort-route.jpg)
+
+The previous ordered-upload build averaged **17.40 FPS** with **13.6 FPS** in its slowest five seconds. Both runs began beside the same officer and ended their scored intervals in the dark room with silhouettes. The current trial used a lower limit on resident system RAM. That and small differences in camera position and timing prevent isolating the effect of the index from this comparison. Both runs used native Series X settings, 4K output, no frame generation, the same lighting settings and an SSD. [Endpoint comparison](compared-ends.jpg) · [Previous run](../4k-prison-ordered-uploads)
+
+## What the submission thread actually saved
+
+At 89.3 seconds, a sampled submission contained 3,529 range requests and 37 covering spans. The median of the renderer's per-frame write-watch reports was **6.4 ms**, compared with 6.5 ms before. Total submission time was 54.15 ms compared with 53.2 ms before. In this run the faster isolated range lookup produced no measurable improvement in overall gameplay. The substantial work outside the lookup remains. [Actual range counts](coverage-samples.csv) · [Submission timings](escort-submission.csv) · [Lookup patch and microbenchmark](../zen2-written-range-lookup)
+
+The long frame ended 61.2 seconds from the gate. A 1.083-second buffer refresh overlapped it, copying 1,441,792 bytes. The transfer accounted for 1.083 seconds of that operation, with zero measured time waiting for its page lock. Windows sampled its thread waiting during the transfer. The one-second process counters imply about four hard faults over the frame. They cannot show what that thread was waiting for. [Frame and thread details](long-frames.json) · [Transfer stages](slow-buffers.csv) · [Paging estimates](escort-paging.json)
+
+## Memory and visual checks
+
+With the original 16 GiB resident ceiling, the memory guard ended the first launch at 160 seconds when system RAM available dropped to 3.20 GiB. A second run of the same executable with a 14 GiB initial ceiling reached the cell. Its lowest available RAM before the cell measurement was 4.02 GiB. The launcher could raise the ceiling before the measurement only with four consecutive seconds of sufficient headroom. It held at 14 GiB throughout both timed intervals. Available system RAM stayed above 4.66 GiB during the gate test. [Both boot traces](boot-memory.csv) · [Gate GPU measurements](escort-gpu.csv)
+
+The separate cell interval averaged **10.56 FPS**. Its worst five seconds averaged **3.0 FPS** and its final image shows the officer at B35. After the gate test the camera captured Lucia by the office doorway. These pictures do not establish that the interview started, and the dark-room lighting problem remains. The renderer closed after capture. SHA-256 `4cf6b4799306f0be06b0b854ec0dcbe18b2d3f2fa158c64694a39d1af8dfafab`. [Cell captures](cell-route.jpg) · [Cell metrics](cell-metrics.json) · [Camera sequence](camera.jpg)
