@@ -1,0 +1,203 @@
+--- a/crates/victory-gpu/src/host.rs
++++ b/crates/victory-gpu/src/host.rs
+@@ -4177,6 +4177,10 @@
+             t[2],
+             t[3],
+         );
++    }
++    let paired = place::PAIRED_WAITS.swap(0, Ordering::Relaxed);
++    if paired != 0 {
++        tracing::info!("placed copy waits scoped to the source and destination per frame: {:.1}", paired as f64 / frames);
+     }
+     card_steps::log(frames);
+     crate::port::log(frames);
+--- a/crates/victory-gpu/src/host/place.rs
++++ b/crates/victory-gpu/src/host/place.rs
+@@ -50,6 +50,61 @@
+ /// out of a host copy, and texture copies out of one.
+ pub(super) static STATS: [std::sync::atomic::AtomicU64; 4] = [const { std::sync::atomic::AtomicU64::new(0) }; 4];
+ 
++pub(super) static PAIRED_WAITS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
++
++fn pair_wait_enabled() -> bool {
++    static ENABLED: OnceLock<bool> = OnceLock::new();
++    *ENABLED.get_or_init(|| crate::switch::on("VICTORY_COPY_PAIR_WAIT"))
++}
++
++fn distinct_owned_buffers(same_resource: bool, src_placed: bool, dst_placed: bool) -> bool {
++    !same_resource && !src_placed && !dst_placed
++}
++
++/// Order access to both independently backed buffers on either side of the copy.
++/// A view of shared guest memory can alias a third resource and stays on the global path.
++#[derive(Clone, Copy)]
++enum CopyBoundary { Before, After }
++
++fn wait_for_copy(host: &Host, list: &ID3D12GraphicsCommandList, pair: Option<[&ID3D12Resource; 2]>, boundary: CopyBoundary) {
++    if let Some([source, destination]) = pair
++        && enhanced_barriers(host)
++        && let Ok(list7) = list.cast::<ID3D12GraphicsCommandList7>()
++    {
++        let make = |resource: &ID3D12Resource, access| {
++            let (from, to, old, new) = match boundary {
++                CopyBoundary::Before => (D3D12_BARRIER_SYNC_ALL, D3D12_BARRIER_SYNC_COPY, D3D12_BARRIER_ACCESS_COMMON, access),
++                CopyBoundary::After => (D3D12_BARRIER_SYNC_COPY, D3D12_BARRIER_SYNC_ALL, access, D3D12_BARRIER_ACCESS_COMMON),
++            };
++            D3D12_BUFFER_BARRIER {
++                SyncBefore: from,
++                SyncAfter: to,
++                AccessBefore: old,
++                AccessAfter: new,
++                pResource: std::mem::ManuallyDrop::new(Some(resource.clone())),
++                Offset: 0,
++                Size: u64::MAX,
++            }
++        };
++        let mut buffers = [make(source, D3D12_BARRIER_ACCESS_COPY_SOURCE), make(destination, D3D12_BARRIER_ACCESS_COPY_DEST)];
++        let group = D3D12_BARRIER_GROUP {
++            Type: D3D12_BARRIER_TYPE_BUFFER,
++            NumBarriers: buffers.len() as u32,
++            Anonymous: D3D12_BARRIER_GROUP_0 { pBufferBarriers: buffers.as_ptr() },
++        };
++        // SAFETY: both references and the group are live for this open-list call.
++        unsafe { list7.Barrier(&[group]) };
++        for buffer in &mut buffers {
++            // SAFETY: each field owns one clone and is dropped exactly once.
++            unsafe { std::mem::ManuallyDrop::drop(&mut buffer.pResource) };
++        }
++        PAIRED_WAITS.fetch_add(1, Ordering::Relaxed);
++        return;
++    }
++    // SAFETY: the caller is recording into the list.
++    unsafe { wait_for_all(host, list) };
++}
++
+ /// What the CPU does at submission for a copy at its place in a list.
+ pub(super) struct Placed {
+     pub(super) dst: usize,
+@@ -127,13 +182,9 @@
+     })
+ }
+ 
+-/// Everything recorded so far is done, and seen, before what follows.
+-///
+-/// # Safety
+-/// An open list.
+-unsafe fn wait_for_all(host: &Host, list: &ID3D12GraphicsCommandList) {
++fn enhanced_barriers(host: &Host) -> bool {
+     static ENHANCED: OnceLock<bool> = OnceLock::new();
+-    let enhanced = *ENHANCED.get_or_init(|| {
++    *ENHANCED.get_or_init(|| {
+         let mut o = D3D12_FEATURE_DATA_D3D12_OPTIONS12::default();
+         // SAFETY: a feature structure of its size.
+         let known = unsafe {
+@@ -144,10 +195,17 @@
+             )
+         };
+         known.is_ok() && o.EnhancedBarriersSupported.as_bool()
+-    });
++    })
++}
++
++/// Everything recorded so far is done, and seen, before what follows.
++///
++/// # Safety
++/// An open list.
++unsafe fn wait_for_all(host: &Host, list: &ID3D12GraphicsCommandList) {
+     // SAFETY: the caller's.
+     unsafe {
+-        if enhanced && let Ok(list) = list.cast::<ID3D12GraphicsCommandList7>() {
++        if enhanced_barriers(host) && let Ok(list) = list.cast::<ID3D12GraphicsCommandList7>() {
+             let all = [D3D12_GLOBAL_BARRIER {
+                 SyncBefore: D3D12_BARRIER_SYNC_ALL,
+                 SyncAfter: D3D12_BARRIER_SYNC_ALL,
+@@ -217,9 +275,16 @@
+         let at = to.offset(dst as u64);
+         // What the title's CPU wrote around and under it so far goes first.
+         to.refresh(self, dst as u64, len as u64);
++        let pair = own.as_ref().filter(|from| {
++            pair_wait_enabled() && distinct_owned_buffers(
++                from.buffer.as_raw() == to.buffer.as_raw(),
++                from.in_place(),
++                to.in_place(),
++            )
++        }).map(|from| [&from.buffer, &to.buffer]);
+         // SAFETY (both): an open list; live buffers (the list holds the
+         // copies and its scratch memory), ranges inside them.
+-        unsafe { wait_for_all(host, &self.list) };
++        wait_for_copy(host, &self.list, pair, CopyBoundary::Before);
+         match (&own, &scratch) {
+             (Some(from), _) => {
+                 from.refresh(self, src as u64, len as u64);
+@@ -244,7 +309,7 @@
+             },
+             (None, None) => return false,
+         }
+-        unsafe { wait_for_all(host, &self.list) };
++        wait_for_copy(host, &self.list, pair, CopyBoundary::After);
+         STATS[0].fetch_add(1, Ordering::Relaxed);
+         STATS[1].fetch_add(len as u64, Ordering::Relaxed);
+         to.gpu_writes(self, dst as u64, len as u64);
+@@ -294,6 +359,62 @@
+ 
+ #[cfg(test)]
+ mod tests {
++    #[test]
++    #[ignore = "requires an Enhanced Barriers D3D12 adapter"]
++    fn copy_pair_round_trip_on_hardware() {
++        let host = super::host().expect("D3D12 device");
++        assert!(super::enhanced_barriers(host));
++        let (first, first_ptr) = host.shared_buffer_now(1024).expect("first buffer");
++        let (second, second_ptr) = host.shared_buffer_now(1024).expect("second buffer");
++        let mut seed = 1771u32;
++        let mut bytes = |_| {
++            seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
++            (seed >> 24) as u8
++        };
++        let mut expected_first: [u8; 1024] = std::array::from_fn(&mut bytes);
++        let mut expected_second: [u8; 1024] = std::array::from_fn(bytes);
++        // SAFETY: the two new mapped buffers are independently owned and at least 1024 bytes.
++        unsafe {
++            first_ptr.copy_from_nonoverlapping(expected_first.as_ptr(), 1024);
++            second_ptr.copy_from_nonoverlapping(expected_second.as_ptr(), 1024);
++        }
++        let list = host.new_list().expect("copy list");
++        let start = super::PAIRED_WAITS.load(super::Ordering::Relaxed);
++        for (index, (src, dst)) in [(&first, &second), (&second, &first)].into_iter().cycle().take(4).enumerate() {
++            let from = index * 128;
++            let to = from + 128;
++            super::wait_for_copy(host, &list.list, Some([src, dst]), super::CopyBoundary::Before);
++            // SAFETY: the resources are live and the 64-byte regions are in bounds.
++            unsafe { list.list.CopyBufferRegion(dst, to as u64, src, from as u64, 64) };
++            super::wait_for_copy(host, &list.list, Some([src, dst]), super::CopyBoundary::After);
++            if index % 2 == 0 {
++                expected_second[to..to + 64].copy_from_slice(&expected_first[from..from + 64]);
++            } else {
++                expected_first[to..to + 64].copy_from_slice(&expected_second[from..from + 64]);
++            }
++        }
++        list.close();
++        host.execute_sync_internal(&list);
++        assert_eq!(super::PAIRED_WAITS.load(super::Ordering::Relaxed) - start, 8);
++        // SAFETY: submission has completed; both mappings are live and CPU-readable.
++        unsafe {
++            host.device.GetDeviceRemovedReason().expect("copy completed on device");
++            assert_eq!(std::slice::from_raw_parts(first_ptr, 1024), &expected_first);
++            assert_eq!(std::slice::from_raw_parts(second_ptr, 1024), &expected_second);
++        }
++    }
++
++    #[test]
++    fn paired_wait_requires_distinct_independent_buffers() {
++        for same in [false, true] {
++            for src_placed in [false, true] {
++                for dst_placed in [false, true] {
++                    let expected = (same, src_placed, dst_placed) == (false, false, false);
++                    assert_eq!(super::distinct_owned_buffers(same, src_placed, dst_placed), expected);
++                }
++            }
++        }
++    }
+     /// What copies with two sides cost to make (ignored: a measurement for
+     /// `VICTORY_CARD_ALL`): buffers of 64 KiB on the card and in the PC's
+     /// memory.
