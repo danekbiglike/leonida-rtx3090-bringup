@@ -1,0 +1,129 @@
+--- a/crates/victory-gpu/src/host/card_steps.rs
++++ b/crates/victory-gpu/src/host/card_steps.rs
+@@ -299,6 +299,23 @@
+     spans
+ }
+ 
++/// Nearby source bytes can be read in one command when the gaps also fit.
++/// Retain the individual reads if those extra bytes would exhaust staging.
++fn staging_layout(places: &mut [Place], mut gap: usize, capacity: u64) -> Option<(Vec<Span>, u64)> {
++    loop {
++        let spans = lay_out(places, gap);
++        // Spans are appended in staging order and only the last can grow.
++        let end = spans.last().map_or(0, |s| s.at + s.len as u64);
++        if end <= capacity {
++            return Some((spans, end));
++        }
++        if gap == 0 {
++            return None;
++        }
++        gap = 0;
++    }
++}
++
+ /// How a fill's bytes get where its list reads them, if the card brings
+ /// them.
+ #[derive(Clone)]
+@@ -980,11 +997,7 @@
+                 to,
+             });
+         }
+-        let read_spans = lay_out(&mut read_at, join_gap());
+-        let end = read_spans.iter().map(|s| s.at + s.len as u64).max().unwrap_or(0);
+-        if end > BETWEEN {
+-            return Err("too much at once");
+-        }
++        let (read_spans, end) = staging_layout(&mut read_at, join_gap(), BETWEEN).ok_or("too much at once")?;
+         for op in &mut ops {
+             op.at = read_at[op.at as usize].at;
+         }
+@@ -1267,6 +1280,32 @@
+         let mut places = vec![place(7, 0x1000, 0x100, 0, true), place(7, 0x4000, 0x100, 0, true)];
+         let spans = lay_out(&mut places, usize::MAX);
+         assert_eq!(spans.len(), 1);
++        laid_out_right(&places, &spans);
++    }
++
++    #[test]
++    fn staging_keeps_individual_reads_when_only_the_gaps_exceed_capacity() {
++        let mut places: Vec<_> = (0..1200).rev()
++            .map(|i| place(1, 0x1000 + 4096 * i, 256, 0, true))
++            .collect();
++        let wide = lay_out(&mut places, 4096);
++        assert_eq!(wide.len(), 1);
++        assert!(wide[0].len as u64 > BETWEEN);
++        let (reads, end) = staging_layout(&mut places, 4096, BETWEEN).unwrap();
++        assert_eq!(reads.len(), places.len());
++        assert_eq!(end, 1200 * 256);
++        for (i, (place, read)) in places.iter().zip(&reads).enumerate() {
++            assert_eq!(place.at, (i * 256) as u64);
++            assert_eq!((read.first, read.src, read.len, read.at), (i, place.src, 256, place.at));
++        }
++        assert!(staging_layout(&mut places, 4096, end - 1).is_none());
++    }
++
++    #[test]
++    fn staging_keeps_a_join_that_exactly_fits() {
++        let mut places = [place(2, 0x1000, 256, 1, true), place(2, 0x1200, 256, 1, true)];
++        let (spans, end) = staging_layout(&mut places, 4096, 768).unwrap();
++        assert_eq!((spans.len(), end), (1, 768));
+         laid_out_right(&places, &spans);
+     }
+ 
+@@ -1519,6 +1558,56 @@
+     fn what_no_host_copy_holds_is_refused() {
+         let writers = [Writer { shadow: None, from: 100, to: 108, copy: false }];
+         assert!(holder(&writers, 104, 120).is_err());
++    }
++
++    /// Exercise the layout and native copy commands together, including a span
++    /// that would exceed the 4 MiB intermediate buffer if its gaps were copied.
++    #[test]
++    #[ignore = "requires a D3D12 device"]
++    fn joined_and_compact_spans_preserve_d3d12_bytes() {
++        let host = host().expect("hardware D3D12 device");
++        for (count, stride, gap, expected_reads) in [
++            (40usize, 512usize, 0usize, 40usize),
++            (40, 512, 4096, 1),
++            (1200, 4096, 4096, 1200),
++        ] {
++            let len = 256usize;
++            let source_size = stride * count;
++            let output_size = (len + 16) * count + 32;
++            let (source, input) = host.shared_buffer(source_size as u64).unwrap();
++            let (destination, output) = host.shared_buffer(output_size as u64).unwrap();
++            let byte = |i: usize| (i ^ (i >> 7) ^ (i >> 15)) as u8;
++            // SAFETY: both mappings cover their requested size; the queue is idle.
++            unsafe {
++                for (i, b) in std::slice::from_raw_parts_mut(input, source_size).iter_mut().enumerate() {
++                    *b = byte(i);
++                }
++                std::ptr::write_bytes(output, 0xee, output_size);
++            }
++            let mut places: Vec<_> = (0..count).rev()
++                .map(|i| place(1, i * stride, len, 0, true))
++                .collect();
++            let (spans, _) = staging_layout(&mut places, gap, BETWEEN).unwrap();
++            assert_eq!(spans.len(), expected_reads);
++            let reads: Vec<_> = spans.iter().map(|s| (&source, s.src as u64, s.at, s.len as u64)).collect();
++            let mut expected = vec![0xee; output_size];
++            let writes: Vec<_> = places.iter().enumerate().map(|(index, p)| {
++                let offset = 16 + index * (len + 16);
++                for (i, out) in expected[offset..offset + len].iter_mut().enumerate() {
++                    *out = byte(p.src + i);
++                }
++                (&destination, offset as u64, p.at, p.len as u64)
++            }).collect();
++            let own = host.own_list().unwrap();
++            record(true, &own.list.list, &own.between, &reads, &writes);
++            own.list.close();
++            host.execute(&[&own.list]);
++            // SAFETY: execute waited for the list; the mapping is still live.
++            let actual = unsafe { std::slice::from_raw_parts(output, output_size) };
++            assert!(actual == expected.as_slice(), "incorrect GPU destination for {count} reads with gap {gap}");
++            assert_eq!(host.log_messages(), None);
++            eprintln!("Verified {count} logical reads via {expected_reads} staging copies including destination gaps");
++        }
+     }
+ 
+     /// Reads are all before writes, between two buffers and within one, and

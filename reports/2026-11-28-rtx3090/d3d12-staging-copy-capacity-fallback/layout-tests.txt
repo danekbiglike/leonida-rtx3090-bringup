@@ -1,0 +1,13 @@
+
+running 8 tests
+test tests::far_places_other_copies_and_levels_are_apart ... ok
+test tests::largest_join_gap_does_not_wrap ... ok
+test tests::no_gap_is_a_copy_for_each_place ... ok
+test tests::overlapping_places_share_bytes ... ok
+test tests::places_next_to_each_other_are_one_copy ... ok
+test tests::slots_stay_on_256_bytes ... ok
+test tests::staging_keeps_a_join_that_exactly_fits ... ok
+test tests::staging_keeps_individual_reads_when_only_the_gaps_exceed_capacity ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

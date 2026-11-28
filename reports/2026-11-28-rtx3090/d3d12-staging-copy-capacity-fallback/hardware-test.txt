@@ -1,0 +1,9 @@
+
+running 1 test
+Verified 40 logical reads via 40 staging copies including destination gaps
+Verified 40 logical reads via 1 staging copies including destination gaps
+Verified 1200 logical reads via 1200 staging copies including destination gaps
+test host::card_steps::tests::joined_and_compact_spans_preserve_d3d12_bytes ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 529 filtered out; finished in 0.30s
+
