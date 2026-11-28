@@ -1,0 +1,186 @@
+--- a/crates/victory-gpu/src/descriptor.rs
++++ b/crates/victory-gpu/src/descriptor.rs
+@@ -874,23 +874,33 @@
+     Some(f(host))
+ }
+ 
+-/// Makes dynamic slot `index` of the host heap behind the title heap at
+-/// `heap`, if that heap still exists, the constant buffer view of `size`
+-/// bytes of `buffer` at `gpu`.
+-#[cfg(windows)]
+-pub(crate) fn constant_slot(
+-    heap: usize,
+-    index: u32,
++/// Update dynamic CBVs while the registered heaps stay alive. Repeated slots
++/// from the same heap reuse its resolved pointer until this batch ends.
++#[cfg(windows)]
++pub(crate) fn constant_slots_batch(
+     buffer: &windows::Win32::Graphics::Direct3D12::ID3D12Resource,
+-    gpu: u64,
+-    size: u32,
++    base: u64,
++    slots: impl IntoIterator<Item = (usize, u32, u64, u32)>,
+ ) {
++    let mut slots = slots.into_iter().peekable();
++    if slots.peek().is_none() {
++        return;
++    }
+     let heaps = SHADER_HEAPS.read().unwrap_or_else(|e| e.into_inner());
+-    if heaps.iter().any(|&(_, _, h)| h == heap)
+-        // SAFETY: registered heaps are live (removed when dropped).
+-        && let Some(Some(host)) = unsafe { &*(heap as *const Heap) }.host.get()
+-    {
+-        host.constant_at(index, buffer, gpu, size);
++    let mut last_heap = None;
++    let mut resolved = None;
++    for (address, index, gpu, size) in slots {
++        if last_heap != Some(address) {
++            resolved = heaps.iter().find(|entry| entry.2 == address).and_then(|entry| {
++                // SAFETY: dropping a registered heap requires the write lock.
++                let heap = unsafe { &*(entry.2 as *const Heap) };
++                heap.host.get()?.as_ref()
++            });
++            last_heap = Some(address);
++        }
++        if let Some(host) = resolved {
++            host.constant_at_base(index, buffer, Some(base), gpu, size);
++        }
+     }
+ }
+ 
+@@ -2081,6 +2091,72 @@
+     fn create(desc: HeapDesc, placement: Placement, out: &mut This) -> HRESULT {
+         let extended = Extended(desc, placement);
+         create_heap(std::ptr::null(), &extended.0, &HEAP_IIDS[0], out)
++    }
++
++    #[cfg(windows)]
++    #[test]
++    #[ignore = "needs a D3D12 device and real descriptor heaps"]
++    fn batched_constant_slots_preserve_gpu_values_across_heaps() {
++        use windows::Win32::Graphics::Direct3D12::*;
++        let device = crate::host::host().expect("D3D12 device");
++        let code = crate::host::compile(
++            r#"cbuffer Values : register(b0) { uint first; };
++               RWByteAddressBuffer result : register(u0);
++               [RootSignature("DescriptorTable(CBV(b0)), UAV(u0)")]
++               [numthreads(1,1,1)] void main() { result.Store(0, first); }"#,
++            windows::core::s!("main"), windows::core::s!("cs_5_1"),
++        ).expect("readback shader");
++        let handles = [(); 2].map(|_| {
++            let mut handle = std::ptr::null();
++            let desc = HeapDesc { kind: VIEWS_KIND, count: 8, flags: SHADER_VISIBLE, nodes: 1 };
++            assert_eq!(create(desc, Placement { address: 0, size: 0 }, &mut handle), S_OK);
++            heap(handle).host().expect("shader-visible heap");
++            handle
++        });
++        let [a, b] = handles.map(|h| std::ptr::from_ref(heap(h)) as usize);
++        let (input, mapped) = device.upload_buffer(2048).expect("CBV input");
++        let (output, observed) = device.shared_buffer(256).expect("mapped UAV");
++        // SAFETY: the seven aligned input words and three output words are within
++        // their mappings. The resources and heaps live past synchronous execution.
++        unsafe {
++            for i in 0..7u32 {
++                mapped.add(i as usize * 256).cast::<u32>().write(100 + i);
++            }
++            std::ptr::write_bytes(observed, 0, 256);
++            let base = input.GetGPUVirtualAddress();
++            constant_slots_batch(&input, base, [
++                (a, 2, base, 256), (a, 3, base + 256, 256), (0, 2, base, 256),
++                (b, 2, base + 512, 256), (a, 2, base + 1024, 256),
++                (b, 2, base + 1536, 256),
++            ]);
++            let root: ID3D12RootSignature = device.device.CreateRootSignature(0, &code).unwrap();
++            let pipeline: ID3D12PipelineState = device.device.CreateComputePipelineState(
++                &D3D12_COMPUTE_PIPELINE_STATE_DESC {
++                    pRootSignature: std::mem::transmute_copy(&root),
++                    CS: D3D12_SHADER_BYTECODE { pShaderBytecode: code.as_ptr().cast(), BytecodeLength: code.len() },
++                    ..Default::default()
++                }
++            ).unwrap();
++            let list = device.new_list().expect("compute list");
++            list.list.SetPipelineState(&pipeline);
++            list.list.SetComputeRootSignature(&root);
++            for (i, (h, slot)) in [(handles[0], 2), (handles[0], 3), (handles[1], 2)].into_iter().enumerate() {
++                let table = heap(h).host().unwrap();
++                list.list.SetDescriptorHeaps(&[Some(table.heap.clone())]);
++                list.list.SetComputeRootDescriptorTable(0, table.gpu_handle(slot));
++                list.list.SetComputeRootUnorderedAccessView(1, output.GetGPUVirtualAddress() + i as u64 * 16);
++                list.list.Dispatch(1, 1, 1);
++            }
++            list.close();
++            device.execute(&[&list]);
++            let values = [0, 16, 32].map(|offset| observed.add(offset).cast::<u32>().read());
++            assert_eq!(values, [104, 101, 106]);
++            device.device.GetDeviceRemovedReason().unwrap();
++        }
++        for h in handles {
++            slot::<extern "system" fn(This) -> u32>(h, 0x10)(h);
++        }
++        eprintln!("Verified three GPU values across two heaps after repeated and missing slots");
+     }
+ 
+     #[cfg(windows)]
+--- a/crates/victory-gpu/src/descriptor/host.rs
++++ b/crates/victory-gpu/src/descriptor/host.rs
+@@ -3791,6 +3791,17 @@
+     /// lost the device to a page fault in the memory of three freed ones.
+     /// `VICTORY_SLOT_HOLDS=0`: only the list holds it, as before.
+     pub(crate) fn constant_at(&self, index: u32, buffer: &ID3D12Resource, gpu: u64, size: u32) {
++        self.constant_at_base(index, buffer, None, gpu, size);
++    }
++
++    pub(crate) fn constant_at_base(
++        &self,
++        index: u32,
++        buffer: &ID3D12Resource,
++        base: Option<u64>,
++        gpu: u64,
++        size: u32,
++    ) {
+         static HOLDS: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+         let holds = *HOLDS.get_or_init(|| std::env::var_os("VICTORY_SLOT_HOLDS").is_none_or(|v| v != "0"));
+         let Some(host) = host() else { return };
+@@ -3808,7 +3819,7 @@
+         let twin = self.twin(index).filter(|_| desc.SizeInBytes > 0);
+         if let Some(twin) = twin {
+             // SAFETY: a live buffer that holds the range.
+-            let first = (gpu - unsafe { buffer.GetGPUVirtualAddress() }) / 4;
++            let first = (gpu - base.unwrap_or_else(|| unsafe { buffer.GetGPUVirtualAddress() })) / 4;
+             let raw = D3D12_SHADER_RESOURCE_VIEW_DESC {
+                 Format: DXGI_FORMAT_R32_TYPELESS,
+                 ViewDimension: D3D12_SRV_DIMENSION_BUFFER,
+--- a/crates/victory-gpu/src/host/card_steps.rs
++++ b/crates/victory-gpu/src/host/card_steps.rs
+@@ -1138,14 +1138,12 @@
+         // (11,000 slots a frame in a street, two descriptors each: on
+         // several threads, a slot always on the same one, in the steps'
+         // order.)
+-        let patch_slot = |op: &Op| {
+-            if let To::Slot(heap, index) = &op.to {
+-                // A heap that is gone has no readers.
+-                crate::descriptor::constant_slot(*heap, *index, &own.between, gpu + op.at, op.len as u32);
+-            }
++        let slot = |op: &Op| match op.to {
++            To::Slot(heap, index) => Some((heap, index, gpu + op.at, op.len as u32)),
++            _ => None,
+         };
+         if ops.len() < 256 {
+-            ops.iter().for_each(patch_slot);
++            crate::descriptor::constant_slots_batch(&own.between, gpu, ops.iter().filter_map(slot));
+         } else {
+             let mut parts: [Vec<&Op>; 8] = Default::default();
+             for op in &ops {
+@@ -1155,7 +1153,11 @@
+                 }
+             }
+             crate::land::each_under(parts.len(), &|part| {
+-                parts[part].iter().copied().for_each(&patch_slot);
++                crate::descriptor::constant_slots_batch(
++                    &own.between,
++                    gpu,
++                    parts[part].iter().copied().filter_map(slot),
++                );
+             });
+         }
+         let copies = ops.iter().filter(|op| matches!(op.to, To::Copy(..))).count();
