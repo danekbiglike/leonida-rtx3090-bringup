@@ -1,0 +1,39 @@
+--- a/crates/victory-gpu/src/host/card_steps.rs
++++ b/crates/victory-gpu/src/host/card_steps.rs
+@@ -690,6 +690,16 @@
+ /// A table by addresses and numbers of ours.
+ type HashMap<K, V> = std::collections::HashMap<K, V, std::hash::BuildHasherDefault<AddressHash>>;
+ 
++fn first_read_at(words: &mut [u64], offset: u64) -> bool {
++    debug_assert_eq!(offset % 256, 0);
++    let slot = (offset / 256) as usize;
++    let bit = 1u64 << (slot % 64);
++    let word = &mut words[slot / 64];
++    let first = *word & bit == 0;
++    *word |= bit;
++    first
++}
++
+ /// A step done on the card.
+ struct Op {
+     from: (Arc<Shadow>, usize),
+@@ -1000,6 +1010,10 @@
+         #[cfg(feature = "diagnostics")]
+         own.list.note_op(|| format!("{} copies of title memory done on the card, {end} bytes (VICTORY_CARD_STEPS)", ops.len()));
+         let levels = ops.iter().map(|op| op.level).max().unwrap_or(0);
++        // Each distinct (shadow, address, length, level) has a unique aligned
++        // offset in the temporary buffer. Mark that offset on the first recorded
++        // use, including when an earlier planned operation had no destination.
++        let mut read_slots = vec![0u64; end.div_ceil(256 * 64) as usize];
+         for level in 0..=levels {
+             let mut reads = Vec::new();
+             let mut writes = Vec::new();
+@@ -1007,7 +1021,7 @@
+                 let len = op.len as u64;
+                 let read = (&op.from.0.buffer, op.from.0.offset(op.from.1 as u64), op.at, len);
+                 // (Each place once.)
+-                if places.remove(&(Arc::as_ptr(&op.from.0) as usize, op.from.1, op.len, level)).is_some() {
++                if first_read_at(&mut read_slots, op.at) {
+                     reads.push(read);
+                 }
+                 match &op.to {

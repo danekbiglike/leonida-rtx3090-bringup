@@ -1,0 +1,7 @@
+# Identifying repeated GPU buffer reads by their allocated offsets
+
+The renderer prepares a temporary 4 MiB buffer for GPU copies. Each distinct source buffer, address, length and dependency level already receives a unique 256-byte-aligned offset. The reference implementation hashes that four-field key a second time when recording reads. The candidate marks one bit for each allocated slot and emits the read on the first actual use. An earlier planned operation with no destination cannot consume the bit. The largest bit set takes 2 KiB. [Renderer patch](slots.patch)
+
+On a Ryzen 7 3700X a generated stream with 4,800 plans from 530 distinct keys took a median **31.4 µs with the hash table and 4.4 µs with the bit set** for the read-selection loop. With 3,030 distinct keys the medians were 90.6 and 5.2 µs. Each case had 31 paired rounds, alternating which implementation ran first. Both produced identical order and counts for the emitted reads, including duplicates, multiple levels, skipped destinations and the final slot in the 4 MiB buffer. The timings exclude the common planning stage and D3D12 recording. They give no gameplay FPS estimate. [Per-round timings](timings.csv)
+
+For the standalone test, compile [verify.rs](verify.rs) alongside [first_read_at.rs](first_read_at.rs) and the renderer's [address hasher](address_hash.rs) with rustc, edition 2024, optimization level 3. These measurements used target CPU znver2. [Submission-thread measurements in the game](../ryzen3700x-thread-cpu-on-three-escorts)
