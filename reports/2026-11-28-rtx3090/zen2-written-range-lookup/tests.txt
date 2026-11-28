@@ -1,0 +1,20 @@
+containment_agrees_with_individual_kernel_queries
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 512 filtered out; finished in 0.01s
+
+each_submission_reads_its_own_copy_in_pc_memory
+wrong copies (round, submission, offset, expected, observed): []
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 512 filtered out; finished in 0.32s
+
+each_submission_reads_its_own_copy_on_the_card
+wrong copies (round, submission, offset, expected, observed): []
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 512 filtered out; finished in 0.36s
+
+the_rest_of_the_one_asking_has_a_number_of_its_own
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 512 filtered out; finished in 0.00s
+
+two_public_copies_in_the_same_list
+SAME_LIST size=8388864 placed=true paired=true first=0x21 second=0x51
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 512 filtered out; finished in 0.39s
+
+written_pages_are_reported_to_every_asker
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 512 filtered out; finished in 0.00s
