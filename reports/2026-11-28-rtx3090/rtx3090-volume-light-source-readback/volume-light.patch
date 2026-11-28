@@ -1,0 +1,22 @@
+--- a/crates/victory-gpu/src/ambient.rs
++++ b/crates/victory-gpu/src/ambient.rs
+@@ -425,9 +425,16 @@
+     uint w, h, d;
+     scattered.GetDimensions(w, h, d);
+     if (at.x >= w || at.y >= h || at.z >= d) return;
+-    uint2 q = min(uint2((float2(at.xy) + 0.5) / float2(w, h) * float2(PX, PY)), uint2(PX - 1, PY - 1));
+-    uint at0 = (q.y * PX + q.x) * 4;
+-    float3 seen_there = float3(points[at0].w, points[at0 + 1].w, points[at0 + 2].w);
++    // Air can be recorded after keep/mean and before the first depth gather.
++    // Sample the captured radiance alongside the mean from that same pass.
++    float2 cell = (float2(at.xy) + 0.5) * float2(CX, CY) / float2(w, h) - 0.5;
++    int2 first = int2(floor(cell));
++    float2 f = frac(cell);
++    int2 lo = clamp(first, int2(0, 0), int2(CX-1, CY-1));
++    int2 hi = clamp(first + 1, int2(0, 0), int2(CX-1, CY-1));
++    float3 top = lerp(cells[lo.y*CX+lo.x].rgb, cells[lo.y*CX+hi.x].rgb, f.x);
++    float3 bottom = lerp(cells[hi.y*CX+lo.x].rgb, cells[hi.y*CX+hi.x].rgb, f.x);
++    float3 seen_there = lerp(top, bottom, f.y);
+     float far = float(at.z) / float(d);
+     float cap = air * lerp(dot(cells[CELLS].rgb, LUMA), dot(seen_there, LUMA), far);
+     float3 c = scattered[at];

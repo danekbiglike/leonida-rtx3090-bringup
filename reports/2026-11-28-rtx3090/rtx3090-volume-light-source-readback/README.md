@@ -1,0 +1,9 @@
+# Checking the source of blocky volumetric light on RTX 3090
+
+The current volumetric lighting shader limits scattering with one directional-light sample. A prison trace recorded two radiance commands and a 160 × 90 air-lighting command before the first logged diffuse resolve. Those timestamps describe CPU command recording. GPU execution order and the origin of the in-game halo are still open. [Observed command sequence](recorded-passes.csv) · [Original wall screenshots and grid measurement](../prison-wall-light-screen-grid)
+
+The candidate uses bilinear interpolation across four cells of the captured 64 × 36 radiance field. It preserves the original slow mean, depth blend, colour scaling and maximum brightness rule. The D3D12 test runs the original and candidate shaders on an RTX 3090, then reads back the packed R11G11B10 volume at 160 × 90 × 17. All five scenes passed, including a repeat of each candidate dispatch. [Shader change](volume-light.patch) · [Readbacks](readback.csv)
+
+In two artificial scenes the only difference was the phase of an alternating pattern in the old directional-light buffer. Its far-slice red values varied from 0.293 to 1.703. With the candidate, both scenes produced exactly the same volume and the far slice stayed at 1.000. A genuine gradient in the captured radiance produced a 0.293–1.703 gradient with the candidate. The flat field and the already-dim coloured volume matched the reference bit for bit across all 244,800 voxels each. A game frame with the same wall and light is needed to evaluate the visual result.
+
+To reproduce, build [air_volume.cpp](air_volume.cpp) as C++17 with MSVC and the supplied [D3D12 helper](d3d_test.hpp), linking d3d12.lib, dxgi.lib and d3dcompiler.lib. Supply the baseline and patched ambient.rs paths as the two arguments. The program extracts the renderer's HLSL from both.
