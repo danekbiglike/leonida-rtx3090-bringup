@@ -1,0 +1,48 @@
+phase,elapsed_end_us,kind,windows_thread,overlap_us,total_us,requested,retained,parallel,prefilter_us,write_watch_us,update_us,cleanup_us,span_bytes,written_pages,copied_bytes,watch_us,copy_us,elapsed_us,run_count,lock_us,scan_us,plan_us,transfer_us,finish_us,read_stage,lookup_us,window_us,after_window_us,outcome,source_backing
+cell,8276490,slow mapped title view read,28400,4569794,,,,,,,,,655360,,65536,,,4569794,,,,,,,,0,0,4569794,copied,file
+cell,8276752,slow stale buffer copy phases,28400,4570117,,,,,,,,,3959760,,748496,,,4570117,2,0,0,1,4570116,0,,,,,,
+cell,8276767,slow watched buffer update,28400,4570250,,,,,,,,,3959760,61,748496,116,4570134,,,,,,,,,,,,,
+cell,8276774,slow individual buffer update,28400,4570257,,,,,,,,,3959760,,748496,,,4570257,,,,,,,,,,,,
+cell,15714768,slow mapped title view read,19180,4321578,,,,,,,,,262144,,65536,,,4321578,,,,,,,,0,0,4321578,copied,file
+cell,15722156,slow mapped title view read,23144,4328965,,,,,,,,,131072,,65536,,,4328965,,,,,,,,0,0,4328965,copied,file
+cell,15722208,slow stale buffer copy phases,23144,4329098,,,,,,,,,1536000,,1536000,,,4329098,1,0,1,8,4329089,0,,,,,,
+cell,15722218,slow watched buffer update,23144,4329111,,,,,,,,,1536000,24,1536000,3,4329108,,,,,,,,,,,,,
+cell,15722225,slow individual buffer update,23144,4329117,,,,,,,,,1536000,,1536000,,,4329117,,,,,,,,,,,,
+cell,15722221,slow stale buffer copy phases,19180,4329277,,,,,,,,,3142480,,2224976,,,4329277,1,0,1,0,4329275,1,,,,,,
+cell,15722264,slow watched buffer update,19180,4329781,,,,,,,,,3142480,48,2224976,457,4329324,,,,,,,,,,,,,
+cell,15722276,slow individual buffer update,19180,4329794,,,,,,,,,3142480,,2224976,,,4329794,,,,,,,,,,,,
+cell,15722822,slow mapped title view read,14168,4327207,,,,,,,,,196608,,65536,,,4327207,,,,,,,,0,0,4327207,copied,file
+cell,17682519,slow mapped title view read,14168,1959665,,,,,,,,,65536,,65536,,,1959665,,,,,,,,0,0,1959665,copied,file
+cell,17682566,slow stale buffer copy phases,14168,6286996,,,,,,,,,1168384,,1168384,,,6286996,1,0,1,0,6286995,0,,,,,,
+cell,17682579,slow watched buffer update,14168,6287250,,,,,,,,,1168384,18,1168384,240,6287010,,,,,,,,,,,,,
+cell,17682614,slow individual buffer update,14168,6287280,,,,,,,,,1168384,,1168384,,,6287280,,,,,,,,,,,,
+cell,48099792,slow mapped title view read,12036,231515,,,,,,,,,524288,,65536,,,231515,,,,,,,,0,0,231515,copied,file
+cell,48450698,slow mapped title view read,23144,578108,,,,,,,,,196608,,65536,,,578108,,,,,,,,0,0,578108,copied,file
+cell,48450750,slow stale buffer copy phases,23144,578166,,,,,,,,,3929936,,196608,,,578166,1,0,0,1,578165,0,,,,,,
+cell,48450904,slow watched buffer update,23144,578376,,,,,,,,,3929936,60,196608,56,578320,,,,,,,,,,,,,
+cell,48450914,slow individual buffer update,23144,578386,,,,,,,,,3929936,,196608,,,578386,,,,,,,,,,,,
+cell,48640290,slow mapped title view read,12036,540455,,,,,,,,,458752,,65536,,,540455,,,,,,,,1,0,540454,copied,file
+cell,48674835,slow stale buffer copy phases,12036,806591,,,,,,,,,4060960,,720896,,,806591,4,0,1,0,806590,0,,,,,,
+cell,48674873,slow watched buffer update,12036,806709,,,,,,,,,4060960,62,720896,74,806635,,,,,,,,,,,,,
+cell,48674881,slow individual buffer update,12036,806718,,,,,,,,,4060960,,720896,,,806718,,,,,,,,,,,,
+cell,50075227,slow mapped title view read,23144,1125165,,,,,,,,,188928,,65536,,,1125165,,,,,,,,0,0,1125165,copied,file
+cell,50075279,slow watched buffer update,23144,1125737,,,,,,,,,1040896,16,713216,401,1125336,,,,,,,,,,,,,
+cell,50075291,slow individual buffer update,23144,1125749,,,,,,,,,1040896,,713216,,,1125749,,,,,,,,,,,,
+cell,53087454,slow mapped title view read,12036,183526,,,,,,,,,65536,,65536,,,183526,,,,,,,,0,0,183526,copied,file
+cell,53087498,slow stale buffer copy phases,12036,183620,,,,,,,,,1846896,,196608,,,183620,1,0,1,1,183618,0,,,,,,
+cell,53087508,slow watched buffer update,12036,183762,,,,,,,,,1846896,29,196608,132,183630,,,,,,,,,,,,,
+cell,53087517,slow individual buffer update,12036,183772,,,,,,,,,1846896,,196608,,,183772,,,,,,,,,,,,
+cell,58588639,slow mapped title view read,14168,491779,,,,,,,,,196608,,65536,,,491779,,,,,,,,0,0,491779,copied,file
+cell,58588708,slow stale buffer copy phases,14168,491857,,,,,,,,,2318336,,196608,,,491857,1,0,2,1,491854,0,,,,,,
+cell,58588719,slow watched buffer update,14168,492059,,,,,,,,,2318336,36,196608,190,491869,,,,,,,,,,,,,
+cell,58588729,slow individual buffer update,14168,492069,,,,,,,,,2318336,,196608,,,492069,,,,,,,,,,,,
+cell,77674597,slow mapped title view read,14168,323994,,,,,,,,,786432,,65536,,,323994,,,,,,,,0,0,323994,copied,file
+cell,77675523,slow mapped title view read,21956,323544,,,,,,,,,131072,,65536,,,323544,,,,,,,,0,0,323544,copied,file
+cell,77676238,slow watched buffer update,21956,325488,,,,,,,,,315920,6,184848,1204,324284,,,,,,,,,,,,,
+cell,77676264,slow individual buffer update,21956,325515,,,,,,,,,315920,,184848,,,325515,,,,,,,,,,,,
+cell,77678327,slow stale buffer copy phases,14168,327787,,,,,,,,,1214736,,952592,,,327787,2,0,1,0,327785,1,,,,,,
+cell,77678360,slow watched buffer update,14168,327979,,,,,,,,,1214736,19,952592,155,327824,,,,,,,,,,,,,
+cell,77678368,slow individual buffer update,14168,327987,,,,,,,,,1214736,,952592,,,327987,,,,,,,,,,,,
+cell,77678378,slow stale buffer copy phases,14168,331922,,,,,,,,,1536000,,1536000,,,331922,1,0,2,5,331914,1,,,,,,
+cell,77678390,slow watched buffer update,14168,331936,,,,,,,,,1536000,25,1536000,2,331934,,,,,,,,,,,,,
+cell,77678398,slow individual buffer update,14168,331944,,,,,,,,,1536000,,1536000,,,331944,,,,,,,,,,,,
