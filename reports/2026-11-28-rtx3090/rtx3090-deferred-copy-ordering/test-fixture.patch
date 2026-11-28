@@ -1,0 +1,12 @@
+diff --git a/crates/victory-gpu/src/host/card_steps.rs b/crates/victory-gpu/src/host/card_steps.rs
+index cc5eb10..8a94ed5 100644
+--- a/crates/victory-gpu/src/host/card_steps.rs
++++ b/crates/victory-gpu/src/host/card_steps.rs
+@@ -1453,6 +1453,7 @@ mod tests {
+             back: vec![(shadow.clone(), vec![(start, start + 4096)])],
+             own: None,
+             texture_back_ranges: vec![(start + 256, start + 512)],
++            pc_sends: None,
+         })];
+         let active = writers(&items);
+         assert!(
