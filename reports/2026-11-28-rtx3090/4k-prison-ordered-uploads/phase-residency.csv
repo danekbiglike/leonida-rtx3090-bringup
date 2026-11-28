@@ -1,0 +1,5 @@
+phase,counter,first_offset_s,last_offset_s,count_delta,wait_ms_delta
+cell,mapped,1.356,118.316,6400,4501.6
+cell,resident,9.603,112.947,10000,8766.2
+escort,mapped,0.331,119.819,8000,7361.8
+escort,resident,5.572,115.297,12000,10621.8

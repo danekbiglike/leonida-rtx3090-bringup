@@ -1,0 +1,60 @@
+phase,elapsed_end_us,kind,windows_thread,overlap_us,total_us,requested,retained,parallel,prefilter_us,write_watch_us,update_us,cleanup_us,span_bytes,written_pages,copied_bytes,watch_us,copy_us,elapsed_us,run_count,lock_us,scan_us,plan_us,transfer_us,finish_us
+cell,528198,slow stale buffer copy phases,11612,528198,,,,,,,,,3652496,,196608,,,1347502,1,0,1,0,1347501,0
+cell,528251,slow watched buffer update,11612,528251,,,,,,,,,3652496,56,196608,236,1347562,,,,,,,
+cell,528265,slow individual buffer update,11612,528265,,,,,,,,,3652496,,196608,,,1347813,,,,,,
+cell,996818,slow stale buffer copy phases,932,439222,,,,,,,,,4193904,,458752,,,439222,4,0,1,1,439220,0
+cell,996866,slow watched buffer update,932,439352,,,,,,,,,4193904,64,458752,75,439277,,,,,,,
+cell,996877,slow individual buffer update,932,439363,,,,,,,,,4193904,,458752,,,439363,,,,,,
+cell,5111180,slow stale buffer copy phases,15208,916209,,,,,,,,,1536000,,1536000,,,916209,1,0,1,5,916202,1
+cell,5111198,slow stale buffer copy phases,2556,916298,,,,,,,,,3602960,,1572864,,,916298,3,0,2,1,916295,0
+cell,5111289,slow watched buffer update,2556,916830,,,,,,,,,3602960,55,1572864,436,916394,,,,,,,
+cell,5111311,slow individual buffer update,2556,916853,,,,,,,,,3602960,,1572864,,,916853,,,,,,
+cell,5111244,slow watched buffer update,15208,916281,,,,,,,,,1536000,24,1536000,1,916280,,,,,,,
+cell,5111372,slow individual buffer update,15208,916408,,,,,,,,,1536000,,1536000,,,916408,,,,,,
+cell,5155046,slow stale buffer copy phases,21012,964038,,,,,,,,,1521932,,1521932,,,964038,1,0,1,0,964036,1
+cell,5155112,slow watched buffer update,21012,964530,,,,,,,,,1521932,24,1521932,419,964111,,,,,,,
+cell,5155124,slow individual buffer update,21012,964542,,,,,,,,,1521932,,1521932,,,964542,,,,,,
+cell,5155126,slow stale buffer copy phases,11612,960678,,,,,,,,,4020652,,4020652,,,960678,1,0,2,0,960676,0
+cell,5155161,slow watched buffer update,11612,961792,,,,,,,,,4020652,62,4020652,1074,960718,,,,,,,
+cell,5155170,slow individual buffer update,11612,961802,,,,,,,,,4020652,,4020652,,,961802,,,,,,
+cell,5155184,slow stale buffer copy phases,11612,968396,,,,,,,,,2031840,,2031840,,,968396,1,0,0,1,968395,0
+cell,5155193,slow watched buffer update,11612,969046,,,,,,,,,2031840,32,2031840,640,968406,,,,,,,
+cell,5155202,slow individual buffer update,11612,969055,,,,,,,,,2031840,,2031840,,,969055,,,,,,
+cell,5163971,slow stale buffer copy phases,932,974432,,,,,,,,,4190752,,3997696,,,974432,1,0,1,0,974431,0
+cell,5164019,slow watched buffer update,932,975028,,,,,,,,,4190752,64,3997696,541,974487,,,,,,,
+cell,5164032,slow individual buffer update,932,975041,,,,,,,,,4190752,,3997696,,,975041,,,,,,
+cell,18404254,slow stale buffer copy phases,932,746201,,,,,,,,,2097152,,2097152,,,746201,1,0,2,0,746199,0
+cell,18404314,slow watched buffer update,932,747523,,,,,,,,,2097152,32,2097152,1256,746267,,,,,,,
+cell,18404324,slow individual buffer update,932,747533,,,,,,,,,2097152,,2097152,,,747533,,,,,,
+cell,109718478,slow stale buffer copy phases,21012,366610,,,,,,,,,4136728,,65536,,,366610,1,0,1,0,366609,0
+cell,109718520,slow watched buffer update,21012,366785,,,,,,,,,4136728,64,65536,127,366658,,,,,,,
+cell,109718531,slow individual buffer update,21012,366796,,,,,,,,,4136728,,65536,,,366796,,,,,,
+cell,109718965,slow stale buffer copy phases,26588,369957,,,,,,,,,3571712,,196608,,,369957,1,0,2,0,369955,0
+cell,109718985,slow watched buffer update,26588,370461,,,,,,,,,3571712,55,196608,482,369979,,,,,,,
+cell,109718993,slow individual buffer update,26588,370469,,,,,,,,,3571712,,196608,,,370469,,,,,,
+cell,109720711,slow stale buffer copy phases,11612,370648,,,,,,,,,1761600,,405504,,,370648,2,0,1,0,370647,0
+cell,109720740,slow watched buffer update,11612,370890,,,,,,,,,1761600,28,405504,210,370680,,,,,,,
+cell,109720749,slow individual buffer update,11612,370900,,,,,,,,,1761600,,405504,,,370900,,,,,,
+cell,111328489,slow stale buffer copy phases,15208,517454,,,,,,,,,1572864,,1245184,,,517454,1,0,1,0,517452,1
+cell,111328532,slow watched buffer update,15208,517932,,,,,,,,,1572864,24,1245184,428,517504,,,,,,,
+cell,111328543,slow individual buffer update,15208,517944,,,,,,,,,1572864,,1245184,,,517944,,,,,,
+cell,111328575,slow stale buffer copy phases,12296,517630,,,,,,,,,3088384,,3022848,,,517630,2,0,1,0,517629,0
+cell,111328584,slow stale buffer copy phases,21012,517123,,,,,,,,,1966080,,1966080,,,517123,1,0,1,0,517122,0
+cell,111328629,slow watched buffer update,21012,517265,,,,,,,,,1966080,30,1966080,95,517170,,,,,,,
+cell,111328604,slow watched buffer update,12296,517771,,,,,,,,,3088384,48,3022848,110,517661,,,,,,,
+cell,111328735,slow individual buffer update,21012,517371,,,,,,,,,1966080,,1966080,,,517371,,,,,,
+cell,111328761,slow individual buffer update,12296,517927,,,,,,,,,3088384,,3022848,,,517927,,,,,,
+cell,111328791,slow stale buffer copy phases,26588,515796,,,,,,,,,2097152,,1835008,,,515796,1,0,1,0,515793,2
+cell,111328833,slow watched buffer update,26588,515953,,,,,,,,,2097152,32,1835008,109,515844,,,,,,,
+cell,111328845,slow individual buffer update,26588,515964,,,,,,,,,2097152,,1835008,,,515964,,,,,,
+cell,111330866,slow stale buffer copy phases,12296,520813,,,,,,,,,1121408,,1121408,,,520813,2,0,1,0,520812,0
+cell,111330904,slow watched buffer update,12296,520949,,,,,,,,,1121408,18,1121408,93,520856,,,,,,,
+cell,111330913,slow individual buffer update,12296,520958,,,,,,,,,1121408,,1121408,,,520958,,,,,,
+cell,111330922,slow stale buffer copy phases,12296,521886,,,,,,,,,80913072,,9043968,,,521886,78,0,15,2,521868,1
+cell,111330940,slow watched buffer update,12296,522879,,,,,,,,,80913072,1235,9043968,976,521903,,,,,,,
+cell,111331980,slow individual buffer update,12296,523916,,,,,,,,,182452224,,14286848,,,523916,,,,,,
+cell,111629780,slow watched buffer update,932,817653,,,,,,,,,364544,6,364544,31,817622,,,,,,,
+cell,111629828,slow individual buffer update,932,817706,,,,,,,,,364544,,364544,,,817706,,,,,,
+cell,119894737,slow stale buffer copy phases,932,507370,,,,,,,,,4193744,,720896,,,507370,1,0,1,0,507369,0
+cell,119894777,slow watched buffer update,932,507453,,,,,,,,,4193744,64,720896,38,507415,,,,,,,
+cell,119894785,slow individual buffer update,932,507462,,,,,,,,,4193744,,720896,,,507462,,,,,,

@@ -1,0 +1,109 @@
+{
+  "cell": {
+    "end_utc_us": 1795861462906397,
+    "present_interval_us": 1401536,
+    "draws": 5298,
+    "thread_cpu": {
+      "2756": {
+        "cpu_us": 1031250,
+        "user_us": 937500,
+        "kernel_us": 93750
+      },
+      "1100": {
+        "cpu_us": 1031250,
+        "user_us": 1031250,
+        "kernel_us": 0
+      },
+      "8624": {
+        "cpu_us": 1015625,
+        "user_us": 984375,
+        "kernel_us": 31250
+      }
+    },
+    "events": [
+      {
+        "kind": "slow individual buffer update",
+        "start": 1795861461538452,
+        "end": 1795861462886265,
+        "windows_thread": 11612,
+        "elapsed_us": 1347813,
+        "span_bytes": 3652496,
+        "copied_bytes": 196608,
+        "overlap_us": 1347813
+      },
+      {
+        "kind": "slow watched buffer update",
+        "start": 1795861461538453,
+        "end": 1795861462886251,
+        "windows_thread": 11612,
+        "span_bytes": 3652496,
+        "written_pages": 56,
+        "copied_bytes": 196608,
+        "watch_us": 236,
+        "copy_us": 1347562,
+        "overlap_us": 1347798
+      },
+      {
+        "kind": "slow stale buffer copy phases",
+        "start": 1795861461538696,
+        "end": 1795861462886198,
+        "windows_thread": 11612,
+        "elapsed_us": 1347502,
+        "span_bytes": 3652496,
+        "copied_bytes": 196608,
+        "run_count": 1,
+        "lock_us": 0,
+        "scan_us": 1,
+        "plan_us": 0,
+        "transfer_us": 1347501,
+        "finish_us": 0,
+        "overlap_us": 1347502
+      }
+    ],
+    "scheduler_sample_count": 1,
+    "scheduler": [
+      {
+        "offset_us": 650190,
+        "thread_id": 2756,
+        "state": "Running",
+        "wait_reason": "",
+        "start_module": "unknown"
+      },
+      {
+        "offset_us": 650190,
+        "thread_id": 8624,
+        "state": "Running",
+        "wait_reason": "",
+        "start_module": "unknown"
+      },
+      {
+        "offset_us": 650190,
+        "thread_id": 1100,
+        "state": "Running",
+        "wait_reason": "",
+        "start_module": "unknown"
+      },
+      {
+        "offset_us": 650190,
+        "thread_id": 11612,
+        "state": "Wait",
+        "wait_reason": "Executive",
+        "start_module": "unknown"
+      }
+    ]
+  },
+  "escort": {
+    "end_utc_us": 1795861637299027,
+    "present_interval_us": 149143,
+    "draws": 6920,
+    "thread_cpu": {},
+    "events": []
+  },
+  "camera": {
+    "end_utc_us": 1795861837302491,
+    "present_interval_us": 513502,
+    "draws": 4591,
+    "thread_cpu": {},
+    "events": []
+  }
+}
