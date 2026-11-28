@@ -1,0 +1,40 @@
+diff --git a/crates/victory-gpu/src/ambient.rs b/crates/victory-gpu/src/ambient.rs
+--- a/crates/victory-gpu/src/ambient.rs
++++ b/crates/victory-gpu/src/ambient.rs
+@@ -304,7 +304,7 @@
+ // The depth range is volatile: the keep and mean programs (Radiance, Air)
+ // read no depth, and the table they are given there is the image's, a UAV
+ // (D3D12 debug layer message 646 with a static range).
+-#define RS "RootConstants(num32BitConstants=13, b0), DescriptorTable(SRV(t0, flags=DESCRIPTORS_VOLATILE)), DescriptorTable(UAV(u0)), UAV(u1), UAV(u2)"
++#define RS "RootConstants(num32BitConstants=13, b0), DescriptorTable(SRV(t0, flags=DESCRIPTORS_VOLATILE)), DescriptorTable(UAV(u0)), UAV(u1), UAV(u2), StaticSampler(s0, filter=FILTER_MIN_MAG_MIP_POINT, addressU=TEXTURE_ADDRESS_CLAMP, addressV=TEXTURE_ADDRESS_CLAMP, addressW=TEXTURE_ADDRESS_CLAMP)"
+ #define CX 64
+ #define CY 36
+ #define CELLS (CX * CY)
+@@ -538,15 +538,24 @@
+ #endif
+ 
+ #ifdef RAISE
++SamplerState surface_depth : register(s0);
++float3 at_depth(int2 p, float2 size, float d) {
++    float z = min(near / max(d, 1e-7), 1000.0);
++    float2 ndc = (float2(p) + 0.5) / size * 2.0 - 1.0;
++    return float3(ndc.x * tan_y * size.x / size.y * z, -ndc.y * tan_y * z, z);
++}
+ [RootSignature(RS)]
+ [numthreads(8, 8, 1)]
+ void raise(uint3 at : SV_DispatchThreadID) {
+     float2 size = float2(width, height);
+     if (at.x >= width || at.y >= height) return;
+     int2 p = int2(at.xy);
+-    float3 c = seen(p, size);
+-    float3 l = seen(p + int2(-1, 0), size), r = seen(p + int2(1, 0), size);
+-    float3 u = seen(p + int2(0, -1), size), d = seen(p + int2(0, 1), size);
++    // Each gather covers a 2x2 texel square. The two squares share p.
++    float4 upper = depth.GatherRed(surface_depth, float2(p) / size);
++    float4 lower = depth.GatherRed(surface_depth, float2(p + 1) / size);
++    float3 c = at_depth(p, size, upper.y);
++    float3 l = at_depth(p + int2(-1, 0), size, upper.x), r = at_depth(p + int2(1, 0), size, lower.z);
++    float3 u = at_depth(p + int2(0, -1), size, upper.z), d = at_depth(p + int2(0, 1), size, lower.x);
+     float3 dx = abs(l.z - c.z) < abs(r.z - c.z) ? c - l : r - c;
+     float3 dy = abs(u.z - c.z) < abs(d.z - c.z) ? c - u : d - c;
+     float3 n = normalize(cross(dy, dx) + float3(0, 0, -1e-9));

@@ -1,0 +1,37 @@
+diff --git a/crates/victory-gpu/src/ambient.rs b/crates/victory-gpu/src/ambient.rs
+--- a/crates/victory-gpu/src/ambient.rs
++++ b/crates/victory-gpu/src/ambient.rs
+@@ -538,15 +538,29 @@
+ #endif
+ 
+ #ifdef RAISE
++groupshared float raised_depth[10][10];
++float3 seen_in_tile(int2 p, float2 size, uint2 tile) {
++    float d = raised_depth[tile.y][tile.x];
++    float z = min(near / max(d, 1e-7), 1000.0);
++    float2 ndc = (float2(p) + 0.5) / size * 2.0 - 1.0;
++    return float3(ndc.x * tan_y * size.x / size.y * z, -ndc.y * tan_y * z, z);
++}
+ [RootSignature(RS)]
+ [numthreads(8, 8, 1)]
+-void raise(uint3 at : SV_DispatchThreadID) {
++void raise(uint3 at : SV_DispatchThreadID, uint3 local : SV_GroupThreadID, uint lane : SV_GroupIndex) {
+     float2 size = float2(width, height);
++    int2 corner = int2(at.xy) - int2(local.xy) - 1;
++    for (uint i = lane; i < 100; i += 64) {
++        uint2 tile = uint2(i % 10, i / 10);
++        raised_depth[tile.y][tile.x] = depth.Load(int3(clamp(corner + int2(tile), int2(0, 0), int2(size) - 1), 0));
++    }
++    GroupMemoryBarrierWithGroupSync();
+     if (at.x >= width || at.y >= height) return;
+     int2 p = int2(at.xy);
+-    float3 c = seen(p, size);
+-    float3 l = seen(p + int2(-1, 0), size), r = seen(p + int2(1, 0), size);
+-    float3 u = seen(p + int2(0, -1), size), d = seen(p + int2(0, 1), size);
++    uint2 q0 = local.xy + 1;
++    float3 c = seen_in_tile(p, size, q0);
++    float3 l = seen_in_tile(p + int2(-1, 0), size, q0 - uint2(1, 0)), r = seen_in_tile(p + int2(1, 0), size, q0 + uint2(1, 0));
++    float3 u = seen_in_tile(p + int2(0, -1), size, q0 - uint2(0, 1)), d = seen_in_tile(p + int2(0, 1), size, q0 + uint2(0, 1));
+     float3 dx = abs(l.z - c.z) < abs(r.z - c.z) ? c - l : r - c;
+     float3 dy = abs(u.z - c.z) < abs(d.z - c.z) ? c - u : d - c;
+     float3 n = normalize(cross(dy, dx) + float3(0, 0, -1e-9));
