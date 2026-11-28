@@ -1,0 +1,74 @@
+diff --git a/crates/victory-gpu/src/host.rs b/crates/victory-gpu/src/host.rs
+index 6671067..7c4603b 100644
+--- a/crates/victory-gpu/src/host.rs
++++ b/crates/victory-gpu/src/host.rs
+@@ -9707,6 +9751,7 @@ fn frame_times_line(intervals: &mut Vec<f32>) {
+ }
+ 
+ struct Meter {
++    present_log: Option<(std::io::BufWriter<std::fs::File>, std::time::Instant, u64)>,
+     since: std::time::Instant,
+     frames: u32,
+     #[cfg(feature = "diagnostics")]
+@@ -9725,6 +9770,12 @@ impl Meter {
+     fn new() -> Self {
+         let now = std::time::Instant::now();
+         Meter {
++            present_log: std::env::var_os("VICTORY_FRAME_CSV").and_then(|path| {
++                use std::io::Write;
++                let mut out = std::io::BufWriter::new(std::fs::File::create_new(path).ok()?);
++                writeln!(out, "present_interval_us,draw_calls,utc_us").ok()?;
++                Some((out, now, crate::draw::drawn()))
++            }),
+             since: now,
+             frames: 0,
+             #[cfg(feature = "diagnostics")]
+@@ -9742,6 +9793,22 @@ impl Meter {
+         self.since.elapsed() >= std::time::Duration::from_secs(1)
+     }
+ 
++    fn log_accepted(&mut self) {
++        use std::io::Write;
++        if let Some((out, last, previous_draws)) = &mut self.present_log {
++            let now = std::time::Instant::now();
++            let micros = now.duration_since(*last).as_micros();
++            let draws = crate::draw::drawn();
++            let utc = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_micros();
++            let written = writeln!(out, "{micros},{},{utc}", draws.saturating_sub(*previous_draws));
++            *last = now;
++            *previous_draws = draws;
++            if written.is_err() || (self.since.elapsed().as_secs() >= 1 && out.flush().is_err()) {
++                self.present_log = None;
++            }
++        }
++    }
++
+     /// Counts a presented frame.
+     fn frame(&mut self, hwnd: HWND) {
+         #[cfg(feature = "diagnostics")]
+@@ -10513,13 +10580,13 @@ impl Host {
+                 },
+             );
+             let called = crate::streamline::present_called(&presenting);
+-            let shown = p.swap_chain.Present(0, if p.presents_tearing { DXGI_PRESENT_ALLOW_TEARING } else { DXGI_PRESENT(0) });
++            let mut shown = p.swap_chain.Present(0, if p.presents_tearing { DXGI_PRESENT_ALLOW_TEARING } else { DXGI_PRESENT(0) });
+             if shown.is_err() && p.presents_tearing {
+                 // A white window on an RTX 5070 at 1440p (2026-11-28): presents that may tear
+                 // were not shown. The rest of the run presents at the next refresh.
+                 tracing::warn!(code = %shown, frame, "a present shown at once was refused; presenting at the next refresh for the rest of the run");
+                 p.presents_tearing = false;
+-                let _ = p.swap_chain.Present(0, DXGI_PRESENT(0));
++                shown = p.swap_chain.Present(0, DXGI_PRESENT(0));
+             } else if shown.is_err() && !p.present_refused {
+                 p.present_refused = true;
+                 tracing::warn!(code = %shown, frame, "a present was refused (logged once)");
+@@ -10529,6 +10596,9 @@ impl Host {
+             showing.next("the frame meter");
+             p.panel.frame(p.meter.line_due());
+             p.menu.frame();
++            if shown.0 == 0 {
++                p.meter.log_accepted();
++            }
+             p.meter.frame(p.hwnd);
+             showing.end();
+             #[cfg(feature = "diagnostics")]
