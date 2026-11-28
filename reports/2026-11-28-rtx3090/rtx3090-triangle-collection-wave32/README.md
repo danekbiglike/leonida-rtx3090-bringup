@@ -1,0 +1,7 @@
+# Meshlet triangle-collection shader on RTX 3090
+
+Three 4K prison runs reported the same translation failure for compute program `6b82bc7d22016cb5`. Its locally identified effect is `vfx_triangleClip:CS_CollectTriangles_Meshlets`. The previous renderer rejected its 64-lane program on a 32-lane host and created zero compute pipelines. With [VIctory-NVIDIA PR 822](https://github.com/trustno1-coder/VIctory-NVIDIA/pull/822), the same input emitted DXIL, Microsoft's DXIL validator accepted it, and D3D12 created the compute pipeline. [Counts for the two builds](pipeline-comparison.csv)
+
+The local check selected this shader by its BLAKE3 identifier, used one translation job with host wave size 32, and requested both validation and native pipeline creation. The accepted DXIL had identifier `ee681af23061ef9b`. The 15 wave64 translator regression tests also passed, including the full local-memory allocation and upper-half lane cases. [Regression test output](wave32-tests.txt)
+
+The two renderers had SHA-256 hashes `bfe7a93261d4261708d86dba5e2672f5cf7265bfdbeb4a2361b206ad0b9c88a5` (control) and `aecf298abf9954dbe7d9116ac452b893c617ade4c4c6513bc81f8581479db91a` (candidate). The Xbox shader, its translated binary and game data stay local. Pipeline creation verifies that this operation can be recorded on the RTX 3090. Actual use in the prison and any visible effect require separate gameplay evidence.
