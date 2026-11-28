@@ -1,0 +1,128 @@
+--- a/crates/victory-gpu/src/shadow.rs
++++ b/crates/victory-gpu/src/shadow.rs
+@@ -3292,6 +3292,13 @@
+         .collect()
+ }
+ 
++/// Page indices for which the run covers every byte held by this shadow.
++fn whole_shadow_pages(from: usize, to: usize, shadow_start: usize, shadow_end: usize) -> std::ops::Range<usize> {
++    let first = if from == shadow_start { from / PAGE } else { from.div_ceil(PAGE) };
++    let last = if to == shadow_end { to.div_ceil(PAGE) } else { to / PAGE };
++    first..last
++}
++
+ /// `runs` (from, to, whether the copy held it before), cut in those of pages
+ /// held before (`pages`: page number and asking, in order) to the parts of
+ /// each page that were written since (`parts`: a bit for each 4 KiB).
+@@ -4634,6 +4641,13 @@
+     /// (`written`: last writes by page, in page order; `now`: this
+     /// asking), whole pages within the buffer.
+     fn copy_stale(&self, from: usize, to: usize, now: u64, written: &[(usize, u64)]) -> usize {
++        self.copy_stale_with(from, to, now, written, |runs| self.take_all(runs))
++    }
++
++    fn copy_stale_with(
++        &self, from: usize, to: usize, now: u64, written: &[(usize, u64)],
++        transfer: impl FnOnce(Vec<(usize, usize, bool)>) -> usize,
++    ) -> usize {
+         let base = self.start as usize / PAGE;
+         let _lock = self.copy_lock.lock().unwrap_or_else(|e| e.into_inner());
+         let mut writes = written.iter().peekable();
+@@ -4658,12 +4672,6 @@
+             let cur = self.copied[page - base].load(Ordering::Relaxed);
+             let taken = cur.max(ranged);
+             if taken == 0 || write > taken {
+-                // A page only partly in the range is copied in part: it
+-                // stays stale for the rest.
+-                let (start, end) = (self.start as usize, (self.start + self.len) as usize);
+-                if (page * PAGE).max(start) >= from && ((page + 1) * PAGE).min(end) <= to {
+-                    self.copied[page - base].store(now, Ordering::Release);
+-                }
+                 // Cut where pages taken before meet pages never taken.
+                 let again = taken != 0;
+                 if again {
+@@ -4684,14 +4692,26 @@
+         if let Some((first, known)) = run {
+             runs.push(((first * PAGE).max(from), ((last + 1) * PAGE).min(to), known));
+         }
++        // The no-op check can read page stamps without taking copy_lock.
++        // Keep the pages private to this transfer until take_all has finished.
++        let shadow_end = (self.start + self.len) as usize;
++        let completed_pages: Vec<_> = runs.iter().map(|&(a, b, _)| {
++            whole_shadow_pages(a, b, self.start as usize, shadow_end)
++        }).filter(|pages| !pages.is_empty()).collect();
+         let runs = by_parts(runs, &again_at, &crate::watch::parts_written(&again_at));
+-        let bytes = self.take_all(runs);
++        let bytes = transfer(runs);
++        for pages in completed_pages {
++            for page in pages {
++                self.copied[page - base].store(now, Ordering::Release);
++            }
++        }
+         if crate::watch::light() {
+             // All of the range is in the copy as of this asking.
+             let prev1_len = self.ranged[1].1.load(Ordering::Relaxed).saturating_sub(self.ranged[1].0.load(Ordering::Relaxed));
+             let update_longest = to - from >= prev1_len;
+             let seq = self.ranged_seq.load(Ordering::Relaxed);
+-            self.ranged_seq.store(seq + 1, Ordering::Release);
++            self.ranged_seq.store(seq + 1, Ordering::Relaxed);
++            std::sync::atomic::fence(Ordering::Release);
+             self.ranged[0].0.store(from, Ordering::Relaxed);
+             self.ranged[0].1.store(to, Ordering::Relaxed);
+             self.ranged[0].2.store(now, Ordering::Relaxed);
+@@ -5373,6 +5393,55 @@
+     use super::{Card, PIECE, Shadow};
+     use std::sync::Mutex;
+     use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
++
++    #[test]
++    fn completed_pages_cover_only_whole_shadow_portions() {
++        use super::{PAGE, whole_shadow_pages};
++        let points = [0, 1, PAGE-1, PAGE, PAGE+1, 2*PAGE-1, 2*PAGE, 2*PAGE+1, 3*PAGE];
++        for &start in &points {
++            for &end in points.iter().filter(|&&v| v > start) {
++                for &from in points.iter().filter(|&&v| start <= v && v < end) {
++                    for &to in points.iter().filter(|&&v| from < v && v <= end) {
++                        let expected: Vec<_> = (from/PAGE..to.div_ceil(PAGE)).filter(|&page| {
++                            (page*PAGE).max(start) >= from && ((page+1)*PAGE).min(end) <= to
++                        }).collect();
++                        assert_eq!(whole_shadow_pages(from,to,start,end).collect::<Vec<_>>(),expected);
++                    }
++                }
++            }
++        }
++    }
++
++    #[test]
++    #[ignore = "requires a D3D12 device"]
++    fn refresh_marks_whole_pages_only_after_the_bytes_arrive() {
++        use super::PAGE;
++        let mut title = vec![0u8; 4 * PAGE];
++        let base = (title.as_ptr() as usize).next_multiple_of(PAGE);
++        let aligned = base - title.as_ptr() as usize;
++        let data = &mut title[aligned..aligned + 3 * PAGE];
++        for (i, byte) in data.iter_mut().enumerate() {
++            *byte = (i ^ (i >> 8) ^ 0xa5) as u8;
++        }
++        let shadow = copy_of(base, data.len()).expect("RTX staging resource");
++        shadow.keep_stores();
++        let first = 15;
++        let end = data.len() - 19;
++        let transferred = shadow.copy_stale_with(base + first, base + end, 17, &[], |runs| {
++            assert!(shadow.copied.iter().all(|epoch| epoch.load(Ordering::Acquire) == 0));
++            let bytes = shadow.take_all(runs);
++            assert!(shadow.copied.iter().all(|epoch| epoch.load(Ordering::Acquire) == 0));
++            bytes
++        });
++        assert_eq!(transferred, end - first);
++        let stamps: Vec<_> = shadow.copied.iter().map(|epoch| epoch.load(Ordering::Acquire)).collect();
++        assert_eq!(stamps, [0, 17, 0]);
++        // SAFETY: mapped throughout this test and the synchronous transfer has returned.
++        let dest = unsafe { std::slice::from_raw_parts(shadow.data, data.len()) };
++        assert!(dest[..first].iter().chain(&dest[end..]).all(|&byte| byte == 0));
++        assert_eq!(dest[first..end], data[first..end]);
++        eprintln!("Verified deferred page publication and exact staging bytes across three pages");
++    }
+ 
+     /// A copy in the card's memory of title memory at `title` (its card side
+     /// is never looked at here), all bytes 0 on the CPU's side.

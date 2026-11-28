@@ -1,0 +1,20 @@
+test shadow::land_tests::completed_pages_cover_only_whole_shadow_portions ... ok
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 524 filtered out; finished in 0.00s
+test host::upcheck::tests::each_submission_reads_its_own_copy_in_pc_memory ... ok
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 524 filtered out; finished in 0.29s
+test host::upcheck::tests::each_submission_reads_its_own_copy_on_the_card ... ok
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 524 filtered out; finished in 0.35s
+test watch::parts_tests::page_epochs_checks_single_and_multi_page_ranges ... ok
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 524 filtered out; finished in 0.00s
+Verified deferred page publication and exact staging bytes across three pages
+test shadow::land_tests::refresh_marks_whole_pages_only_after_the_bytes_arrive ... ok
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 524 filtered out; finished in 0.30s
+Verified all 10 MiB after each of three striped refreshes
+test shadow::land_tests::striped_refresh_preserves_changed_bytes_and_holes ... ok
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 524 filtered out; finished in 0.28s
+test host::upcheck::tests::two_public_copies_in_the_same_list ... ok
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 524 filtered out; finished in 0.36s
+test shadow::wide_tests::wide_each_scoped_visits_every_index_once_and_handles_nesting ... ok
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 524 filtered out; finished in 0.00s
+test shadow::merge_tests::word_runs_are_the_dword_runs ... ok
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 524 filtered out; finished in 0.00s

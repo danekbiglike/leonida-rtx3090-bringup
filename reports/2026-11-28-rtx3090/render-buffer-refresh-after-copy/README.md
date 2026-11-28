@@ -1,0 +1,7 @@
+# Publishing staging-buffer updates after copying
+
+This patch targets the buffer refresh optimization in [VIctory-NVIDIA PR 1094](https://github.com/trustno1-coder/VIctory-NVIDIA/pull/1094), revision `befdec41d0ebe2a25f57ef4d5287d504c3325f8e`. A rendering submission can check the recorded page generation without taking the copy lock. The patch records that generation after the staging bytes have been copied. A partial page remains eligible for later refresh. A second change orders updates to the cached range used by readers.
+
+We checked the correction on a Ryzen 7 3700X and RTX 3090 in the local integration. The D3D12 test inspected three staging pages before and after the synchronous transfer. Only the fully covered middle page acquired the new generation. The copied bytes matched the source, and the bytes outside the requested interval stayed zero. A separate test also verified all 10 MiB across three striped refreshes. The nine selected tests passed. [Test output](verification.txt)
+
+The standalone [patch](publish-after-transfer.patch) applies cleanly against the pinned upstream revision. We built and ran the tests in the local integration, which has additional renderer changes. Its executable SHA-256 was `bfe7a93261d4261708d86dba5e2672f5cf7265bfdbeb4a2361b206ad0b9c88a5`. These checks establish buffer behavior. Game frame times and visual effects require a separate route measurement.
