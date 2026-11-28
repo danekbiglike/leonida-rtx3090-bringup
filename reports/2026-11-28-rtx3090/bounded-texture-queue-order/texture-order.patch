@@ -1,0 +1,159 @@
+--- a/crates/victory-gpu/src/descriptor/host.rs
++++ b/crates/victory-gpu/src/descriptor/host.rs
+@@ -1061,29 +1061,30 @@
+     ///   25,000-40,000 while the textures of the shot on screen waited
+     ///   (run 52: 98% of the drawn pixels had no colour texture in the
+     ///   first 3D frames).
++    #[cfg(test)]
+     fn due(&self, frame: u64, max: usize) -> Vec<(u32, u64)> {
+-        let mut again: Vec<(u64, u32, u64)> = Vec::new();
+-        let mut fresh: Vec<(u64, u32, u64)> = Vec::new();
+-        for (&index, w) in self.slots.iter().filter(|(_, w)| w.due <= frame) {
+-            let class = if w.looks > 0 || w.mapped > 0 { &mut again } else { &mut fresh };
+-            class.push((w.written, index, w.write));
+-        }
+-        // By the number of the write, counted over the run.
+-        let newest_first = |a: &(u64, u32, u64), b: &(u64, u32, u64)| b.2.cmp(&a.2);
+-        again.sort_unstable_by(newest_first);
+-        fresh.sort_unstable_by(newest_first);
+-        let mut order: Vec<(u32, u64)> = again.iter().map(|&(_, index, write)| (index, write)).collect();
+-        let (mut new, mut old) = (0, fresh.len());
+-        while new < old && order.len() < max {
+-            order.push((fresh[new].1, fresh[new].2));
+-            new += 1;
+-            if new < old && order.len() < max {
+-                old -= 1;
+-                order.push((fresh[old].1, fresh[old].2));
+-            }
+-        }
+-        order.truncate(max);
+-        order
++        self.ready(frame, max != 0).0.order(max)
++    }
++
++    fn ready(&self, frame: u64, collect: bool) -> (ReadyTextures, [u64; 5]) {
++        let mut due = ReadyTextures::default();
++        let mut census = [self.slots.len() as u64, 0, 0, 0, 0];
++        for (&index, slot) in &self.slots {
++            if slot.mapped > 0 {
++                census[3] += 1;
++            } else if slot.looks > 0 {
++                census[2] += 1;
++            }
++            if slot.due <= frame {
++                census[1] += 1;
++                census[4] = census[4].max(frame.saturating_sub(slot.written));
++                if collect {
++                    let list = if slot.looks > 0 || slot.mapped > 0 { &mut due.again } else { &mut due.fresh };
++                    list.push((index, slot.write));
++                }
++            }
++        }
++        (due, census)
+     }
+ 
+     /// The entry of `index` if it is still the write the pass was handed.
+@@ -1184,20 +1185,56 @@
+     /// For the frame line: slots in the queue; of them due at `frame`;
+     /// waiting for their memory (looked at, never uploaded); uploaded in
+     /// part; and the frames the oldest due one has waited since its write.
++    #[cfg(test)]
+     fn census(&self, frame: u64) -> [u64; 5] {
+-        let mut c = [self.slots.len() as u64, 0, 0, 0, 0];
+-        for w in self.slots.values() {
+-            if w.mapped > 0 {
+-                c[3] += 1;
+-            } else if w.looks > 0 {
+-                c[2] += 1;
+-            }
+-            if w.due <= frame {
+-                c[1] += 1;
+-                c[4] = c[4].max(frame.saturating_sub(w.written));
+-            }
+-        }
+-        c
++        self.ready(frame, false).1
++    }
++}
++
++/// The eligible write numbers captured while the texture queue is locked.
++#[derive(Default)]
++struct ReadyTextures {
++    again: Vec<(u32, u64)>,
++    fresh: Vec<(u32, u64)>,
++}
++
++impl ReadyTextures {
++    fn order(self, max: usize) -> Vec<(u32, u64)> {
++        let Self { mut again, mut fresh } = self;
++        if max == 0 {
++            return Vec::new();
++        }
++        let newest = |a: &(u32, u64), b: &(u32, u64)| b.1.cmp(&a.1);
++        if again.len() > max {
++            again.select_nth_unstable_by(max, newest);
++            again.truncate(max);
++        }
++        again.sort_unstable_by(newest);
++        let count = fresh.len().min(max - again.len());
++        if count == 0 {
++            return again;
++        }
++        let front = count.div_ceil(2);
++        let back = count / 2;
++        if front < fresh.len() {
++            fresh.select_nth_unstable_by(front, newest);
++        }
++        let (recent, rest) = fresh.split_at_mut(front);
++        recent.sort_unstable_by(newest);
++        let oldest = |a: &(u32, u64), b: &(u32, u64)| a.1.cmp(&b.1);
++        if back > 0 && back < rest.len() {
++            rest.select_nth_unstable_by(back, oldest);
++        }
++        let old = &mut rest[..back];
++        old.sort_unstable_by(oldest);
++        again.reserve(count);
++        for (i, &slot) in recent.iter().enumerate() {
++            again.push(slot);
++            if let Some(&other) = old.get(i) {
++                again.push(other);
++            }
++        }
++        again
+     }
+ }
+ 
+@@ -1982,11 +2019,11 @@
+ 
+     /// Up to `max` title slots whose texture view is due at `frame`, each
+     /// with its write number, in the order to serve them
+-    /// ([`TextureQueue::due`]), and the queue's counts
+-    /// ([`TextureQueue::census`]).
++    /// ([`ReadyTextures::order`]), and the queue's counts
++    /// ([`TextureQueue::ready`]).
+     pub(crate) fn texture_slots_due(&self, frame: u64, max: usize) -> (Vec<(u32, u64)>, [u64; 5]) {
+-        let textures = self.textures.lock().unwrap_or_else(|e| e.into_inner());
+-        (if max == 0 { Vec::new() } else { textures.due(frame, max) }, textures.census(frame))
++        let (ready, census) = self.textures.lock().unwrap_or_else(|e| e.into_inner()).ready(frame, max != 0);
++        (ready.order(max), census)
+     }
+ 
+     /// A number that changes when a slot is written or made due anew, and
+@@ -6031,6 +6068,17 @@
+         }
+     }
+ 
++    #[test]
++    fn the_bounded_queue_keeps_the_full_order_prefix_at_every_limit() {
++        let again = vec![(8, 8), (2, 2), (6, 6)];
++        let fresh = vec![(3, 3), (9, 9), (1, 1), (4, 4), (7, 7), (0, 0), (5, 5)];
++        let order = [(8, 8), (6, 6), (2, 2), (9, 9), (0, 0), (7, 7), (1, 1), (5, 5), (3, 3), (4, 4)];
++        for limit in 0..=order.len() + 2 {
++            let ready = ReadyTextures { again: again.clone(), fresh: fresh.clone() };
++            assert_eq!(ready.order(limit), order[..order.len().min(limit)]);
++        }
++    }
++
+     /// The queue of textures picked by index serves the slots looked at
+     /// before first, then the newest write and the oldest in turns; a
+     /// slot whose memory is not there is looked at again after

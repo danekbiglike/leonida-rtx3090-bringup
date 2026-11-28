@@ -1,0 +1,11 @@
+# Select the next texture uploads outside the queue lock
+
+On a Ryzen 7 3700X, selecting up to 4,096 entries from a synthetic queue of 13,498 slots took a median **0.208 ms**, down from **0.512 ms**. At 30,000 slots the medians were 0.400 and 1.019 ms. A 32-slot control measured 0.56 and 0.81 microseconds. Each median covers ten paired batches of 100 selections. The order of implementations alternated between batches. The game was closed during the timing run. [All paired batches](timings.csv)
+
+The renderer now gathers eligible texture slots and queue statistics in one traversal, releases the queue lock, and partitions the eligible writes to sort only the portions the caller can consume. Previously it sorted both full lists under the lock and scanned the slot map again for statistics. The retry priority and the alternating latest and oldest fresh writes are preserved. This does not change image resolution, texture data, mip selection or the upload budget. The recent fxceless renderer also snapshots the queue before ordering it. This patch adds bounded selection to our renderer. [Renderer patch](texture-order.patch) · [Upstream queue](https://github.com/fxceless/victory-fork/blob/5dbf5ce226690bb0f1b2949dc8ef822617ae81ea/crates/victory-gpu/src/descriptor/host.rs)
+
+The standalone harness compares all returned slot numbers, write generations, and all five counters. All 675 combinations agreed, including empty queues, limits of zero or one, mixed retry queues and limits larger than the queue. The 13,498-slot size came from a loading trace. The slot contents for the benchmark are generated. The timings cover queue selection alone. They do not establish a gameplay FPS gain or fix artifacts. [Harness](queue-bench.rs) · [Source extractor](extract.py)
+
+To reproduce, save the original and patched versions of crates/victory-gpu/src/descriptor/host.rs. Run python extract.py with those two paths in that order. Compile queue-bench.rs with rustc 1.98.1, edition 2024, opt-level 3 and target-cpu znver2. Run the binary with --check to compare outputs or without arguments to record timings. The patch also passed git apply --check with the baseline host.rs Git blob 4a875a2cdd671e2cd8e22206899ff809c5f94367.
+
+Measured by danekbiglike with ChatGPT, 28 November 2026. Provenance marker danekbiglike/rtx3090-20261128-texture-order.
