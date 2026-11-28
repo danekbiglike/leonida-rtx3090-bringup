@@ -1,0 +1,7 @@
+# Joined GPU staging reads in the 4K prison cell
+
+The first gameplay run with a 4 KiB join gap presented 1,603 frames in the 120-second cell interval (13.36 FPS). Five-second averages ranged from 3.6 to 19.0 FPS, the 95th-percentile frame time was 110.66 ms, and at least 4.73 GiB of physical RAM was available. Lucia reached the A-102 gate and the dayroom; the live gate detector missed the starting camera angle, so this run has no timed escort score. The dayroom still showed a dark silhouette. [Cell and route images](cell-and-route.jpg) · [Per-frame data](cell-frames.csv) · [Metrics](cell-metrics.json)
+
+The in-game counter confirmed the 4,096-byte join setting in all 114 complete cell samples. The median sample reported 1,573 staging reads per frame and 6,192 fill operations per frame. These counters measure different operations: repeated uses of the same input can share a read even with coalescing disabled. Their ratio alone cannot establish savings. Comparing performance requires the zero-gap control. [GPU-copy counters](card-fills.csv) · [Native copy correctness tests and patch](../d3d12-staging-copy-capacity-fallback)
+
+The run used an RTX 3090 and Ryzen 7 3700X, Series X settings, 3840 × 2160 output, full GPU write declarations, and no DLSS or frame generation. The renderer SHA-256 was `4bdcc470c0048ba7a4fd520b7e856f69066df8f910426331e001a62d78205d24`. The test harness closed the game after collecting its camera angles. [GPU samples](cell-gpu.csv)
