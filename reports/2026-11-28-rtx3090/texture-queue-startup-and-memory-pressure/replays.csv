@@ -1,0 +1,7 @@
+profile,recorded_end_ms,minimum_available_bytes,recorded_exit,first_replayed_stop_ms,available_at_replayed_stop_bytes,replayed_reason
+stable-tuned,182110,2228293632,physical memory below 3 GiB for eight samples,173094,3436990464,available physical memory falling rapidly below 3.25 GiB
+stable-slots,586391,3519115264,guest exit,,,
+nvidia-paired,171109,6105907200,guest exit,,,
+paired-resident,335203,13100773376,guest exit,,,
+paired-final,1377828,4957757440,test complete,,,
+stable-textures,345203,1551822848,physical memory below 1.5 GiB,337187,3372183552,available physical memory falling rapidly below 3.25 GiB
