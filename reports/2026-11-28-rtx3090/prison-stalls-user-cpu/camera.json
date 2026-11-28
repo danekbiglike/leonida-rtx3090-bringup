@@ -1,0 +1,15 @@
+{
+  "frame_end_utc_us": 1795856539460730,
+  "frame_us": 10094205,
+  "process_start_utc_us": 1795856530138267,
+  "process_end_utc_us": 1795856539141880,
+  "process_wall_us": 9003613,
+  "process_kernel_us": 1031250,
+  "process_user_us": 11250000,
+  "process_read_bytes": 131096,
+  "thread_intervals": 8,
+  "thread_window_us": 8288530,
+  "top_thread_id": 19900,
+  "top_thread_cpu_us": 8265625,
+  "top_thread_estimated_min_user_us": 7234375
+}
