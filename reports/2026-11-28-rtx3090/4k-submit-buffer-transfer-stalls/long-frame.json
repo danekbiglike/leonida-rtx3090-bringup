@@ -1,0 +1,2029 @@
+{
+  "end_utc_us": 1795859203097429,
+  "present_interval_us": 24659325,
+  "draws": 6618,
+  "thread_cpu": {
+    "5752": {
+      "cpu_us": 12546875,
+      "user_us": 10640625,
+      "kernel_us": 1906250
+    },
+    "4680": {
+      "cpu_us": 11406250,
+      "user_us": 10296875,
+      "kernel_us": 1109375
+    },
+    "24768": {
+      "cpu_us": 10625000,
+      "user_us": 9656250,
+      "kernel_us": 968750
+    }
+  },
+  "events": [
+    {
+      "kind": "slow stale buffer copy phases",
+      "windows_thread": 23044,
+      "elapsed_us": 7489938,
+      "span_bytes": 2097152,
+      "copied_bytes": 1703936,
+      "run_count": 1,
+      "lock_us": 0,
+      "scan_us": 2,
+      "plan_us": 0,
+      "transfer_us": 7489935,
+      "finish_us": 1,
+      "overlap_us": 7489938
+    },
+    {
+      "kind": "slow stale buffer copy phases",
+      "windows_thread": 13368,
+      "elapsed_us": 7177760,
+      "span_bytes": 3542784,
+      "copied_bytes": 3473408,
+      "run_count": 1,
+      "lock_us": 0,
+      "scan_us": 1,
+      "plan_us": 0,
+      "transfer_us": 7177759,
+      "finish_us": 0,
+      "overlap_us": 7177760
+    },
+    {
+      "kind": "slow stale buffer copy phases",
+      "windows_thread": 2736,
+      "elapsed_us": 7177277,
+      "span_bytes": 1921024,
+      "copied_bytes": 1245184,
+      "run_count": 2,
+      "lock_us": 0,
+      "scan_us": 1,
+      "plan_us": 2,
+      "transfer_us": 7177273,
+      "finish_us": 1,
+      "overlap_us": 7177277
+    },
+    {
+      "kind": "slow stale buffer copy phases",
+      "windows_thread": 17104,
+      "elapsed_us": 4766191,
+      "span_bytes": 1969440,
+      "copied_bytes": 1969440,
+      "run_count": 1,
+      "lock_us": 0,
+      "scan_us": 1,
+      "plan_us": 0,
+      "transfer_us": 4766190,
+      "finish_us": 0,
+      "overlap_us": 4766191
+    },
+    {
+      "kind": "slow stale buffer copy phases",
+      "windows_thread": 16276,
+      "elapsed_us": 4764628,
+      "span_bytes": 4194096,
+      "copied_bytes": 4194096,
+      "run_count": 1,
+      "lock_us": 0,
+      "scan_us": 3,
+      "plan_us": 1,
+      "transfer_us": 4764624,
+      "finish_us": 0,
+      "overlap_us": 4764628
+    },
+    {
+      "kind": "slow stale buffer copy phases",
+      "windows_thread": 16276,
+      "elapsed_us": 4319786,
+      "span_bytes": 4157504,
+      "copied_bytes": 3014656,
+      "run_count": 2,
+      "lock_us": 0,
+      "scan_us": 2,
+      "plan_us": 1,
+      "transfer_us": 4319782,
+      "finish_us": 1,
+      "overlap_us": 4319786
+    },
+    {
+      "kind": "slow stale buffer copy phases",
+      "windows_thread": 17104,
+      "elapsed_us": 4319387,
+      "span_bytes": 3859920,
+      "copied_bytes": 1703936,
+      "run_count": 2,
+      "lock_us": 0,
+      "scan_us": 1,
+      "plan_us": 1,
+      "transfer_us": 4319385,
+      "finish_us": 0,
+      "overlap_us": 4319387
+    },
+    {
+      "kind": "slow stale buffer copy phases",
+      "windows_thread": 13368,
+      "elapsed_us": 3029177,
+      "span_bytes": 3862112,
+      "copied_bytes": 3862112,
+      "run_count": 1,
+      "lock_us": 0,
+      "scan_us": 1,
+      "plan_us": 0,
+      "transfer_us": 3029176,
+      "finish_us": 0,
+      "overlap_us": 3029177
+    },
+    {
+      "kind": "slow stale buffer copy phases",
+      "windows_thread": 2736,
+      "elapsed_us": 2945984,
+      "span_bytes": 3603280,
+      "copied_bytes": 3603280,
+      "run_count": 1,
+      "lock_us": 0,
+      "scan_us": 1,
+      "plan_us": 1,
+      "transfer_us": 2945982,
+      "finish_us": 0,
+      "overlap_us": 2945984
+    },
+    {
+      "kind": "slow stale buffer copy phases",
+      "windows_thread": 23044,
+      "elapsed_us": 2296544,
+      "span_bytes": 2654176,
+      "copied_bytes": 2654176,
+      "run_count": 1,
+      "lock_us": 0,
+      "scan_us": 1,
+      "plan_us": 0,
+      "transfer_us": 2296543,
+      "finish_us": 0,
+      "overlap_us": 2296544
+    },
+    {
+      "kind": "slow stale buffer copy phases",
+      "windows_thread": 2736,
+      "elapsed_us": 2114164,
+      "span_bytes": 2416192,
+      "copied_bytes": 2228224,
+      "run_count": 1,
+      "lock_us": 0,
+      "scan_us": 1,
+      "plan_us": 0,
+      "transfer_us": 2114162,
+      "finish_us": 1,
+      "overlap_us": 2114164
+    },
+    {
+      "kind": "slow stale buffer copy phases",
+      "windows_thread": 16276,
+      "elapsed_us": 2113841,
+      "span_bytes": 3516848,
+      "copied_bytes": 3211264,
+      "run_count": 1,
+      "lock_us": 0,
+      "scan_us": 3,
+      "plan_us": 14,
+      "transfer_us": 2113823,
+      "finish_us": 1,
+      "overlap_us": 2113841
+    },
+    {
+      "kind": "slow stale buffer copy phases",
+      "windows_thread": 13368,
+      "elapsed_us": 2109748,
+      "span_bytes": 3325952,
+      "copied_bytes": 638976,
+      "run_count": 2,
+      "lock_us": 0,
+      "scan_us": 1,
+      "plan_us": 4,
+      "transfer_us": 2109743,
+      "finish_us": 0,
+      "overlap_us": 2109748
+    },
+    {
+      "kind": "slow stale buffer copy phases",
+      "windows_thread": 23044,
+      "elapsed_us": 2108955,
+      "span_bytes": 3604480,
+      "copied_bytes": 1638400,
+      "run_count": 2,
+      "lock_us": 0,
+      "scan_us": 1,
+      "plan_us": 1,
+      "transfer_us": 2108953,
+      "finish_us": 0,
+      "overlap_us": 2108955
+    },
+    {
+      "kind": "slow stale buffer copy phases",
+      "windows_thread": 17104,
+      "elapsed_us": 2108825,
+      "span_bytes": 3579904,
+      "copied_bytes": 2490368,
+      "run_count": 2,
+      "lock_us": 0,
+      "scan_us": 2,
+      "plan_us": 1,
+      "transfer_us": 2108822,
+      "finish_us": 0,
+      "overlap_us": 2108825
+    },
+    {
+      "kind": "slow stale buffer copy phases",
+      "windows_thread": 2736,
+      "elapsed_us": 671877,
+      "span_bytes": 1593344,
+      "copied_bytes": 1593344,
+      "run_count": 1,
+      "lock_us": 0,
+      "scan_us": 1,
+      "plan_us": 0,
+      "transfer_us": 671876,
+      "finish_us": 0,
+      "overlap_us": 671877
+    },
+    {
+      "kind": "slow stale buffer copy phases",
+      "windows_thread": 17104,
+      "elapsed_us": 666241,
+      "span_bytes": 3538944,
+      "copied_bytes": 1310720,
+      "run_count": 4,
+      "lock_us": 0,
+      "scan_us": 1,
+      "plan_us": 1,
+      "transfer_us": 666238,
+      "finish_us": 1,
+      "overlap_us": 666241
+    },
+    {
+      "kind": "slow stale buffer copy phases",
+      "windows_thread": 16276,
+      "elapsed_us": 664836,
+      "span_bytes": 2752512,
+      "copied_bytes": 2162688,
+      "run_count": 1,
+      "lock_us": 0,
+      "scan_us": 1,
+      "plan_us": 0,
+      "transfer_us": 664834,
+      "finish_us": 1,
+      "overlap_us": 664836
+    },
+    {
+      "kind": "slow stale buffer copy phases",
+      "windows_thread": 13368,
+      "elapsed_us": 664601,
+      "span_bytes": 4189440,
+      "copied_bytes": 2162688,
+      "run_count": 1,
+      "lock_us": 0,
+      "scan_us": 1,
+      "plan_us": 0,
+      "transfer_us": 664600,
+      "finish_us": 0,
+      "overlap_us": 664601
+    }
+  ],
+  "scheduler_sample_count": 31,
+  "scheduler": [
+    {
+      "offset_us": 1209591,
+      "thread_id": 5752,
+      "state": "Wait",
+      "wait_reason": "UserRequest",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 1209591,
+      "thread_id": 23044,
+      "state": "Wait",
+      "wait_reason": "Unknown",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 1209591,
+      "thread_id": 24768,
+      "state": "Running",
+      "wait_reason": "",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 1209591,
+      "thread_id": 4680,
+      "state": "Wait",
+      "wait_reason": "Unknown",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 1209591,
+      "thread_id": 2736,
+      "state": "Wait",
+      "wait_reason": "Unknown",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 1209591,
+      "thread_id": 17104,
+      "state": "Wait",
+      "wait_reason": "Unknown",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 1209591,
+      "thread_id": 16276,
+      "state": "Wait",
+      "wait_reason": "Unknown",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 1209591,
+      "thread_id": 13368,
+      "state": "Wait",
+      "wait_reason": "Unknown",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 1965651,
+      "thread_id": 5752,
+      "state": "Wait",
+      "wait_reason": "UserRequest",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 1965651,
+      "thread_id": 23044,
+      "state": "Wait",
+      "wait_reason": "Unknown",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 1965651,
+      "thread_id": 24768,
+      "state": "Running",
+      "wait_reason": "",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 1965651,
+      "thread_id": 4680,
+      "state": "Running",
+      "wait_reason": "",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 1965651,
+      "thread_id": 2736,
+      "state": "Wait",
+      "wait_reason": "Unknown",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 1965651,
+      "thread_id": 17104,
+      "state": "Wait",
+      "wait_reason": "Unknown",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 1965651,
+      "thread_id": 16276,
+      "state": "Wait",
+      "wait_reason": "Unknown",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 1965651,
+      "thread_id": 13368,
+      "state": "Wait",
+      "wait_reason": "Unknown",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 2723846,
+      "thread_id": 5752,
+      "state": "Wait",
+      "wait_reason": "UserRequest",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 2723846,
+      "thread_id": 23044,
+      "state": "Wait",
+      "wait_reason": "Unknown",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 2723846,
+      "thread_id": 24768,
+      "state": "Running",
+      "wait_reason": "",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 2723846,
+      "thread_id": 4680,
+      "state": "Running",
+      "wait_reason": "",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 2723846,
+      "thread_id": 2736,
+      "state": "Wait",
+      "wait_reason": "Unknown",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 2723846,
+      "thread_id": 17104,
+      "state": "Wait",
+      "wait_reason": "Unknown",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 2723846,
+      "thread_id": 16276,
+      "state": "Wait",
+      "wait_reason": "Unknown",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 2723846,
+      "thread_id": 13368,
+      "state": "Wait",
+      "wait_reason": "Unknown",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 3499827,
+      "thread_id": 5752,
+      "state": "Wait",
+      "wait_reason": "UserRequest",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 3499827,
+      "thread_id": 23044,
+      "state": "Wait",
+      "wait_reason": "Unknown",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 3499827,
+      "thread_id": 24768,
+      "state": "Running",
+      "wait_reason": "",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 3499827,
+      "thread_id": 4680,
+      "state": "Running",
+      "wait_reason": "",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 3499827,
+      "thread_id": 2736,
+      "state": "Wait",
+      "wait_reason": "Unknown",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 3499827,
+      "thread_id": 17104,
+      "state": "Wait",
+      "wait_reason": "Unknown",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 3499827,
+      "thread_id": 16276,
+      "state": "Wait",
+      "wait_reason": "Unknown",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 3499827,
+      "thread_id": 13368,
+      "state": "Wait",
+      "wait_reason": "Unknown",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 4259928,
+      "thread_id": 5752,
+      "state": "Wait",
+      "wait_reason": "UserRequest",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 4259928,
+      "thread_id": 23044,
+      "state": "Wait",
+      "wait_reason": "Unknown",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 4259928,
+      "thread_id": 24768,
+      "state": "Running",
+      "wait_reason": "",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 4259928,
+      "thread_id": 4680,
+      "state": "Running",
+      "wait_reason": "",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 4259928,
+      "thread_id": 2736,
+      "state": "Wait",
+      "wait_reason": "Unknown",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 4259928,
+      "thread_id": 17104,
+      "state": "Wait",
+      "wait_reason": "Unknown",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 4259928,
+      "thread_id": 16276,
+      "state": "Wait",
+      "wait_reason": "Unknown",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 4259928,
+      "thread_id": 13368,
+      "state": "Wait",
+      "wait_reason": "Unknown",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 5017851,
+      "thread_id": 5752,
+      "state": "Wait",
+      "wait_reason": "UserRequest",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 5017851,
+      "thread_id": 23044,
+      "state": "Wait",
+      "wait_reason": "Unknown",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 5017851,
+      "thread_id": 24768,
+      "state": "Wait",
+      "wait_reason": "Executive",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 5017851,
+      "thread_id": 4680,
+      "state": "Running",
+      "wait_reason": "",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 5017851,
+      "thread_id": 2736,
+      "state": "Wait",
+      "wait_reason": "Unknown",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 5017851,
+      "thread_id": 17104,
+      "state": "Wait",
+      "wait_reason": "Unknown",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 5017851,
+      "thread_id": 16276,
+      "state": "Wait",
+      "wait_reason": "Unknown",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 5017851,
+      "thread_id": 13368,
+      "state": "Wait",
+      "wait_reason": "Unknown",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 5776593,
+      "thread_id": 5752,
+      "state": "Wait",
+      "wait_reason": "UserRequest",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 5776593,
+      "thread_id": 23044,
+      "state": "Running",
+      "wait_reason": "",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 5776593,
+      "thread_id": 24768,
+      "state": "Wait",
+      "wait_reason": "Executive",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 5776593,
+      "thread_id": 4680,
+      "state": "Running",
+      "wait_reason": "",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 5776593,
+      "thread_id": 2736,
+      "state": "Wait",
+      "wait_reason": "Unknown",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 5776593,
+      "thread_id": 17104,
+      "state": "Running",
+      "wait_reason": "",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 5776593,
+      "thread_id": 16276,
+      "state": "Wait",
+      "wait_reason": "Unknown",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 5776593,
+      "thread_id": 13368,
+      "state": "Wait",
+      "wait_reason": "Unknown",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 6535500,
+      "thread_id": 5752,
+      "state": "Wait",
+      "wait_reason": "UserRequest",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 6535500,
+      "thread_id": 23044,
+      "state": "Wait",
+      "wait_reason": "Executive",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 6535500,
+      "thread_id": 24768,
+      "state": "Wait",
+      "wait_reason": "Unknown",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 6535500,
+      "thread_id": 4680,
+      "state": "Wait",
+      "wait_reason": "Unknown",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 6535500,
+      "thread_id": 2736,
+      "state": "Wait",
+      "wait_reason": "Executive",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 6535500,
+      "thread_id": 17104,
+      "state": "Wait",
+      "wait_reason": "Executive",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 6535500,
+      "thread_id": 16276,
+      "state": "Wait",
+      "wait_reason": "Executive",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 6535500,
+      "thread_id": 13368,
+      "state": "Wait",
+      "wait_reason": "Executive",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 7291293,
+      "thread_id": 5752,
+      "state": "Wait",
+      "wait_reason": "UserRequest",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 7291293,
+      "thread_id": 23044,
+      "state": "Wait",
+      "wait_reason": "Executive",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 7291293,
+      "thread_id": 24768,
+      "state": "Wait",
+      "wait_reason": "Unknown",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 7291293,
+      "thread_id": 4680,
+      "state": "Wait",
+      "wait_reason": "Unknown",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 7291293,
+      "thread_id": 2736,
+      "state": "Wait",
+      "wait_reason": "Executive",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 7291293,
+      "thread_id": 17104,
+      "state": "Wait",
+      "wait_reason": "Executive",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 7291293,
+      "thread_id": 16276,
+      "state": "Wait",
+      "wait_reason": "Executive",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 7291293,
+      "thread_id": 13368,
+      "state": "Wait",
+      "wait_reason": "Executive",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 8047515,
+      "thread_id": 5752,
+      "state": "Wait",
+      "wait_reason": "UserRequest",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 8047515,
+      "thread_id": 23044,
+      "state": "Wait",
+      "wait_reason": "Executive",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 8047515,
+      "thread_id": 24768,
+      "state": "Wait",
+      "wait_reason": "Unknown",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 8047515,
+      "thread_id": 4680,
+      "state": "Wait",
+      "wait_reason": "Unknown",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 8047515,
+      "thread_id": 2736,
+      "state": "Wait",
+      "wait_reason": "Executive",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 8047515,
+      "thread_id": 17104,
+      "state": "Wait",
+      "wait_reason": "Executive",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 8047515,
+      "thread_id": 16276,
+      "state": "Wait",
+      "wait_reason": "Executive",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 8047515,
+      "thread_id": 13368,
+      "state": "Wait",
+      "wait_reason": "Executive",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 8803836,
+      "thread_id": 5752,
+      "state": "Wait",
+      "wait_reason": "UserRequest",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 8803836,
+      "thread_id": 23044,
+      "state": "Wait",
+      "wait_reason": "Unknown",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 8803836,
+      "thread_id": 24768,
+      "state": "Running",
+      "wait_reason": "",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 8803836,
+      "thread_id": 4680,
+      "state": "Wait",
+      "wait_reason": "Unknown",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 8803836,
+      "thread_id": 2736,
+      "state": "Wait",
+      "wait_reason": "Executive",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 8803836,
+      "thread_id": 17104,
+      "state": "Wait",
+      "wait_reason": "Executive",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 8803836,
+      "thread_id": 16276,
+      "state": "Wait",
+      "wait_reason": "Executive",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 8803836,
+      "thread_id": 13368,
+      "state": "Wait",
+      "wait_reason": "Executive",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 9557919,
+      "thread_id": 5752,
+      "state": "Wait",
+      "wait_reason": "UserRequest",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 9557919,
+      "thread_id": 23044,
+      "state": "Wait",
+      "wait_reason": "Unknown",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 9557919,
+      "thread_id": 24768,
+      "state": "Running",
+      "wait_reason": "",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 9557919,
+      "thread_id": 4680,
+      "state": "Wait",
+      "wait_reason": "Unknown",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 9557919,
+      "thread_id": 2736,
+      "state": "Wait",
+      "wait_reason": "Unknown",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 9557919,
+      "thread_id": 17104,
+      "state": "Wait",
+      "wait_reason": "Unknown",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 9557919,
+      "thread_id": 16276,
+      "state": "Wait",
+      "wait_reason": "Executive",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 9557919,
+      "thread_id": 13368,
+      "state": "Wait",
+      "wait_reason": "Unknown",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 10313483,
+      "thread_id": 5752,
+      "state": "Wait",
+      "wait_reason": "UserRequest",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 10313483,
+      "thread_id": 23044,
+      "state": "Wait",
+      "wait_reason": "Unknown",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 10313483,
+      "thread_id": 24768,
+      "state": "Wait",
+      "wait_reason": "Executive",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 10313483,
+      "thread_id": 4680,
+      "state": "Wait",
+      "wait_reason": "Executive",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 10313483,
+      "thread_id": 2736,
+      "state": "Wait",
+      "wait_reason": "Unknown",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 10313483,
+      "thread_id": 17104,
+      "state": "Wait",
+      "wait_reason": "Unknown",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 10313483,
+      "thread_id": 16276,
+      "state": "Wait",
+      "wait_reason": "Executive",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 10313483,
+      "thread_id": 13368,
+      "state": "Wait",
+      "wait_reason": "Unknown",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 11069642,
+      "thread_id": 5752,
+      "state": "Running",
+      "wait_reason": "",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 11069642,
+      "thread_id": 23044,
+      "state": "Wait",
+      "wait_reason": "Executive",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 11069642,
+      "thread_id": 24768,
+      "state": "Running",
+      "wait_reason": "",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 11069642,
+      "thread_id": 4680,
+      "state": "Wait",
+      "wait_reason": "Executive",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 11069642,
+      "thread_id": 2736,
+      "state": "Wait",
+      "wait_reason": "Unknown",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 11069642,
+      "thread_id": 17104,
+      "state": "Wait",
+      "wait_reason": "Unknown",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 11069642,
+      "thread_id": 16276,
+      "state": "Wait",
+      "wait_reason": "Unknown",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 11069642,
+      "thread_id": 13368,
+      "state": "Wait",
+      "wait_reason": "Unknown",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 11826514,
+      "thread_id": 5752,
+      "state": "Running",
+      "wait_reason": "",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 11826514,
+      "thread_id": 23044,
+      "state": "Wait",
+      "wait_reason": "Executive",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 11826514,
+      "thread_id": 24768,
+      "state": "Running",
+      "wait_reason": "",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 11826514,
+      "thread_id": 4680,
+      "state": "Running",
+      "wait_reason": "",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 11826514,
+      "thread_id": 2736,
+      "state": "Wait",
+      "wait_reason": "Unknown",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 11826514,
+      "thread_id": 17104,
+      "state": "Wait",
+      "wait_reason": "Unknown",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 11826514,
+      "thread_id": 16276,
+      "state": "Wait",
+      "wait_reason": "Unknown",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 11826514,
+      "thread_id": 13368,
+      "state": "Wait",
+      "wait_reason": "Unknown",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 12584399,
+      "thread_id": 5752,
+      "state": "Ready",
+      "wait_reason": "",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 12584399,
+      "thread_id": 23044,
+      "state": "Wait",
+      "wait_reason": "Executive",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 12584399,
+      "thread_id": 24768,
+      "state": "Running",
+      "wait_reason": "",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 12584399,
+      "thread_id": 4680,
+      "state": "Running",
+      "wait_reason": "",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 12584399,
+      "thread_id": 2736,
+      "state": "Wait",
+      "wait_reason": "Unknown",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 12584399,
+      "thread_id": 17104,
+      "state": "Wait",
+      "wait_reason": "Unknown",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 12584399,
+      "thread_id": 16276,
+      "state": "Wait",
+      "wait_reason": "Unknown",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 12584399,
+      "thread_id": 13368,
+      "state": "Wait",
+      "wait_reason": "Unknown",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 13342245,
+      "thread_id": 5752,
+      "state": "Running",
+      "wait_reason": "",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 13342245,
+      "thread_id": 23044,
+      "state": "Wait",
+      "wait_reason": "Executive",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 13342245,
+      "thread_id": 24768,
+      "state": "Running",
+      "wait_reason": "",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 13342245,
+      "thread_id": 4680,
+      "state": "Running",
+      "wait_reason": "",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 13342245,
+      "thread_id": 2736,
+      "state": "Wait",
+      "wait_reason": "Unknown",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 13342245,
+      "thread_id": 17104,
+      "state": "Wait",
+      "wait_reason": "Unknown",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 13342245,
+      "thread_id": 16276,
+      "state": "Wait",
+      "wait_reason": "Unknown",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 13342245,
+      "thread_id": 13368,
+      "state": "Wait",
+      "wait_reason": "Unknown",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 14099785,
+      "thread_id": 5752,
+      "state": "Running",
+      "wait_reason": "",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 14099785,
+      "thread_id": 23044,
+      "state": "Wait",
+      "wait_reason": "Unknown",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 14099785,
+      "thread_id": 24768,
+      "state": "Running",
+      "wait_reason": "",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 14099785,
+      "thread_id": 4680,
+      "state": "Running",
+      "wait_reason": "",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 14099785,
+      "thread_id": 2736,
+      "state": "Wait",
+      "wait_reason": "Unknown",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 14099785,
+      "thread_id": 17104,
+      "state": "Wait",
+      "wait_reason": "Unknown",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 14099785,
+      "thread_id": 16276,
+      "state": "Wait",
+      "wait_reason": "Unknown",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 14099785,
+      "thread_id": 13368,
+      "state": "Wait",
+      "wait_reason": "Unknown",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 14855666,
+      "thread_id": 5752,
+      "state": "Ready",
+      "wait_reason": "",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 14855666,
+      "thread_id": 23044,
+      "state": "Wait",
+      "wait_reason": "Executive",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 14855666,
+      "thread_id": 24768,
+      "state": "Running",
+      "wait_reason": "",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 14855666,
+      "thread_id": 4680,
+      "state": "Running",
+      "wait_reason": "",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 14855666,
+      "thread_id": 2736,
+      "state": "Wait",
+      "wait_reason": "Executive",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 14855666,
+      "thread_id": 17104,
+      "state": "Wait",
+      "wait_reason": "Executive",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 14855666,
+      "thread_id": 16276,
+      "state": "Wait",
+      "wait_reason": "Executive",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 14855666,
+      "thread_id": 13368,
+      "state": "Wait",
+      "wait_reason": "Executive",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 15615325,
+      "thread_id": 5752,
+      "state": "Running",
+      "wait_reason": "",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 15615325,
+      "thread_id": 23044,
+      "state": "Wait",
+      "wait_reason": "Executive",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 15615325,
+      "thread_id": 24768,
+      "state": "Running",
+      "wait_reason": "",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 15615325,
+      "thread_id": 4680,
+      "state": "Running",
+      "wait_reason": "",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 15615325,
+      "thread_id": 2736,
+      "state": "Wait",
+      "wait_reason": "Executive",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 15615325,
+      "thread_id": 17104,
+      "state": "Wait",
+      "wait_reason": "Executive",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 15615325,
+      "thread_id": 16276,
+      "state": "Wait",
+      "wait_reason": "Executive",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 15615325,
+      "thread_id": 13368,
+      "state": "Wait",
+      "wait_reason": "Executive",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 16370917,
+      "thread_id": 5752,
+      "state": "Running",
+      "wait_reason": "",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 16370917,
+      "thread_id": 23044,
+      "state": "Wait",
+      "wait_reason": "Executive",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 16370917,
+      "thread_id": 24768,
+      "state": "Wait",
+      "wait_reason": "Unknown",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 16370917,
+      "thread_id": 4680,
+      "state": "Wait",
+      "wait_reason": "Unknown",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 16370917,
+      "thread_id": 2736,
+      "state": "Wait",
+      "wait_reason": "Executive",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 16370917,
+      "thread_id": 17104,
+      "state": "Wait",
+      "wait_reason": "Executive",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 16370917,
+      "thread_id": 16276,
+      "state": "Wait",
+      "wait_reason": "Executive",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 16370917,
+      "thread_id": 13368,
+      "state": "Wait",
+      "wait_reason": "Executive",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 17126828,
+      "thread_id": 5752,
+      "state": "Running",
+      "wait_reason": "",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 17126828,
+      "thread_id": 23044,
+      "state": "Wait",
+      "wait_reason": "Executive",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 17126828,
+      "thread_id": 24768,
+      "state": "Wait",
+      "wait_reason": "Executive",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 17126828,
+      "thread_id": 4680,
+      "state": "Wait",
+      "wait_reason": "Executive",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 17126828,
+      "thread_id": 2736,
+      "state": "Wait",
+      "wait_reason": "Unknown",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 17126828,
+      "thread_id": 17104,
+      "state": "Wait",
+      "wait_reason": "Executive",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 17126828,
+      "thread_id": 16276,
+      "state": "Wait",
+      "wait_reason": "Executive",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 17126828,
+      "thread_id": 13368,
+      "state": "Wait",
+      "wait_reason": "Executive",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 17882570,
+      "thread_id": 5752,
+      "state": "Running",
+      "wait_reason": "",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 17882570,
+      "thread_id": 23044,
+      "state": "Wait",
+      "wait_reason": "Executive",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 17882570,
+      "thread_id": 24768,
+      "state": "Wait",
+      "wait_reason": "Executive",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 17882570,
+      "thread_id": 4680,
+      "state": "Wait",
+      "wait_reason": "Executive",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 17882570,
+      "thread_id": 2736,
+      "state": "Wait",
+      "wait_reason": "Executive",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 17882570,
+      "thread_id": 17104,
+      "state": "Wait",
+      "wait_reason": "Executive",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 17882570,
+      "thread_id": 16276,
+      "state": "Wait",
+      "wait_reason": "Executive",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 17882570,
+      "thread_id": 13368,
+      "state": "Wait",
+      "wait_reason": "Executive",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 18639029,
+      "thread_id": 5752,
+      "state": "Running",
+      "wait_reason": "",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 18639029,
+      "thread_id": 23044,
+      "state": "Wait",
+      "wait_reason": "Executive",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 18639029,
+      "thread_id": 24768,
+      "state": "Wait",
+      "wait_reason": "Executive",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 18639029,
+      "thread_id": 4680,
+      "state": "Wait",
+      "wait_reason": "Executive",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 18639029,
+      "thread_id": 2736,
+      "state": "Wait",
+      "wait_reason": "Executive",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 18639029,
+      "thread_id": 17104,
+      "state": "Wait",
+      "wait_reason": "Executive",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 18639029,
+      "thread_id": 16276,
+      "state": "Wait",
+      "wait_reason": "Executive",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 18639029,
+      "thread_id": 13368,
+      "state": "Wait",
+      "wait_reason": "Executive",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 19394770,
+      "thread_id": 5752,
+      "state": "Running",
+      "wait_reason": "",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 19394770,
+      "thread_id": 23044,
+      "state": "Wait",
+      "wait_reason": "Executive",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 19394770,
+      "thread_id": 24768,
+      "state": "Wait",
+      "wait_reason": "Executive",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 19394770,
+      "thread_id": 4680,
+      "state": "Wait",
+      "wait_reason": "Executive",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 19394770,
+      "thread_id": 2736,
+      "state": "Wait",
+      "wait_reason": "Executive",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 19394770,
+      "thread_id": 17104,
+      "state": "Wait",
+      "wait_reason": "Executive",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 19394770,
+      "thread_id": 16276,
+      "state": "Wait",
+      "wait_reason": "Executive",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 19394770,
+      "thread_id": 13368,
+      "state": "Wait",
+      "wait_reason": "Executive",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 20149926,
+      "thread_id": 5752,
+      "state": "Running",
+      "wait_reason": "",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 20149926,
+      "thread_id": 23044,
+      "state": "Wait",
+      "wait_reason": "Executive",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 20149926,
+      "thread_id": 24768,
+      "state": "Wait",
+      "wait_reason": "Executive",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 20149926,
+      "thread_id": 4680,
+      "state": "Wait",
+      "wait_reason": "Executive",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 20149926,
+      "thread_id": 2736,
+      "state": "Wait",
+      "wait_reason": "Executive",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 20149926,
+      "thread_id": 17104,
+      "state": "Wait",
+      "wait_reason": "Executive",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 20149926,
+      "thread_id": 16276,
+      "state": "Wait",
+      "wait_reason": "Executive",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 20149926,
+      "thread_id": 13368,
+      "state": "Wait",
+      "wait_reason": "Executive",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 20905940,
+      "thread_id": 5752,
+      "state": "Running",
+      "wait_reason": "",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 20905940,
+      "thread_id": 23044,
+      "state": "Wait",
+      "wait_reason": "Executive",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 20905940,
+      "thread_id": 24768,
+      "state": "Running",
+      "wait_reason": "",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 20905940,
+      "thread_id": 4680,
+      "state": "Running",
+      "wait_reason": "",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 20905940,
+      "thread_id": 2736,
+      "state": "Wait",
+      "wait_reason": "Executive",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 20905940,
+      "thread_id": 17104,
+      "state": "Wait",
+      "wait_reason": "Executive",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 20905940,
+      "thread_id": 16276,
+      "state": "Wait",
+      "wait_reason": "Executive",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 20905940,
+      "thread_id": 13368,
+      "state": "Wait",
+      "wait_reason": "Executive",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 21663221,
+      "thread_id": 5752,
+      "state": "Running",
+      "wait_reason": "",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 21663221,
+      "thread_id": 23044,
+      "state": "Wait",
+      "wait_reason": "Executive",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 21663221,
+      "thread_id": 24768,
+      "state": "Wait",
+      "wait_reason": "Unknown",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 21663221,
+      "thread_id": 4680,
+      "state": "Running",
+      "wait_reason": "",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 21663221,
+      "thread_id": 2736,
+      "state": "Wait",
+      "wait_reason": "Executive",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 21663221,
+      "thread_id": 17104,
+      "state": "Wait",
+      "wait_reason": "Unknown",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 21663221,
+      "thread_id": 16276,
+      "state": "Wait",
+      "wait_reason": "Unknown",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 21663221,
+      "thread_id": 13368,
+      "state": "Wait",
+      "wait_reason": "Executive",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 22419119,
+      "thread_id": 5752,
+      "state": "Running",
+      "wait_reason": "",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 22419119,
+      "thread_id": 23044,
+      "state": "Wait",
+      "wait_reason": "Executive",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 22419119,
+      "thread_id": 24768,
+      "state": "Wait",
+      "wait_reason": "Unknown",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 22419119,
+      "thread_id": 4680,
+      "state": "Running",
+      "wait_reason": "",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 22419119,
+      "thread_id": 2736,
+      "state": "Wait",
+      "wait_reason": "Executive",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 22419119,
+      "thread_id": 17104,
+      "state": "Wait",
+      "wait_reason": "Unknown",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 22419119,
+      "thread_id": 16276,
+      "state": "Wait",
+      "wait_reason": "Unknown",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 22419119,
+      "thread_id": 13368,
+      "state": "Wait",
+      "wait_reason": "Executive",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 23174908,
+      "thread_id": 5752,
+      "state": "Running",
+      "wait_reason": "",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 23174908,
+      "thread_id": 23044,
+      "state": "Wait",
+      "wait_reason": "Executive",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 23174908,
+      "thread_id": 24768,
+      "state": "Wait",
+      "wait_reason": "Executive",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 23174908,
+      "thread_id": 4680,
+      "state": "Running",
+      "wait_reason": "",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 23174908,
+      "thread_id": 2736,
+      "state": "Wait",
+      "wait_reason": "Executive",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 23174908,
+      "thread_id": 17104,
+      "state": "Wait",
+      "wait_reason": "Unknown",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 23174908,
+      "thread_id": 16276,
+      "state": "Wait",
+      "wait_reason": "Unknown",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 23174908,
+      "thread_id": 13368,
+      "state": "Wait",
+      "wait_reason": "Executive",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 23930072,
+      "thread_id": 5752,
+      "state": "Ready",
+      "wait_reason": "",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 23930072,
+      "thread_id": 23044,
+      "state": "Wait",
+      "wait_reason": "Executive",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 23930072,
+      "thread_id": 24768,
+      "state": "Running",
+      "wait_reason": "",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 23930072,
+      "thread_id": 4680,
+      "state": "Wait",
+      "wait_reason": "Executive",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 23930072,
+      "thread_id": 2736,
+      "state": "Wait",
+      "wait_reason": "Executive",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 23930072,
+      "thread_id": 17104,
+      "state": "Wait",
+      "wait_reason": "Unknown",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 23930072,
+      "thread_id": 16276,
+      "state": "Wait",
+      "wait_reason": "Unknown",
+      "start_module": "unknown"
+    },
+    {
+      "offset_us": 23930072,
+      "thread_id": 13368,
+      "state": "Wait",
+      "wait_reason": "Unknown",
+      "start_module": "unknown"
+    }
+  ]
+}
