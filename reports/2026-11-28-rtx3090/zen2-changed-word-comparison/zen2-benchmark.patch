@@ -1,0 +1,66 @@
+--- a/crates/victory-gpu/src/shadow.rs
++++ b/crates/victory-gpu/src/shadow.rs
+@@ -2713,7 +2713,7 @@
+         }
+         return merged.len();
+     }
+-    let mut runs = dword_runs(at, title, merged, 0);
++    let mut runs = word_runs(at, title, merged);
+     if runs.len() > 64 {
+         runs = dword_runs(at, title, merged, 32);
+         PUT[3].fetch_add(1, Ordering::Relaxed);
+@@ -2921,6 +2921,45 @@
+         };
+         let runs = || drop(std::hint::black_box(changed_runs(std::hint::black_box(&a), std::hint::black_box(&b))));
+         println!("64 KiB that are the same: {:.1} us by eights, {:.1} us now", best(&eights), best(&runs));
++    }
++
++    #[test]
++    #[ignore = "CPU benchmark for the refresh and copy-back paths"]
++    fn changed_words_in_title_pages() {
++        use std::{hint::black_box, time::Instant};
++        let len = 65_536;
++        let base: Vec<u8> = (0..len).map(|i| (i % 251) as u8).collect();
++        for shape in ["unchanged", "sparse", "fragmented", "contiguous"] {
++            let mut changed = base.clone();
++            match shape {
++                "sparse" => { for i in (11..len).step_by(541) { changed[i] ^= 0x91; } }
++                "fragmented" => { for i in (0..len).step_by(12) { changed[i] ^= 0x62; } }
++                "contiguous" => { for b in &mut changed[733..41_987] { *b ^= 0xce; } }
++                _ => {}
++            }
++            // Verify the actual aligned fast path and both unaligned fallbacks.
++            for prefix in 0..4 {
++                for tail in 0..4 {
++                    let a = &base[prefix..len-tail];
++                    let b = &changed[prefix..len-tail];
++                    assert_eq!(word_runs(0x1000+prefix, a,b), dword_runs(0x1000+prefix,a,b,0));
++                }
++            }
++            for round in 0..12 {
++                for j in 0..2 {
++                    let fast = (round+j)%2 == 0;
++                    let start = Instant::now();
++                    let mut emitted = 0;
++                    for _ in 0..64 {
++                        let a = black_box(base.as_slice());
++                        let b = black_box(changed.as_slice());
++                        let spans = if fast { word_runs(0x1000,a,b) } else { dword_runs(0x1000,a,b,0) };
++                        emitted += black_box(spans).len();
++                    }
++                    println!("WORDS,{shape},{round},{fast},{},{emitted}",start.elapsed().as_nanos());
++                }
++            }
++        }
+     }
+ 
+     #[test]
+@@ -4623,7 +4662,7 @@
+                 // refresh lie apart.
+                 let held = unsafe { std::slice::from_raw_parts_mut(self.data.add(at - start), n) };
+                 let was = crate::host::upcheck::on().then(|| held.to_vec());
+-                let runs = if whole { vec![(0, n)] } else { dword_runs(at, held, title, 0) };
++                let runs = if whole { vec![(0, n)] } else { word_runs(at, held, title) };
+                 for &(a, len) in &runs {
+                     held[a..a + len].copy_from_slice(&title[a..a + len]);
+                     self.changed(at - start + a, at - start + a + len);
