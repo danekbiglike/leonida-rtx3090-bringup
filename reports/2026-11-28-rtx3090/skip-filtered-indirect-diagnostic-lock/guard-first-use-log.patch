@@ -1,0 +1,14 @@
+--- a/crates/victory-gpu/src/list.rs
++++ b/crates/victory-gpu/src/list.rs
+@@ -2053,6 +2053,11 @@
+         return;
+     }
+     INDIRECT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
++    // Counting is unconditional. A suppressed first-use diagnostic needs
++    // neither the shared signature table nor its lock on recording threads.
++    if !tracing::event_enabled!(tracing::Level::INFO, message, stride, args, max, address, counted) {
++        return;
++    }
+     static SEEN: std::sync::Mutex<Vec<usize>> = std::sync::Mutex::new(Vec::new());
+     let mut seen = SEEN.lock().unwrap_or_else(|e| e.into_inner());
+     if !seen.contains(&(signature as usize)) {

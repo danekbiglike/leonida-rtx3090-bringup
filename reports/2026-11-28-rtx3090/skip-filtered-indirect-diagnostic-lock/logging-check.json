@@ -1,0 +1,14 @@
+[
+  {
+    "filter": "warn,victory_gpu::host=info",
+    "recorded_drops": 1600,
+    "lock_attempts": 0,
+    "messages": 0
+  },
+  {
+    "filter": "warn,victory_gpu::list=info",
+    "recorded_drops": 1600,
+    "lock_attempts": 1600,
+    "messages": 2
+  }
+]
