@@ -1,0 +1,65 @@
+running 1 test
+test pool::tests::small_buffer_placement_proceeds_during_heap_creation ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 527 filtered out; finished in 0.00s
+
+running 1 test
+test pool::tests::blocks_are_made_with_the_pool_let_go ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 527 filtered out; finished in 0.00s
+
+running 1 test
+test pool::tests::buffers_up_to_four_mib_are_cut_at_multiples_of_64_kib ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 527 filtered out; finished in 0.00s
+
+running 1 test
+test pool::tests::buffers_cut_from_blocks_start_as_zeros_and_come_back ... Verified zeros in both CPU-buffer pools after reuse.
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 527 filtered out; finished in 5.54s
+
+running 1 test
+test pool::tests::the_card_reads_and_writes_buffers_cut_from_blocks ... Verified all 100000 bytes from the pooled upload buffer on GPU readback.
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 527 filtered out; finished in 0.35s
+
+running 1 test
+acceptance: 256 Upload buffers of 64 KiB: own allocations 90.575 ms, cut from a block 1.164 ms, 77.8 times as fast
+acceptance: 256 Shared buffers of 64 KiB: own allocations 108.571 ms, cut from a block 1.339 ms, 81.1 times as fast
+test pool::tests::acceptance_buffers_cut_from_blocks ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 527 filtered out; finished in 0.92s
+
+running 1 test
+test resource::tests::light_draw_before_depth_publication_is_a_negative_control ... Verified exact R8 lighting values: publish_early=false, pixels=[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 527 filtered out; finished in 0.33s
+
+running 1 test
+test resource::tests::a_depth_planes_twin_is_drawn_into_the_plane ... Verified exact R8 lighting values: publish_early=true, pixels=[0, 255, 0, 255, 255, 0, 255, 0, 0, 0, 255, 0, 255, 0, 0, 255]
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 527 filtered out; finished in 0.30s
+
+running 1 test
+wrong copies (round, submission, offset, expected, observed): []
+the check at sends found 0 words
+test host::upcheck::tests::each_submission_reads_its_own_copy_in_pc_memory ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 527 filtered out; finished in 0.30s
+
+running 1 test
+wrong copies (round, submission, offset, expected, observed): []
+the check at sends found 0 words
+test host::upcheck::tests::each_submission_reads_its_own_copy_on_the_card ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 527 filtered out; finished in 0.35s
+
+running 1 test
+SAME_LIST size=8388864 placed=true paired=true first=0x21 second=0x51
+test host::upcheck::tests::two_public_copies_in_the_same_list ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 527 filtered out; finished in 0.36s
