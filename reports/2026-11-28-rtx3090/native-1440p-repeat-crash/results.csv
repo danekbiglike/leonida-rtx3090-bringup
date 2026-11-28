@@ -1,0 +1,3 @@
+profile,stage,min_available_gib,after_last_frame_s,last_frame_draws,exception_site,exception,operation,guard_events
+nvidia-1440,Prison cell,3.224,59.36,6887,0x2215c35,0xc0000005,write to null,0
+nvidia-tuned-1440,Transition before the cell,4.337,75.0,11,0x23cf683,0xc0000005,write to null,0
