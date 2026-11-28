@@ -1,0 +1,17 @@
+{
+  "exit": "0xc0000005",
+  "error": "unhandled guest write to null",
+  "cell_presents_after_marker": 1358,
+  "last_present_offset_s": 106.391045,
+  "max_interval_ms_after_marker": 4497.887,
+  "exception_bracketing_log_offsets_s": [
+    120.612228,
+    150.932771
+  ],
+  "min_available_ram_GiB_after_marker": 4.723,
+  "min_commit_headroom_GiB_after_marker": 20.171,
+  "job_memory_events": 0,
+  "gate_seen": false,
+  "max_completed_64KiB_read_ms_after_marker": 30320.599,
+  "orbit_samples": 7
+}
