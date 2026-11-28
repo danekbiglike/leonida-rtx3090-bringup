@@ -1,0 +1,10 @@
+phase,elapsed_end_us,kind,windows_thread,overlap_us,total_us,requested,retained,parallel,prefilter_us,write_watch_us,update_us,cleanup_us,span_bytes,written_pages,copied_bytes,watch_us,copy_us,elapsed_us,run_count,lock_us,scan_us,plan_us,transfer_us,finish_us
+cell,22276592,slow stale buffer copy phases,16604,1011939,,,,,,,,,3734592,,720896,,,1011939,1,0,1,0,1011938,0
+cell,22276651,slow watched buffer update,16604,1012272,,,,,,,,,3734592,57,720896,266,1012006,,,,,,,
+cell,22276670,slow individual buffer update,16604,1012292,,,,,,,,,3734592,,720896,,,1012292,,,,,,
+cell,22277952,slow stale buffer copy phases,3616,1009444,,,,,,,,,4158624,,786432,,,1009444,2,0,1,0,1009443,0
+cell,22277995,slow watched buffer update,3616,1009528,,,,,,,,,4158624,64,786432,38,1009490,,,,,,,
+cell,22278005,slow individual buffer update,3616,1009538,,,,,,,,,4158624,,786432,,,1009538,,,,,,
+cell,24653952,slow stale buffer copy phases,16604,2356700,,,,,,,,,2266784,,1048576,,,2356700,1,0,1,0,2356698,1
+cell,24653993,slow watched buffer update,16604,2356945,,,,,,,,,2266784,35,1048576,199,2356746,,,,,,,
+cell,24654001,slow individual buffer update,16604,2356953,,,,,,,,,2266784,,1048576,,,2356953,,,,,,

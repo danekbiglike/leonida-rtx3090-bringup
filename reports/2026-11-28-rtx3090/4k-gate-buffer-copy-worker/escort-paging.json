@@ -1,0 +1,75 @@
+{
+  "report_id": "quality-20261128-nvidia-local-copy-fab41559d2f84970a68b42a7dcb2b259-escort",
+  "longest_gaps": [
+    {
+      "end_offset_s": 44.03,
+      "interval_s": 0.172386,
+      "process_coverage": 1.0,
+      "estimated_process_hard_faults": 0.344,
+      "game_disk_read_mib": 0.439,
+      "game_disk_read_coverage": 1.0,
+      "cache_volume_read_mib": 0.019,
+      "cache_volume_read_coverage": 1.0,
+      "cache_volume_write_mib": 0.028,
+      "cache_volume_write_coverage": 1.0,
+      "paging_disk_read_mib": 0.023,
+      "paging_disk_read_coverage": 1.0
+    },
+    {
+      "end_offset_s": 3.262,
+      "interval_s": 0.160338,
+      "process_coverage": 1.0,
+      "estimated_process_hard_faults": 0.047,
+      "game_disk_read_mib": 0.754,
+      "game_disk_read_coverage": 1.0,
+      "cache_volume_read_mib": 0.005,
+      "cache_volume_read_coverage": 1.0,
+      "cache_volume_write_mib": 0.022,
+      "cache_volume_write_coverage": 1.0,
+      "paging_disk_read_mib": 0.0,
+      "paging_disk_read_coverage": 1.0
+    },
+    {
+      "end_offset_s": 69.814,
+      "interval_s": 0.138678,
+      "process_coverage": 1.0,
+      "estimated_process_hard_faults": 0.0,
+      "game_disk_read_mib": 0.244,
+      "game_disk_read_coverage": 1.0,
+      "cache_volume_read_mib": 0.0,
+      "cache_volume_read_coverage": 1.0,
+      "cache_volume_write_mib": 0.01,
+      "cache_volume_write_coverage": 1.0,
+      "paging_disk_read_mib": 0.0,
+      "paging_disk_read_coverage": 1.0
+    },
+    {
+      "end_offset_s": 53.719,
+      "interval_s": 0.135089,
+      "process_coverage": 1.0,
+      "estimated_process_hard_faults": 0.676,
+      "game_disk_read_mib": 0.237,
+      "game_disk_read_coverage": 1.0,
+      "cache_volume_read_mib": 0.006,
+      "cache_volume_read_coverage": 1.0,
+      "cache_volume_write_mib": 0.043,
+      "cache_volume_write_coverage": 1.0,
+      "paging_disk_read_mib": 0.0,
+      "paging_disk_read_coverage": 1.0
+    },
+    {
+      "end_offset_s": 53.584,
+      "interval_s": 0.128665,
+      "process_coverage": 1.0,
+      "estimated_process_hard_faults": 0.644,
+      "game_disk_read_mib": 0.226,
+      "game_disk_read_coverage": 1.0,
+      "cache_volume_read_mib": 0.006,
+      "cache_volume_read_coverage": 1.0,
+      "cache_volume_write_mib": 0.041,
+      "cache_volume_write_coverage": 1.0,
+      "paging_disk_read_mib": 0.0,
+      "paging_disk_read_coverage": 1.0
+    }
+  ]
+}

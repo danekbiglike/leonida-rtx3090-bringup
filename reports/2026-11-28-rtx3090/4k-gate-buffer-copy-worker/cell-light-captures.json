@@ -1,0 +1,17 @@
+[
+  {
+    "file": "cell-light-1.png",
+    "observed_presents": 8,
+    "capture_end_utc_ms": 1795860184015
+  },
+  {
+    "file": "cell-light-2.png",
+    "observed_presents": 15,
+    "capture_end_utc_ms": 1795860186529
+  },
+  {
+    "file": "cell-light-3.png",
+    "observed_presents": 9,
+    "capture_end_utc_ms": 1795860187651
+  }
+]

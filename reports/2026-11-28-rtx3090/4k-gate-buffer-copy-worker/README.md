@@ -1,0 +1,15 @@
+# RTX 3090 at gate A-102 with buffer copies on their owning worker
+
+Lucia and the officer were both visible beside the A-102 door at the start. The renderer presented **2,027 frames in 120 seconds, or 16.89 FPS**. The slowest five seconds averaged **13.8 FPS**, the fastest 18.8 FPS and the longest frame interval was **172.4 ms**. The first and second minutes averaged 16.05 and 17.73 FPS. None of the 24 five-second intervals reached 25 FPS. The last capture showed several silhouetted figures in a dark room. [Gate and ending](escort-route.jpg) · [Per-frame measurements](escort-frames.csv) · [Metrics](escort-metrics.json)
+
+The previous row-copy run started at the same door and reached the desk interview in 120 seconds, averaging 16.81 FPS with a 4.09-second pause. The different final scenes prevent a controlled comparison of either average FPS or the worst pause. The camera sequence after the new walk also remained very dark. It provides no comparable view for judging the facial shadow at the interview. [Earlier interview run](../4k-row-copy-gate-to-interview) · [New camera sequence](camera.jpg)
+
+The first two minutes started beside the bookshelf and ended with Lucia standing in the corridor. They contained 1,327 frames, **11.06 FPS** on average, 3.8 FPS in the worst five seconds and a **3.47-second** maximum interval. Three additional pictures were taken with the camera held before this measurement. [Cell route](cell-route.jpg) · [Cell metrics](cell-metrics.json) · [Stationary pictures](stationary-cell.jpg)
+
+## Why a one-megabyte transfer still took seconds
+
+The experimental switch processes buffer transfers between 1 and 8 MiB on the worker that holds the shadow's copied-page lock. Both paths use the same stripes and keep separate handling for changed and previously unseen bytes. Transfers above 8 MiB retain their original scheduling. A real D3D12 staging-buffer test verified every byte of a 10 MiB allocation after each of three transfers in each mode, including unaligned edges, holes and already-copied ranges. [Code and test](local-copy.patch) · [Original scheduling](original-copy-test.txt) · [Local scheduling](local-copy-test.txt)
+
+In the cell interval, one local 1 MiB transfer took **2.357 seconds**. The worker spent nearly the full interval inside the transfer after obtaining its page lock. Windows sampled it waiting three times. Between two samples one second apart inside that transfer, the renderer's hard-fault counter held at 135,545. A multi-second wait therefore persisted with nested dispatch of this copy disabled. The awaited operation is still unidentified. [Event and OS samples](cell-local-copy.json) · [Refresh events](slow-buffers.csv)
+
+Native Series X settings, 3840 × 2160 output, frame generation and DLSS off. During the gate interval the GPU utilization median was 95.5% and available physical memory stayed above 4.49 GiB. The game closed after capture. SHA-256 of the renderer was `d5facfa3d181b1e6bd066db0c0534b41534b10d7bb72fc17abf511f340506fee`. [GPU samples](escort-gpu.csv) · [Submission timings](escort-submission.csv) · [Process and disk estimates for long frames](escort-paging.json)

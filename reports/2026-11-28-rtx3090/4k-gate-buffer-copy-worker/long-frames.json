@@ -1,0 +1,262 @@
+{
+  "cell": {
+    "end_utc_us": 1795860214240169,
+    "present_interval_us": 3467798,
+    "draws": 5182,
+    "thread_cpu": {
+      "26020": {
+        "cpu_us": 2062500,
+        "user_us": 1906250,
+        "kernel_us": 156250
+      },
+      "18452": {
+        "cpu_us": 2062500,
+        "user_us": 1937500,
+        "kernel_us": 125000
+      },
+      "22560": {
+        "cpu_us": 2046875,
+        "user_us": 1812500,
+        "kernel_us": 234375
+      }
+    },
+    "events": [
+      {
+        "kind": "slow individual buffer update",
+        "start": 1795860211813048,
+        "end": 1795860214170001,
+        "windows_thread": 16604,
+        "elapsed_us": 2356953,
+        "span_bytes": 2266784,
+        "copied_bytes": 1048576,
+        "overlap_us": 2356953
+      },
+      {
+        "kind": "slow watched buffer update",
+        "start": 1795860211813048,
+        "end": 1795860214169993,
+        "windows_thread": 16604,
+        "span_bytes": 2266784,
+        "written_pages": 35,
+        "copied_bytes": 1048576,
+        "watch_us": 199,
+        "copy_us": 2356746,
+        "overlap_us": 2356945
+      },
+      {
+        "kind": "slow stale buffer copy phases",
+        "start": 1795860211813252,
+        "end": 1795860214169952,
+        "windows_thread": 16604,
+        "elapsed_us": 2356700,
+        "span_bytes": 2266784,
+        "copied_bytes": 1048576,
+        "run_count": 1,
+        "lock_us": 0,
+        "scan_us": 1,
+        "plan_us": 0,
+        "transfer_us": 2356698,
+        "finish_us": 1,
+        "overlap_us": 2356700
+      },
+      {
+        "kind": "slow individual buffer update",
+        "start": 1795860210780378,
+        "end": 1795860211792670,
+        "windows_thread": 16604,
+        "elapsed_us": 1012292,
+        "span_bytes": 3734592,
+        "copied_bytes": 720896,
+        "overlap_us": 1012292
+      },
+      {
+        "kind": "slow watched buffer update",
+        "start": 1795860210780379,
+        "end": 1795860211792651,
+        "windows_thread": 16604,
+        "span_bytes": 3734592,
+        "written_pages": 57,
+        "copied_bytes": 720896,
+        "watch_us": 266,
+        "copy_us": 1012006,
+        "overlap_us": 1012272
+      },
+      {
+        "kind": "slow stale buffer copy phases",
+        "start": 1795860210780653,
+        "end": 1795860211792592,
+        "windows_thread": 16604,
+        "elapsed_us": 1011939,
+        "span_bytes": 3734592,
+        "copied_bytes": 720896,
+        "run_count": 1,
+        "lock_us": 0,
+        "scan_us": 1,
+        "plan_us": 0,
+        "transfer_us": 1011938,
+        "finish_us": 0,
+        "overlap_us": 1011939
+      },
+      {
+        "kind": "slow individual buffer update",
+        "start": 1795860210784467,
+        "end": 1795860211794005,
+        "windows_thread": 3616,
+        "elapsed_us": 1009538,
+        "span_bytes": 4158624,
+        "copied_bytes": 786432,
+        "overlap_us": 1009538
+      },
+      {
+        "kind": "slow watched buffer update",
+        "start": 1795860210784467,
+        "end": 1795860211793995,
+        "windows_thread": 3616,
+        "span_bytes": 4158624,
+        "written_pages": 64,
+        "copied_bytes": 786432,
+        "watch_us": 38,
+        "copy_us": 1009490,
+        "overlap_us": 1009528
+      },
+      {
+        "kind": "slow stale buffer copy phases",
+        "start": 1795860210784508,
+        "end": 1795860211793952,
+        "windows_thread": 3616,
+        "elapsed_us": 1009444,
+        "span_bytes": 4158624,
+        "copied_bytes": 786432,
+        "run_count": 2,
+        "lock_us": 0,
+        "scan_us": 1,
+        "plan_us": 0,
+        "transfer_us": 1009443,
+        "finish_us": 0,
+        "overlap_us": 1009444
+      }
+    ],
+    "scheduler_sample_count": 3,
+    "scheduler": [
+      {
+        "offset_us": 1602163,
+        "thread_id": 22560,
+        "state": "Running",
+        "wait_reason": "",
+        "start_module": "unknown"
+      },
+      {
+        "offset_us": 1602163,
+        "thread_id": 26020,
+        "state": "Running",
+        "wait_reason": "",
+        "start_module": "unknown"
+      },
+      {
+        "offset_us": 1602163,
+        "thread_id": 18452,
+        "state": "Running",
+        "wait_reason": "",
+        "start_module": "unknown"
+      },
+      {
+        "offset_us": 1602163,
+        "thread_id": 16604,
+        "state": "Wait",
+        "wait_reason": "Executive",
+        "start_module": "unknown"
+      },
+      {
+        "offset_us": 1602163,
+        "thread_id": 3616,
+        "state": "Wait",
+        "wait_reason": "Unknown",
+        "start_module": "unknown"
+      },
+      {
+        "offset_us": 2357390,
+        "thread_id": 22560,
+        "state": "Running",
+        "wait_reason": "",
+        "start_module": "unknown"
+      },
+      {
+        "offset_us": 2357390,
+        "thread_id": 26020,
+        "state": "Running",
+        "wait_reason": "",
+        "start_module": "unknown"
+      },
+      {
+        "offset_us": 2357390,
+        "thread_id": 18452,
+        "state": "Running",
+        "wait_reason": "",
+        "start_module": "unknown"
+      },
+      {
+        "offset_us": 2357390,
+        "thread_id": 16604,
+        "state": "Wait",
+        "wait_reason": "Executive",
+        "start_module": "unknown"
+      },
+      {
+        "offset_us": 2357390,
+        "thread_id": 3616,
+        "state": "Wait",
+        "wait_reason": "Unknown",
+        "start_module": "unknown"
+      },
+      {
+        "offset_us": 3112455,
+        "thread_id": 22560,
+        "state": "Running",
+        "wait_reason": "",
+        "start_module": "unknown"
+      },
+      {
+        "offset_us": 3112455,
+        "thread_id": 26020,
+        "state": "Wait",
+        "wait_reason": "Unknown",
+        "start_module": "unknown"
+      },
+      {
+        "offset_us": 3112455,
+        "thread_id": 18452,
+        "state": "Wait",
+        "wait_reason": "Unknown",
+        "start_module": "unknown"
+      },
+      {
+        "offset_us": 3112455,
+        "thread_id": 16604,
+        "state": "Wait",
+        "wait_reason": "Executive",
+        "start_module": "unknown"
+      },
+      {
+        "offset_us": 3112455,
+        "thread_id": 3616,
+        "state": "Wait",
+        "wait_reason": "Unknown",
+        "start_module": "unknown"
+      }
+    ]
+  },
+  "escort": {
+    "end_utc_us": 1795860391591720,
+    "present_interval_us": 172386,
+    "draws": 8324,
+    "thread_cpu": {},
+    "events": []
+  },
+  "camera": {
+    "end_utc_us": 1795860472817440,
+    "present_interval_us": 228512,
+    "draws": 20055,
+    "thread_cpu": {},
+    "events": []
+  }
+}

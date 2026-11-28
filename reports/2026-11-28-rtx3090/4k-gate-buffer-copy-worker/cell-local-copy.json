@@ -1,0 +1,55 @@
+{
+  "copy": {
+    "kind": "slow stale buffer copy phases",
+    "start": 1795860211813252,
+    "end": 1795860214169952,
+    "windows_thread": 16604,
+    "elapsed_us": 2356700,
+    "span_bytes": 2266784,
+    "copied_bytes": 1048576,
+    "run_count": 1,
+    "lock_us": 0,
+    "scan_us": 1,
+    "plan_us": 0,
+    "transfer_us": 2356698,
+    "finish_us": 1
+  },
+  "scheduler": [
+    {
+      "utc_us": "1795860212374534",
+      "meter_unchanged_ms": "1504",
+      "thread_id": "16604",
+      "state": "Wait",
+      "wait_reason": "Executive",
+      "start_module": "unknown"
+    },
+    {
+      "utc_us": "1795860213129761",
+      "meter_unchanged_ms": "2260",
+      "thread_id": "16604",
+      "state": "Wait",
+      "wait_reason": "Executive",
+      "start_module": "unknown"
+    },
+    {
+      "utc_us": "1795860213884826",
+      "meter_unchanged_ms": "3015",
+      "thread_id": "16604",
+      "state": "Wait",
+      "wait_reason": "Executive",
+      "start_module": "unknown"
+    }
+  ],
+  "renderer_fault_snapshots": [
+    {
+      "utc_us": "1795860212673914",
+      "hard_faults": "135545",
+      "cpu_cycles": "10306593941124"
+    },
+    {
+      "utc_us": "1795860213673499",
+      "hard_faults": "135545",
+      "cpu_cycles": "10327448470512"
+    }
+  ]
+}

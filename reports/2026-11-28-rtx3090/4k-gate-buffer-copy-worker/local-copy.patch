@@ -1,0 +1,132 @@
+diff --git a/crates/victory-gpu/src/shadow.rs b/crates/victory-gpu/src/shadow.rs
+index 01da19a..a23fa3a 100644
+--- a/crates/victory-gpu/src/shadow.rs
++++ b/crates/victory-gpu/src/shadow.rs
+@@ -4250,11 +4250,20 @@ impl Shadow {
+     /// shader writes.
+     fn update_free(&self, from: usize, to: usize) -> usize {
+         if self.watched.load(Ordering::Relaxed) != NOT_WATCHED {
++            let began = std::time::Instant::now();
+             if let Some((now, written)) = crate::watch::writes(from, to, true) {
+                 // (A range whose blocks rest after a write has no guard now.)
+                 let guarded = crate::watch::guarded(from, to) || self.watched.load(Ordering::Relaxed) == GUARDED;
+                 self.watched.store(if guarded { GUARDED } else { 1 }, Ordering::Relaxed);
++                let before_copy = began.elapsed();
+                 let copied = self.copy_stale(from, to, now, &written);
++                let elapsed = began.elapsed();
++                if elapsed.as_millis() >= 100 {
++                    tracing::info!(target: "victory_gpu::host::slow_refresh", windows_thread = crate::host::thread_id(),
++                        span_bytes = to - from, written_pages = written.len(), copied_bytes = copied,
++                        watch_us = before_copy.as_micros() as u64, copy_us = (elapsed - before_copy).as_micros() as u64,
++                        "slow watched buffer update");
++                }
+                 self.refresh_check(from, to);
+                 #[cfg(feature = "diagnostics")]
+                 {
+@@ -4337,8 +4346,11 @@ impl Shadow {
+     /// (`written`: last writes by page, in page order; `now`: this
+     /// asking), whole pages within the buffer.
+     fn copy_stale(&self, from: usize, to: usize, now: u64, written: &[(usize, u64)]) -> usize {
++        let started = (to - from >= 1 << 20).then(std::time::Instant::now);
++        let stamp = || started.map_or(0, |t| t.elapsed().as_micros() as u64);
+         let base = self.start as usize / PAGE;
+         let mut copied = self.copied.lock().unwrap_or_else(|e| e.into_inner());
++        let locked = stamp();
+         let mut writes = written.iter().peekable();
+         // Pages the range holds in part are never noted in `copied`, and
+         // were copied again at every refresh of the range, written or not:
+@@ -4387,8 +4399,12 @@ impl Shadow {
+         if let Some((first, known)) = run {
+             runs.push(((first * PAGE).max(from), ((last + 1) * PAGE).min(to), known));
+         }
++        let scanned = stamp();
+         let runs = by_parts(runs, &again_at, &crate::watch::parts_written(&again_at));
++        let planned = stamp();
++        let run_count = runs.len();
+         let bytes = self.take_all(runs);
++        let copied_at = stamp();
+         if crate::watch::light() {
+             // All of the range is in the copy as of this asking.
+             let mut ranged = self.ranged.lock().unwrap_or_else(|e| e.into_inner());
+@@ -4397,6 +4413,14 @@ impl Shadow {
+                 ranged[1] = (from, to, now);
+             }
+         }
++        let elapsed = stamp();
++        if elapsed >= 100_000 {
++            tracing::info!(target: "victory_gpu::host::slow_refresh", windows_thread = crate::host::thread_id(),
++                elapsed_us = elapsed, span_bytes = to - from, copied_bytes = bytes, run_count,
++                lock_us = locked, scan_us = scanned - locked, plan_us = planned - scanned,
++                transfer_us = copied_at - planned, finish_us = elapsed - copied_at,
++                "slow stale buffer copy phases");
++        }
+         bytes
+     }
+ 
+@@ -4423,6 +4447,23 @@ impl Shadow {
+                 at = next;
+             }
+         }
++        // Other refreshes already run concurrently. Keep moderate copies on
++        // their current worker so it cannot start an unrelated queued refresh
++        // while holding this shadow's copied-page lock. Keep the same stripes
++        // and the same handling of previously written bytes on either path.
++        static LOCAL: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
++        if bytes <= 8 << 20 && *LOCAL.get_or_init(|| {
++            let enabled = std::env::var("VICTORY_LOCAL_BUFFER_COPIES").as_deref() == Ok("1");
++            if enabled {
++                tracing::info!(target: "victory_gpu::host::slow_refresh", "processing 1 to 8 MiB buffer copies on the calling worker");
++            }
++            enabled
++        }) {
++            for (from, to, known) in parts {
++                self.take(from, to, known);
++            }
++            return bytes;
++        }
+         let this = std::ptr::from_ref(self) as usize;
+         wide_each(parts.len(), move |i| {
+             // SAFETY: `wide_each` returns when every part is done, before
+@@ -5112,6 +5153,42 @@ mod land_tests {
+         (*seed >> 8) as usize
+     }
+ 
++    #[test]
++    #[ignore = "requires a D3D12 device"]
++    fn striped_refresh_preserves_changed_bytes_and_holes() {
++        const MIB: usize = 1 << 20;
++        let mut title = vec![0u8; 10 * MIB];
++        for (i, byte) in title.iter_mut().enumerate() {
++            *byte = (i.wrapping_mul(13) ^ (i >> 9)) as u8;
++        }
++        let base = title.as_ptr() as usize;
++        let shadow = copy_of(base, title.len()).expect("mapped D3D12 staging buffer");
++        shadow.keep_stores();
++        let mut expected = vec![0; title.len()];
++        // Unaligned first and last stripes, disjoint writes, and both sides
++        // of the threshold where large transfers use the worker pool again.
++        for runs in [
++            vec![(17, MIB + 63, false), (2 * MIB + 25, 3 * MIB + 51, false)],
++            vec![(31, MIB + 9, true), (2 * MIB + 37, 3 * MIB + 23, true)],
++            vec![(5, 9 * MIB + 29, false)],
++        ] {
++            for &(a, b, known) in &runs {
++                if known {
++                    for i in (a..b).step_by(111) { title[i] ^= 0x75; }
++                }
++                expected[a..b].copy_from_slice(&title[a..b]);
++            }
++            let size: usize = runs.iter().map(|(a, b, _)| b - a).sum();
++            let absolute = runs.iter().map(|&(a, b, known)| (base + a, base + b, known)).collect();
++            assert_eq!(shadow.take_all(absolute), size);
++            // SAFETY: the per-shadow staging resource remains mapped and
++            // take_all has joined all its writers before returning.
++            let mapped = unsafe { std::slice::from_raw_parts(shadow.data, title.len()) };
++            assert!(mapped == expected.as_slice(), "refresh changed a hole or lost written bytes");
++        }
++        eprintln!("Verified all 10 MiB after each of three striped refreshes");
++    }
++
+     /// [`Shadow::land_card`] leaves title memory and the CPU's side as
+     /// [`Shadow::card_merge_relay`] does, with title bytes that went up
+     /// behind the fetch, or have not gone up, left out.
