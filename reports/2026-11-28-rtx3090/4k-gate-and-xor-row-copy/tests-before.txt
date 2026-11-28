@@ -1,0 +1,29 @@
+
+running 24 tests
+test tests::addresses_are_a_bijection_and_copies_round_trip ... ok
+test tests::bad_descriptions_and_buffers_are_refused ... ok
+test tests::bc_formats_accept_single_sample_layouts ... ok
+test tests::bc_formats_reject_multisampled_layouts ... ok
+test tests::blocks_hold_their_size_in_elements ... ok
+test tests::console_formats_have_layouts ... ok
+test tests::deep_volumes_keep_their_chain_in_each_slabs_tail ... ok
+test tests::depth_pitch_accepts_exact_and_padded_slices ... ok
+test tests::depth_pitch_rejects_overlapping_detile ... ok
+test tests::depth_pitch_rejects_overlapping_tile ... ok
+test tests::depth_stencil_is_two_planes ... ok
+test tests::extents_past_the_hardware_limit_are_invalid ... ok
+test tests::hand_checked_addresses ... ok
+test tests::layouts_match_addrlib ... ok
+test tests::layouts_share_identical_swizzle_tables ... ok
+test tests::linear_layouts_require_one_sample ... ok
+test tests::mip_tail_comes_first ... ok
+test tests::render_xor_blocks_hold_each_element_once ... ok
+test tests::render_xor_layouts_match_the_address_library ... ok
+test tests::smaller_mips_need_only_the_start_of_the_texture ... ok
+test tests::texture_copies_reject_overflowing_pitches ... ok
+test tests::tiled_chunks_match_element_offsets_with_odd_row_pitches ... ok
+test tests::uncompressed_formats_keep_multisample_layout_rules ... ok
+test tests::volume_copy_rejects_overflowing_depth_pitch ... ok
+
+test result: ok. 24 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.07s
+

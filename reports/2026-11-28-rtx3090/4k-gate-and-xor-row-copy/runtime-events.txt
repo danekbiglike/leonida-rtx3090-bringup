@@ -1,0 +1,4 @@
+2026-11-28T08:54:58.449580Z  INFO victory_gpu::ambient: reflections held after their resolve, since the start (VICTORY_AMBIENT_REFLECT) n=1
+2026-11-28T08:55:00.720085Z  INFO victory_gpu::layout_activity: retiled render-target XOR readback desc=Desc { dimension: Tex2d, width: 256, height: 256, depth: 1, mips: 1, element_bytes: 4, block: 1, samples: 1, swizzle: Swizzle(27) }
+2026-11-28T08:59:38.686553Z  INFO victory_gpu::ambient: reflections held after their resolve, since the start (VICTORY_AMBIENT_REFLECT) n=5000
+2026-11-28T09:01:56.966118Z  INFO victory_gpu::ambient: reflections held after their resolve, since the start (VICTORY_AMBIENT_REFLECT) n=10000

@@ -1,0 +1,22 @@
+{
+  "start_file": "quality-angle-1.png",
+  "end_file": "quality-angle-6.png",
+  "interval_us": 13387552,
+  "presents": 12,
+  "fps": 0.896,
+  "longest_present_ms": 10094.205,
+  "long_frame_utc_us": 1795856539460730,
+  "os_wall_us": 9326733,
+  "os_top_thread_cpu_us": 9281250,
+  "host_report_presents": 11,
+  "host_report": {
+    "card_queue_idle_ms": "929.2",
+    "card_idle_during_submit_ms": "929.2",
+    "utc_us": 1795856539460843,
+    "submit_ms": "974.5",
+    "refresh_ms": "931.1",
+    "batches": "41",
+    "requested": "6631",
+    "texture_ms": "8.4"
+  }
+}

@@ -1,0 +1,34 @@
+--- a/crates/victory-formats/src/texture.rs
++++ b/crates/victory-formats/src/texture.rs
+@@ -823,11 +823,27 @@
+             return Err(Error::TooSmall);
+         }
+         if self.desc.swizzle == Swizzle::SW_64KB_R_X {
++            let [tile_width, tile_height, _] = self.block;
++            let [columns, rows, _] = self.pattern;
++            let columns_mask = columns.len() - 1;
++            let tiles_per_row = u64::from(m.pitch / tile_width);
++            let lanes = 16 / n;
+             for y in 0..m.height {
+-                for x in (0..m.width).step_by(16 / n) {
+-                    let column = x as usize * n;
+-                    let tiled = self.render_xor_offset(m, x, y) as usize;
+-                    copy_run::<DETILE>(src, dst, tiled, y as usize * row_pitch + column, 16.min(bytes - column));
++                let row_mask = rows[y as usize & (rows.len() - 1)];
++                let row = y as usize * row_pitch;
++                let mut tile_base = u64::from(y / tile_height) * tiles_per_row * self.alignment;
++                for first in (0..m.width as usize).step_by(tile_width as usize) {
++                    let end = (first + tile_width as usize).min(m.width as usize);
++                    let full_end = end & !(lanes - 1);
++                    for x in (first..full_end).step_by(lanes) {
++                        let offset = (columns[x & columns_mask] ^ row_mask) as usize;
++                        copy_run::<DETILE>(src, dst, tile_base as usize + offset, row + x * n, 16);
++                    }
++                    if full_end < end {
++                        let offset = (columns[full_end & columns_mask] ^ row_mask) as usize;
++                        copy_run::<DETILE>(src, dst, tile_base as usize + offset, row + full_end * n, (end - full_end) * n);
++                    }
++                    tile_base += self.alignment;
+                 }
+             }
+             return Ok(());
