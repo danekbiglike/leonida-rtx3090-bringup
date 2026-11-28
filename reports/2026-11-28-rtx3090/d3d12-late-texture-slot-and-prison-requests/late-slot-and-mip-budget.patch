@@ -1,0 +1,190 @@
+--- a/crates/victory-gpu/src/resource.rs
++++ b/crates/victory-gpu/src/resource.rs
+@@ -1711,14 +1711,31 @@
+     let Some((bytes, block)) = element(desc.format) else {
+         return false;
+     };
+-    let first = desc.width.div_ceil(block)
+-        * u64::from(desc.height).div_ceil(block)
+-        * bytes
+-        * u64::from(desc.depth_or_array_size.max(1))
+-        * u64::from(desc.sample_count.max(1));
+-    // (All levels are a third more than the first.)
+-    let all = if desc.mip_levels == 1 { first } else { first + first / 3 };
+-    all <= most
++    let mut width = desc.width;
++    let mut height = u64::from(desc.height);
++    let mut depth = u64::from(desc.depth_or_array_size);
++    if width == 0 || height == 0 || depth == 0 || !(2..=TEXTURE_3D).contains(&desc.dimension) {
++        return false;
++    }
++    let largest = width.max(height).max(if desc.dimension == TEXTURE_3D { depth } else { 1 });
++    let full_chain = largest.ilog2() + 1;
++    let levels = if desc.mip_levels == 0 { full_chain } else { u32::from(desc.mip_levels) };
++    if levels > full_chain {
++        return false;
++    }
++    let mut budget = most;
++    for _ in 0..levels {
++        let amount = [width.div_ceil(block), height.div_ceil(block), depth, u64::from(desc.sample_count.max(1))]
++            .into_iter().try_fold(bytes, u64::checked_mul);
++        let Some(remaining) = amount.and_then(|level| budget.checked_sub(level)) else { return false };
++        budget = remaining;
++        width = (width / 2).max(1);
++        height = (height / 2).max(1);
++        if desc.dimension == TEXTURE_3D {
++            depth = (depth / 2).max(1);
++        }
++    }
++    true
+ }
+ 
+ /// Whether texture `this` gets its host copy when a view of it is written
+@@ -1731,8 +1748,7 @@
+         std::env::var("VICTORY_UNORDERED_NOW_KB")
+             .ok()
+             .and_then(|v| v.trim().parse::<u64>().ok())
+-            .unwrap_or(1024)
+-            << 10
++            .unwrap_or(1024).saturating_mul(1024)
+     });
+     !this.is_null() && most > 0 && made_with_view(&resource(this).desc, most)
+ }
+@@ -4059,6 +4075,37 @@
+         assert!(!made_with_view(&with(texture(1024, 1024, 71, 1), 0x4), (512 << 10) - 1));
+     }
+ 
++    #[test]
++    fn unordered_view_budget_counts_each_mip_and_array_slice() {
++        let check = |mut desc: ResourceDesc, bytes: u64| {
++            desc.flags = 4;
++            assert!(!made_with_view(&desc, bytes-1));
++            assert!(made_with_view(&desc, bytes));
++        };
++        check(texture(256, 256, 57, 6), 174720);
++        check(texture(256, 1, 61, 0), 511);
++        check(ResourceDesc { depth_or_array_size: 3, ..texture(256, 1, 61, 3) }, 1344);
++        check(ResourceDesc { dimension: TEXTURE_3D, depth_or_array_size: 8, ..texture(8, 8, 61, 4) }, 585);
++        check(texture(9, 1, 71, 4), 48);
++        check(ResourceDesc { sample_count: 4, ..texture(8, 8, 57, 1) }, 512);
++    }
++
++    #[cfg(windows)]
++    #[test]
++    #[ignore = "requires hardware D3D12 and an explicit eager-view setting"]
++    fn small_unordered_view_survives_a_late_slot_registration() {
++        crate::host::host().expect("hardware D3D12 device");
++        let eager = match std::env::var("VICTORY_UNORDERED_NOW_KB").as_deref() {
++            Ok("1024") => true, Ok("0") => false, _ => panic!("expected explicit view setting")
++        };
++        let null = std::ptr::null();
++        let desc = ResourceDesc { flags: 4, ..texture(256, 256, 57, 6) };
++        let mut texture = null;
++        assert_eq!(create_committed(null, &PROPERTIES, 0, &desc, 0, null.cast(), &RESOURCE_IIDS[0], &mut texture), S_OK);
++        crate::descriptor::tests::check_page_table_views(texture, eager);
++        slot::<Release>(texture, 0x10)(texture);
++    }
++
+     fn texture(width: u64, height: u32, format: u32, mips: u16) -> ResourceDesc {
+         ResourceDesc {
+             dimension: 3,
+--- a/crates/victory-gpu/src/descriptor.rs
++++ b/crates/victory-gpu/src/descriptor.rs
+@@ -1509,28 +1509,27 @@
+         }
+         slots.len() > MOST
+     };
+-    // A small texture written through unordered access alone may be taken
+-    // from the heap by index only, by the programs that write it and those
+-    // that read it: no list would ever name it, and the slot would wait for
+-    // ever (`crate::resource::made_with_its_view`).
+-    static UNORDERED_NOW: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+-    let now = !many && crate::resource::made_with_its_view(resource as This);
+-    if now {
+-        let n = UNORDERED_NOW.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+-        if n.is_power_of_two() {
+-            tracing::info!(
+-                n,
+-                "host copies made for small unordered-access textures when their views were written into the view heap, since the start (VICTORY_UNORDERED_NOW_KB)"
+-            );
+-        }
+-    }
+-    if many || now {
+-        // Makes it, and notes it made.
+-        let _ = crate::resource::host_copy(resource as This);
+-    } else if !crate::resource::host_waits(resource as This) {
+-        // Made by another thread since the slot was looked at: that making
+-        // may have been taken by `make_waiting` before this slot was noted.
++    // The resource may have been made and its old notifications drained
++    // between observing the empty view and registering this slot.
++    if !crate::resource::host_waits(resource as This) {
+         texture_made(resource);
++        return;
++    }
++    let eager = !many && crate::resource::made_with_its_view(resource as This);
++    if !many && !eager {
++        return;
++    }
++    let host_copy = crate::resource::host_copy(resource as This);
++    if let Some(copy) = host_copy.filter(|_| eager) {
++        static READY: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
++        let n = READY.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
++        if n <= 128 || n.is_power_of_two() {
++            // SAFETY: the shared copy keeps the resource alive during GetDesc.
++            let d = unsafe { copy.texture.GetDesc() };
++            tracing::info!(target: "victory_gpu::host", n, width=d.Width, height=d.Height,
++                levels=d.MipLevels, format=d.Format.0,
++                "small unordered texture view requests fulfilled (VICTORY_UNORDERED_NOW_KB)");
++        }
+     }
+ }
+ 
+@@ -2084,7 +2083,7 @@
+ };
+ 
+ #[cfg(test)]
+-mod tests {
++pub(crate) mod tests {
+     use super::*;
+     use crate::object::{S_OK, slot};
+ 
+@@ -2096,6 +2095,39 @@
+     fn create(desc: HeapDesc, placement: Placement, out: &mut This) -> HRESULT {
+         let extended = Extended(desc, placement);
+         create_heap(std::ptr::null(), &extended.0, &HEAP_IIDS[0], out)
++    }
++
++    #[cfg(windows)]
++    pub(crate) fn check_page_table_views(texture: This, eager: bool) {
++        use crate::resource;
++        let null = std::ptr::null();
++        let mut h = null;
++        assert_eq!(create(HeapDesc { kind: 0, count: 8, flags: 1, nodes: 0 },
++            Placement { address: 0, size: 0 }, &mut h), S_OK);
++        let view_heap = heap(h);
++        assert!(view_heap.host().is_some());
++        let srv = view_heap.handle(1).unwrap();
++        let uav = view_heap.handle(2).unwrap();
++        assert!(resource::host_waits(texture));
++        create_srv(null, texture, null.cast(), srv);
++        assert_eq!(resource::made_copy(texture).is_some(), eager);
++        create_uav(null, texture, null, null.cast(), uav);
++        let allocated = resource::host_copy(texture).expect("physical texture");
++        // SAFETY: allocated owns a live D3D12 resource.
++        let desc = unsafe { allocated.texture.GetDesc() };
++        assert_eq!((desc.Width, desc.Height, desc.MipLevels, desc.Format.0), (256, 256, 6, 57));
++        make_waiting();
++        let absent = || !WAITING.lock().unwrap().contains_key(&(texture as usize));
++        assert!(absent());
++        // Reproduce a descriptor writer which observed the missing copy
++        // before the creator finished, but registered after its notification.
++        wait_for(texture as usize, srv);
++        assert!(!absent());
++        make_waiting();
++        assert!(absent(), "late slot was stranded after its texture was ready");
++        assert_eq!(resource::made_copy(texture).unwrap().serial, allocated.serial);
++        slot::<extern "system" fn(This) -> u32>(h, 0x10)(h);
++        eprintln!("Verified physical 256x256x6 R16_UINT resource and late slot with eager={eager}");
+     }
+ 
+     #[cfg(windows)]

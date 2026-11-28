@@ -1,0 +1,20 @@
+{
+  "eager-view-0": [
+    "Verified physical 256x256x6 R16_UINT resource and late slot with eager=false",
+    "test resource::tests::small_unordered_view_survives_a_late_slot_registration ... ok",
+    "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 520 filtered out; finished in 0.29s"
+  ],
+  "eager-view-1024": [
+    "Verified physical 256x256x6 R16_UINT resource and late slot with eager=true",
+    "test resource::tests::small_unordered_view_survives_a_late_slot_registration ... ok",
+    "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 520 filtered out; finished in 0.30s"
+  ],
+  "small_unordered_textures_are_made_with_their_views": [
+    "test resource::tests::small_unordered_textures_are_made_with_their_views ... ok",
+    "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 520 filtered out; finished in 0.00s"
+  ],
+  "unordered_view_budget_counts_each_mip_and_array_slice": [
+    "test resource::tests::unordered_view_budget_counts_each_mip_and_array_slice ... ok",
+    "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 520 filtered out; finished in 0.00s"
+  ]
+}

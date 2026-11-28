@@ -1,0 +1,9 @@
+# Small writable textures on the RTX 3090
+
+The first prison run recorded 128 individually logged requests for texture views that needed backing storage. Request 70 was for a 256 × 256 R16_UINT texture with six mip levels. This matches the dimensions and format of the page table in seabed-dev's report. We have no material trace identifying what the game used our request for. Lucia and the officer reached the dayroom, where figures remained dark. [Recorded requests](texture-view-requests.csv) · [A-102 and dayroom images](gate-and-dayroom.jpg) · [Original change](https://github.com/trustno1-coder/VIctory-NVIDIA/pull/1183)
+
+Our follow-up handles descriptor slots registered just as the backing texture becomes available. It also totals the actual texel data across mips and array layers when choosing which resources to create eagerly. A 256 × 256 R16_UINT texture with six levels contains 174,720 bytes of texel data. That figure excludes driver placement and alignment. The tests cover thin textures, array layers, shrinking volume mips, block-compressed tails, multisampling and sizes outside the budget. [Patch against upstream commit cfa18bf](late-slot-and-mip-budget.patch)
+
+Two separate test processes on the RTX 3090 verified creation of the specified D3D12 texture and resolution of the late slot, with the eager threshold set to 0 KiB and 1,024 KiB. Each also checked that the second registration kept the original backing texture. [Hardware and layout checks](hardware-checks.json)
+
+In the 120-second interval starting in the cell the renderer presented 1,487 frames (12.39 FPS). The lowest five seconds averaged 4.4 FPS. Output was 3840 × 2160, Series X, with DLSS and frame generation off. The camera captured A-102 but the driver missed its timing marker, so this run supplies no matched escort FPS. The request logger records the first 128 successful requests and then powers of two. [Cell timings](cell-metrics.json) · [Frame data](cell-frames.csv)
